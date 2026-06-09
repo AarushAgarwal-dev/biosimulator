@@ -12,13 +12,13 @@ BioSimulateAI is a web-based platform that translates natural-language descripti
 
 ## Features
 
-### 🔬 Natural Language → Mathematical Model
+### Natural Language → Mathematical Model
 - Type biological descriptions like *"EGF binds to EGFR and activates it. EGFR activates RAS."*
 - **Rule-based parser** (regex) or **Gemini LLM** compiles text into structured JSON blueprints
 - Automatic generation of Hill-function ODE systems with symbolic math (SymPy)
 - LaTeX equation rendering via KaTeX
 
-### 📊 Multi-Scale Simulation Engine
+### Multi-Scale Simulation Engine
 | Scale | Method | Implementation |
 |-------|--------|----------------|
 | **Intracellular** | ODE (Ordinary Differential Equations) | `simulation_engine.py` — SymPy symbolic compilation → SciPy `solve_ivp` |
@@ -26,7 +26,7 @@ BioSimulateAI is a web-based platform that translates natural-language descripti
 | **Cell-level** | ABM (Cellular Potts Model) | `abm_engine.py` — Full GGH/CPM with Hamiltonian energy minimization |
 | **Coupled** | ODE ↔ ABM ↔ PDE | `multiscale.py` — Time-scale separated coupling coordinator |
 
-### 🗄️ Database RAG (Retrieval-Augmented Generation)
+### Database RAG (Retrieval-Augmented Generation)
 Real-time retrieval from 5 biological knowledge databases to ground model generation:
 
 | Database | What it provides | API |
@@ -39,14 +39,14 @@ Real-time retrieval from 5 biological knowledge databases to ground model genera
 
 Retrieved interactions are transformed into natural-language descriptions and fed to the parser/LLM for blueprint generation.
 
-### 🔄 Closed-Loop AI Feedback
+### Closed-Loop AI Feedback
 - Define **target behaviors** (peak time, peak value, decay ratio, steady state)
 - Automated **target evaluation** against simulation results
 - **AI-driven refinement**: Gemini adjusts parameters/topology to meet targets
 - **Rule-based fallback**: heuristic parameter tuning when LLM unavailable
 - **Sensitivity-guided refinement**: local sensitivity analysis ranks parameter importance
 
-### 📐 MAPLE Calibration Pipeline
+###  MAPLE Calibration Pipeline
 Inspired by Eliason & Popel (2026), implements structured parameter extraction from scientific literature:
 - LLM-powered extraction with **Pydantic schema validation**
 - **Hallucination detection**: values cross-checked against verbatim source snippets
