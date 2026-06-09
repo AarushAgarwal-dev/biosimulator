@@ -1,25 +1,30 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BioSimulateAI — AI-Powered Biological Modeling & Simulation</title>
-    <meta name="description" content="AI-powered platform for automated biological model generation, simulation, and calibration. Supports ODE, PDE, and Agent-Based Models.">
-    
+    <meta name="description"
+        content="AI-powered platform for automated biological model generation, simulation, and calibration. Supports ODE, PDE, and Agent-Based Models.">
+
     <!-- Favicon -->
     <link rel="icon" type="image/png" href="favicon.png">
-    
+
     <!-- Google Fonts: Outfit & JetBrains Mono -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    
+    <link
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap"
+        rel="stylesheet">
+
     <!-- KaTeX CSS for LaTeX rendering -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
-    
+
     <!-- Custom Style Sheet -->
     <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
     <div class="app-container">
         <!-- HEADER -->
@@ -32,10 +37,12 @@
                 </div>
             </div>
             <div class="header-actions">
-                <a href="paper.html" target="_blank" class="btn btn-secondary btn-sm" style="margin-right: 15px; text-decoration: none;">📄 Read Paper</a>
+                <a href="paper.html" target="_blank" class="btn btn-secondary btn-sm"
+                    style="margin-right: 15px; text-decoration: none;">📄 Read Paper</a>
                 <div class="api-key-container">
                     <label for="api-key-input">Gemini API Key:</label>
-                    <input type="password" id="api-key-input" placeholder="Paste your API key here..." autocomplete="current-password">
+                    <input type="password" id="api-key-input" placeholder="Paste your API key here..."
+                        autocomplete="current-password">
                 </div>
                 <div class="status-badge" id="system-status">
                     <span class="status-dot green"></span>
@@ -55,7 +62,8 @@
                         <button class="btn btn-secondary btn-sm" id="load-egfr-btn">EGF/EGFR (ODE)</button>
                         <button class="btn btn-secondary btn-sm" id="load-turing-btn">Turing (PDE)</button>
                     </div>
-                    <textarea id="bio-input" placeholder="Type a biological description here... e.g. EGF binds and activates EGFR. EGFR activates RAS. RAS activates RAF. RAF activates MEK. MEK activates ERK. ERK inhibits EGFR."></textarea>
+                    <textarea id="bio-input"
+                        placeholder="Type a biological description here... e.g. EGF binds and activates EGFR. EGFR activates RAS. RAS activates RAF. RAF activates MEK. MEK activates ERK. ERK inhibits EGFR."></textarea>
                     <button class="btn btn-primary" id="btn-parse-text">Compile Blueprint</button>
                 </div>
 
@@ -107,7 +115,8 @@
                             </div>
                             <div class="json-card card">
                                 <h3 class="card-title">Blueprint JSON</h3>
-                                <pre id="blueprint-json-viewer">Compile a biological description to view the blueprint.</pre>
+                                <pre
+                                    id="blueprint-json-viewer">Compile a biological description to view the blueprint.</pre>
                             </div>
                         </div>
                     </div>
@@ -117,7 +126,8 @@
                         <div class="card equation-card">
                             <h3 class="card-title">Compiled Equations</h3>
                             <div id="equations-container" class="math-display">
-                                <p class="placeholder-text">Mathematical equations will render here after blueprint compilation.</p>
+                                <p class="placeholder-text">Mathematical equations will render here after blueprint
+                                    compilation.</p>
                             </div>
                         </div>
                     </div>
@@ -161,18 +171,22 @@
                             <div class="card log-card">
                                 <h3 class="card-title">Optimization History & Analysis</h3>
                                 <div class="feedback-actions">
-                                    <button class="btn btn-primary" id="btn-run-feedback-loop">Start Closed-Loop Optimization</button>
+                                    <button class="btn btn-primary" id="btn-run-feedback-loop">Start Closed-Loop
+                                        Optimization</button>
                                 </div>
                                 <div id="feedback-log" class="console-log">
-                                    <p class="log-placeholder">Start the loop to see logs of target evaluations and parameter adjustments...</p>
+                                    <p class="log-placeholder">Start the loop to see logs of target evaluations and
+                                        parameter adjustments...</p>
                                 </div>
                             </div>
                             <div class="card status-card">
                                 <h3 class="card-title">Target Constraints</h3>
                                 <div class="score-widget">
                                     <svg class="progress-ring" width="120" height="120">
-                                        <circle class="progress-ring__circle-bg" stroke="rgba(255,255,255,0.05)" stroke-width="8" fill="transparent" r="50" cx="60" cy="60"/>
-                                        <circle class="progress-ring__circle" stroke="#00f2fe" stroke-width="8" fill="transparent" r="50" cx="60" cy="60" id="target-progress-bar"/>
+                                        <circle class="progress-ring__circle-bg" stroke="rgba(255,255,255,0.05)"
+                                            stroke-width="8" fill="transparent" r="50" cx="60" cy="60" />
+                                        <circle class="progress-ring__circle" stroke="#00f2fe" stroke-width="8"
+                                            fill="transparent" r="50" cx="60" cy="60" id="target-progress-bar" />
                                     </svg>
                                     <div class="score-text">
                                         <span id="target-score-percentage">0%</span>
@@ -190,10 +204,14 @@
                             <div class="card abm-config-card">
                                 <h3 class="card-title">ABM Configuration</h3>
                                 <div class="abm-preset-buttons">
-                                    <button class="btn btn-secondary btn-sm abm-preset-btn" data-preset="cell_sorting">Cell Sorting</button>
-                                    <button class="btn btn-secondary btn-sm abm-preset-btn" data-preset="tumor_growth">Tumor Growth</button>
-                                    <button class="btn btn-secondary btn-sm abm-preset-btn" data-preset="wound_healing">Wound Healing</button>
-                                    <button class="btn btn-secondary btn-sm abm-preset-btn" data-preset="pdac_tme">PDAC TME</button>
+                                    <button class="btn btn-secondary btn-sm abm-preset-btn"
+                                        data-preset="cell_sorting">Cell Sorting</button>
+                                    <button class="btn btn-secondary btn-sm abm-preset-btn"
+                                        data-preset="tumor_growth">Tumor Growth</button>
+                                    <button class="btn btn-secondary btn-sm abm-preset-btn"
+                                        data-preset="wound_healing">Wound Healing</button>
+                                    <button class="btn btn-secondary btn-sm abm-preset-btn" data-preset="pdac_tme">PDAC
+                                        TME</button>
                                 </div>
                                 <div id="abm-info-panel">
                                     <p class="placeholder-text">Select a preset to configure the Agent-Based Model.</p>
@@ -223,16 +241,19 @@
                         <div class="maple-grid">
                             <div class="card maple-extract-card">
                                 <h3 class="card-title">MAPLE Parameter Extraction</h3>
-                                <p class="card-description">Extract calibration parameters from literature using structured validation with hallucination detection.</p>
+                                <p class="card-description">Extract calibration parameters from literature using
+                                    structured validation with hallucination detection.</p>
                                 <div class="maple-form">
                                     <label for="maple-param-name">Parameter Name:</label>
                                     <input type="text" id="maple-param-name" placeholder="e.g., k_prolif_cancer">
                                     <label for="maple-param-units">Units:</label>
                                     <input type="text" id="maple-param-units" placeholder="e.g., 1/day">
                                     <label for="maple-param-desc">Description:</label>
-                                    <input type="text" id="maple-param-desc" placeholder="e.g., Cancer cell proliferation rate">
+                                    <input type="text" id="maple-param-desc"
+                                        placeholder="e.g., Cancer cell proliferation rate">
                                     <label for="maple-param-context">Mechanistic Context:</label>
-                                    <textarea id="maple-param-context" rows="3" placeholder="e.g., This parameter controls the rate of cancer cell division in the tumor growth module..."></textarea>
+                                    <textarea id="maple-param-context" rows="3"
+                                        placeholder="e.g., This parameter controls the rate of cancer cell division in the tumor growth module..."></textarea>
                                 </div>
                                 <button class="btn btn-primary" id="btn-maple-extract">Extract & Validate</button>
                                 <h4 class="subsection-title">BioModels SBML Import</h4>
@@ -260,8 +281,9 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.26.0/cytoscape.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
-    
+
     <!-- Custom Application Logic -->
     <script src="app.js"></script>
 </body>
+
 </html>

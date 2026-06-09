@@ -241,7 +241,15 @@ document.getElementById("btn-parse-text").addEventListener("click", async () => 
         
         if (!response.ok) throw new Error(await response.text());
         
-        state.blueprint = await response.json();
+        const parsedData = await response.json();
+        
+        if (parsedData.validation_errors && parsedData.validation_errors.length > 0) {
+            alert("⚠️ Model Compiler Validation Failed:\n\n" + parsedData.validation_errors.join("\n\n"));
+            updateStatus("Validation Failed", "red");
+            return;
+        }
+        
+        state.blueprint = parsedData;
         
         // Update Blueprint JSON representation
         document.getElementById("blueprint-json-viewer").textContent = JSON.stringify(state.blueprint, null, 2);

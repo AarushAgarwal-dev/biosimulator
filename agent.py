@@ -29,11 +29,19 @@ def parse_biological_text(text: str, api_key: Optional[str] = None) -> Dict[str,
             prompt = f"""
             You are a biological model compiler agent. Your task is to translate the following natural language description of a biological system into a structured JSON blueprint for simulation.
 
+            CRITICAL: Validation Layer
+            Before generating the blueprint, you MUST act as a biological and physical consistency checker. Evaluate the description for:
+            1. Biological Inconsistencies (e.g. membrane-bound proteins diffusing freely, impossible interactions, proteins crossing cell boundaries physically impossibly).
+            2. Mathematical/Physical Violations (e.g. irreversible auto-catalytic degradation leading to negative concentrations, violating mass conservation).
+            
+            If you detect impossible scenarios or contradictions, do NOT generate a simulation blueprint. Instead, flag the violations in a "validation_errors" list and omit the simulation parameters.
+
             Biological Description:
             "{text}"
 
-            The JSON blueprint must have the following schema:
+            The JSON response must have the following schema:
             {{
+                "validation_errors": ["List of physical or biological violations, if any. Leave empty if valid."],
                 "type": "ODE" or "PDE",
                 "nodes": [
                     {{
@@ -74,6 +82,7 @@ def parse_biological_text(text: str, api_key: Optional[str] = None) -> Dict[str,
 
             Return ONLY the raw JSON block, with no markdown styling, no backticks (e.g. ```json), and no extra comments.
             """
+            clean_text = ""
             response = client.models.generate_content(
                 model="gemini-3.5-flash",
                 contents=prompt
@@ -82,7 +91,10 @@ def parse_biological_text(text: str, api_key: Optional[str] = None) -> Dict[str,
             clean_text = response.text.replace("```json", "").replace("```", "").strip()
             return json.loads(clean_text)
         except Exception as e:
-            print(f"Gemini API parsing failed ({e}), falling back to rule-based parser.")
+            print(f"Gemini API parsing failed ({e}), raw output: {clean_text}")
+            return {
+                "validation_errors": [f"AI Model Error or Malformed JSON. {str(e)}\n\nRaw output: {clean_text}"]
+            }
             
     return rule_based_parse(text)
 
