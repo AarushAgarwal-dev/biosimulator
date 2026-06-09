@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BioSimulateAI: An AI-Powered Multi-Scale Biological Modeling and Simulation Platform</title>
+    <meta name="description" content="Research paper describing BioSimulateAI, a platform for automated biological model generation, simulation, and calibration using RAG, LLMs, and multi-scale modeling.">
+    <link rel="icon" type="image/png" href="favicon.png">
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,400;0,600;0,700;1,400;1,600&family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <!-- KaTeX for equations -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"
+        onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true},{left: '$', right: '$', display: false}]});"></script>
+
+    <style>
+        /* ============================================================
+           RESEARCH PAPER STYLESHEET
+           Inspired by Nature / Cell Systems journal formatting
+           ============================================================ */
+
+        :root {
+            --bg-primary: #0a0e1a;
+            --bg-secondary: #111827;
+            --bg-card: #1a1f36;
+            --bg-code: #0d1117;
+            --text-primary: #e8eaf0;
+            --text-secondary: #9ca3af;
+            --text-muted: #6b7280;
+            --accent-cyan: #00f2fe;
+            --accent-purple: #b180ff;
+            --accent-green: #00ff87;
+            --accent-red: #ff4d6a;
+            --accent-amber: #ffaa00;
+            --border-subtle: rgba(255, 255, 255, 0.06);
+            --border-active: rgba(0, 242, 254, 0.3);
+            --font-serif: 'Crimson Pro', Georgia, 'Times New Roman', serif;
+            --font-sans: 'Inter', -apple-system, sans-serif;
+            --font-mono: 'JetBrains Mono', 'Consolas', monospace;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: var(--font-serif);
+            font-size: 17px;
+            line-height: 1.75;
+            color: var(--text-primary);
+            background: var(--bg-primary);
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* Layout */
+        .paper-container {
+            max-width: 820px;
+            margin: 0 auto;
+            padding: 60px 32px 120px;
+        }
+
+        /* Header / Title Block */
+        .paper-header {
+            text-align: center;
+            margin-bottom: 50px;
+            padding-bottom: 40px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .paper-journal {
+            font-family: var(--font-sans);
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--accent-cyan);
+            margin-bottom: 20px;
+        }
+
+        .paper-title {
+            font-family: var(--font-serif);
+            font-size: 32px;
+            font-weight: 700;
+            line-height: 1.25;
+            color: #fff;
+            margin-bottom: 20px;
+            letter-spacing: -0.5px;
+        }
+
+        .paper-authors {
+            font-family: var(--font-sans);
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .paper-authors a {
+            color: var(--accent-cyan);
+            text-decoration: none;
+        }
+
+        .paper-affiliation {
+            font-family: var(--font-sans);
+            font-size: 12px;
+            color: var(--text-muted);
+            font-style: italic;
+            margin-bottom: 4px;
+        }
+
+        .paper-date {
+            font-family: var(--font-sans);
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 12px;
+        }
+
+        .paper-badges {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            margin-top: 16px;
+            flex-wrap: wrap;
+        }
+
+        .badge {
+            font-family: var(--font-sans);
+            font-size: 10px;
+            font-weight: 600;
+            padding: 3px 10px;
+            border-radius: 12px;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .badge-rag { background: rgba(0, 242, 254, 0.12); color: var(--accent-cyan); border: 1px solid rgba(0, 242, 254, 0.25); }
+        .badge-llm { background: rgba(177, 128, 255, 0.12); color: var(--accent-purple); border: 1px solid rgba(177, 128, 255, 0.25); }
+        .badge-sim { background: rgba(0, 255, 135, 0.12); color: var(--accent-green); border: 1px solid rgba(0, 255, 135, 0.25); }
+        .badge-abm { background: rgba(255, 170, 0, 0.12); color: var(--accent-amber); border: 1px solid rgba(255, 170, 0, 0.25); }
+
+        /* Abstract */
+        .abstract-box {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-left: 3px solid var(--accent-cyan);
+            border-radius: 6px;
+            padding: 24px 28px;
+            margin: 40px 0;
+        }
+
+        .abstract-box h2 {
+            font-family: var(--font-sans);
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--accent-cyan);
+            margin-bottom: 12px;
+        }
+
+        .abstract-box p {
+            font-size: 15px;
+            color: var(--text-secondary);
+            line-height: 1.7;
+        }
+
+        .keywords {
+            margin-top: 14px;
+            font-family: var(--font-sans);
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .keywords strong {
+            color: var(--text-secondary);
+        }
+
+        /* Sections */
+        h2.section-heading {
+            font-family: var(--font-sans);
+            font-size: 20px;
+            font-weight: 600;
+            color: #fff;
+            margin-top: 48px;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        h2.section-heading .section-number {
+            color: var(--accent-cyan);
+            margin-right: 8px;
+        }
+
+        h3.subsection-heading {
+            font-family: var(--font-sans);
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-top: 28px;
+            margin-bottom: 10px;
+        }
+
+        h3.subsection-heading .subsection-number {
+            color: var(--accent-purple);
+            margin-right: 6px;
+        }
+
+        p {
+            margin-bottom: 14px;
+            text-align: justify;
+            hyphens: auto;
+        }
+
+        /* Figures */
+        .figure {
+            margin: 32px 0;
+            text-align: center;
+        }
+
+        .figure-box {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            padding: 24px;
+            margin-bottom: 10px;
+        }
+
+        .figure-diagram {
+            font-family: var(--font-mono);
+            font-size: 13px;
+            line-height: 1.6;
+            color: var(--accent-cyan);
+            white-space: pre;
+            text-align: left;
+            overflow-x: auto;
+        }
+
+        .figure-caption {
+            font-family: var(--font-sans);
+            font-size: 13px;
+            color: var(--text-secondary);
+            text-align: left;
+            line-height: 1.55;
+        }
+
+        .figure-caption strong {
+            color: var(--text-primary);
+        }
+
+        /* Tables */
+        .paper-table-wrapper {
+            margin: 24px 0;
+            overflow-x: auto;
+        }
+
+        .paper-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: var(--font-sans);
+            font-size: 13px;
+        }
+
+        .paper-table th {
+            background: var(--bg-card);
+            color: var(--accent-cyan);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 11px;
+            padding: 10px 14px;
+            text-align: left;
+            border-bottom: 2px solid var(--border-active);
+        }
+
+        .paper-table td {
+            padding: 9px 14px;
+            border-bottom: 1px solid var(--border-subtle);
+            color: var(--text-secondary);
+            vertical-align: top;
+        }
+
+        .paper-table tr:hover td {
+            background: rgba(0, 242, 254, 0.03);
+        }
+
+        .table-caption {
+            font-family: var(--font-sans);
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .table-caption strong {
+            color: var(--text-primary);
+        }
+
+        /* Code blocks */
+        .code-block {
+            background: var(--bg-code);
+            border: 1px solid var(--border-subtle);
+            border-radius: 6px;
+            padding: 16px 20px;
+            margin: 16px 0;
+            overflow-x: auto;
+        }
+
+        .code-block pre {
+            font-family: var(--font-mono);
+            font-size: 13px;
+            line-height: 1.6;
+            color: var(--text-secondary);
+            margin: 0;
+        }
+
+        .code-label {
+            font-family: var(--font-sans);
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--accent-purple);
+            margin-bottom: 6px;
+            display: block;
+        }
+
+        /* Math / Equations */
+        .equation-block {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 6px;
+            padding: 18px 24px;
+            margin: 20px 0;
+            text-align: center;
+            overflow-x: auto;
+        }
+
+        .equation-label {
+            font-family: var(--font-sans);
+            font-size: 11px;
+            color: var(--text-muted);
+            float: right;
+            margin-top: 4px;
+        }
+
+        /* Lists */
+        ul, ol {
+            margin: 12px 0 16px 24px;
+        }
+
+        li {
+            margin-bottom: 6px;
+        }
+
+        /* Inline formatting */
+        code {
+            font-family: var(--font-mono);
+            font-size: 14px;
+            background: rgba(0, 242, 254, 0.08);
+            padding: 1px 6px;
+            border-radius: 3px;
+            color: var(--accent-cyan);
+        }
+
+        em {
+            font-style: italic;
+            color: var(--text-secondary);
+        }
+
+        strong {
+            font-weight: 600;
+        }
+
+        a {
+            color: var(--accent-cyan);
+            text-decoration: none;
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.2s;
+        }
+
+        a:hover {
+            border-bottom-color: var(--accent-cyan);
+        }
+
+        /* Highlight boxes */
+        .highlight-box {
+            background: linear-gradient(135deg, rgba(0, 242, 254, 0.05), rgba(177, 128, 255, 0.05));
+            border: 1px solid var(--border-subtle);
+            border-radius: 6px;
+            padding: 18px 22px;
+            margin: 20px 0;
+        }
+
+        .highlight-box h4 {
+            font-family: var(--font-sans);
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--accent-purple);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .highlight-box p, .highlight-box li {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        /* References */
+        .references {
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border-subtle);
+        }
+
+        .references h2 {
+            font-family: var(--font-sans);
+            font-size: 18px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 16px;
+        }
+
+        .ref-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            counter-reset: ref-counter;
+        }
+
+        .ref-list li {
+            counter-increment: ref-counter;
+            font-size: 13px;
+            color: var(--text-secondary);
+            padding-left: 32px;
+            position: relative;
+            margin-bottom: 10px;
+            line-height: 1.55;
+        }
+
+        .ref-list li::before {
+            content: "[" counter(ref-counter) "]";
+            position: absolute;
+            left: 0;
+            font-family: var(--font-sans);
+            font-weight: 600;
+            color: var(--accent-cyan);
+            font-size: 12px;
+        }
+
+        /* TOC */
+        .toc {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            padding: 20px 28px;
+            margin: 30px 0;
+        }
+
+        .toc h3 {
+            font-family: var(--font-sans);
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--accent-purple);
+            margin-bottom: 12px;
+        }
+
+        .toc ol {
+            margin: 0;
+            padding-left: 20px;
+        }
+
+        .toc li {
+            font-family: var(--font-sans);
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+
+        .toc a {
+            color: var(--text-secondary);
+        }
+
+        .toc a:hover {
+            color: var(--accent-cyan);
+        }
+
+        /* Separator */
+        hr {
+            border: none;
+            border-top: 1px solid var(--border-subtle);
+            margin: 40px 0;
+        }
+
+        /* Back to app link */
+        .back-link {
+            font-family: var(--font-sans);
+            font-size: 13px;
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: var(--bg-card);
+            padding: 8px 16px;
+            border-radius: 20px;
+            border: 1px solid var(--border-subtle);
+            z-index: 100;
+            transition: border-color 0.2s, background 0.2s;
+        }
+
+        .back-link:hover {
+            border-color: var(--accent-cyan);
+            background: rgba(0, 242, 254, 0.05);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .paper-container { padding: 32px 16px 80px; }
+            .paper-title { font-size: 24px; }
+            .figure-diagram { font-size: 11px; }
+            .back-link { position: static; margin-bottom: 20px; display: inline-block; }
+        }
+
+        /* Print */
+        @media print {
+            body { background: white; color: #222; }
+            .back-link { display: none; }
+            .paper-container { max-width: 100%; }
+            .paper-table th { background: #f0f0f0; color: #333; }
+            .abstract-box, .equation-block, .code-block, .figure-box, .highlight-box, .toc {
+                background: #fafafa; border-color: #ddd;
+            }
+        }
+    </style>
+</head>
+<body>
+    <a href="/" class="back-link">← Back to BioSimulateAI</a>
+
+    <div class="paper-container">
+        <!-- TITLE BLOCK -->
+        <header class="paper-header">
+            <div class="paper-journal">Technical Report — BioSimulateAI</div>
+            <h1 class="paper-title">BioSimulateAI: An AI-Powered Platform for Automated Multi-Scale Biological Model Generation, Simulation, and Calibration</h1>
+            <div class="paper-affiliation">Department of Computational Biology & Bioinformatics</div>
+            <div class="paper-date">June 2026</div>
+            <div class="paper-badges">
+                <span class="badge badge-rag">Retrieval-Augmented Generation</span>
+                <span class="badge badge-llm">LLM-Driven Compilation</span>
+                <span class="badge badge-sim">Multi-Scale Simulation</span>
+                <span class="badge badge-abm">Cellular Potts Model</span>
+            </div>
+        </header>
+
+        <!-- ABSTRACT -->
+        <div class="abstract-box">
+            <h2>Abstract</h2>
+            <p>
+                We present <strong>BioSimulateAI</strong>, an integrated web platform that automates the translation of natural-language descriptions of biological systems into executable multi-scale mathematical models. The system combines <em>Retrieval-Augmented Generation (RAG)</em> from curated biological knowledge bases (Reactome, STRING, OmniPath, SIGNOR, BioModels) with <em>Large Language Model (LLM)</em> compilation to produce structured simulation blueprints. These blueprints drive three coupled simulation engines: (i) a symbolic ODE compiler using Hill-function kinetics with SymPy-based code generation, (ii) a finite-difference PDE solver for reaction-diffusion systems, and (iii) a full Cellular Potts Model (CPM/GGH) for agent-based tissue simulations. A closed-loop AI feedback agent evaluates simulation outcomes against user-defined experimental targets and iteratively refines model parameters and topology. Additionally, we implement MAPLE-inspired structured parameter extraction from scientific literature with hallucination-detection validators. The platform is accessible through a browser-based interface requiring no installation, and operates with or without an LLM API key via rule-based fallback parsers.
+            </p>
+            <div class="keywords">
+                <strong>Keywords:</strong> biological modeling, multi-scale simulation, retrieval-augmented generation, large language models, cellular Potts model, ODE, PDE, systems biology, model calibration, hallucination detection
+            </div>
+        </div>
+
+        <!-- TABLE OF CONTENTS -->
+        <div class="toc">
+            <h3>Contents</h3>
+            <ol>
+                <li><a href="#sec-intro">Introduction</a></li>
+                <li><a href="#sec-architecture">System Architecture</a></li>
+                <li><a href="#sec-nlp">Natural Language Parsing & Blueprint Compilation</a></li>
+                <li><a href="#sec-rag">Retrieval-Augmented Generation from Biological Databases</a></li>
+                <li><a href="#sec-ode">ODE Compilation & Symbolic Mathematics</a></li>
+                <li><a href="#sec-pde">PDE Solver for Reaction-Diffusion Systems</a></li>
+                <li><a href="#sec-abm">Agent-Based Modeling: Cellular Potts Model</a></li>
+                <li><a href="#sec-multiscale">Multi-Scale Coupling Architecture</a></li>
+                <li><a href="#sec-feedback">Closed-Loop AI Feedback & Optimization</a></li>
+                <li><a href="#sec-maple">MAPLE: Literature-Grounded Parameter Calibration</a></li>
+                <li><a href="#sec-frontend">Frontend & Visualization</a></li>
+                <li><a href="#sec-discussion">Discussion</a></li>
+                <li><a href="#sec-conclusion">Conclusion</a></li>
+            </ol>
+        </div>
+
+        <!-- 1. INTRODUCTION -->
+        <h2 class="section-heading" id="sec-intro"><span class="section-number">1.</span> Introduction</h2>
+        <p>
+            Mathematical modeling of biological systems has become indispensable in modern systems biology and pharmacology. However, constructing quantitative models remains a highly manual, error-prone process that requires deep expertise in both biology and applied mathematics. Researchers must manually identify relevant interactions from literature, translate them into differential equations, estimate kinetic parameters from scattered experimental data, and iteratively validate the resulting model against experimental observations.
+        </p>
+        <p>
+            Recent advances in Large Language Models (LLMs) and Retrieval-Augmented Generation (RAG) present an opportunity to automate significant portions of this workflow. By grounding LLM outputs in curated biological knowledge bases, we can reduce hallucination risk while preserving the flexibility of natural-language model specification. Here we present <strong>BioSimulateAI</strong>, a platform that integrates these technologies into a cohesive pipeline spanning text parsing, model compilation, multi-scale simulation, and AI-driven calibration.
+        </p>
+        <p>
+            Our contributions are threefold: (1) a <strong>dual-mode NLP parser</strong> that translates biological descriptions into structured blueprints using either an LLM or a robust regex-based fallback; (2) a <strong>multi-scale simulation engine</strong> coupling ODE, PDE, and Cellular Potts Model solvers through a time-scale-separated coordinator; and (3) a <strong>MAPLE-inspired calibration pipeline</strong> with structured Pydantic schemas and hallucination-detection validators for literature-based parameter extraction.
+        </p>
+
+        <!-- 2. SYSTEM ARCHITECTURE -->
+        <h2 class="section-heading" id="sec-architecture"><span class="section-number">2.</span> System Architecture</h2>
+        <p>
+            BioSimulateAI follows a client-server architecture with a Python/FastAPI backend serving a single-page HTML/JavaScript frontend. The backend comprises seven modules organized by function:
+        </p>
+
+        <div class="figure">
+            <div class="figure-box">
+                <div class="figure-diagram">
+┌───────────────────────────────────────────────────────────────────┐
+│                     FRONTEND (HTML / JS / Canvas)                  │
+│   Cytoscape.js  │  Chart.js  │  KaTeX  │  Canvas 2D Renderers    │
+└────────────────────────────────┬──────────────────────────────────┘
+                                 │ HTTP REST (JSON)
+┌────────────────────────────────┴──────────────────────────────────┐
+│                      FastAPI SERVER  (main.py)                     │
+│                                                                    │
+│   ┌─────────────┐  ┌──────────────────┐  ┌───────────────────┐   │
+│   │  agent.py    │  │ simulation_engine│  │   abm_engine.py   │   │
+│   │  NLP Parser  │  │  ODE + PDE       │  │   Cellular Potts  │   │
+│   │  + LLM Agent │  │  Solvers         │  │   Model (GGH)     │   │
+│   └──────┬───────┘  └────────┬─────────┘  └────────┬──────────┘   │
+│          │                   │                      │              │
+│   ┌──────┴───────┐  ┌───────┴──────────┐  ┌───────┴──────────┐   │
+│   │ db_interface │  │  multiscale.py   │  │ maple_extractor  │   │
+│   │ RAG Database │  │  ODE↔ABM↔PDE    │  │ + maple_schemas  │   │
+│   │ Connectors   │  │  Coupling        │  │ Calibration      │   │
+│   └──────────────┘  └──────────────────┘  └──────────────────┘   │
+└───────────────────────────────────────────────────────────────────┘</div>
+            </div>
+            <div class="figure-caption">
+                <strong>Figure 1.</strong> High-level architecture of BioSimulateAI. The frontend communicates with the FastAPI backend through 17 REST endpoints. The backend is organized into functional modules: NLP parsing, simulation engines, database connectors, multi-scale coupling, and calibration.
+            </div>
+        </div>
+
+        <div class="paper-table-wrapper">
+            <div class="table-caption"><strong>Table 1.</strong> Backend module responsibilities and implementation details.</div>
+            <table class="paper-table">
+                <thead>
+                    <tr>
+                        <th>Module</th>
+                        <th>Responsibility</th>
+                        <th>Key Dependencies</th>
+                        <th>Lines of Code</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>agent.py</code></td>
+                        <td>Natural language parsing, LLM-driven compilation, closed-loop refinement, sensitivity-enhanced feedback</td>
+                        <td>google-genai, regex, NumPy</td>
+                        <td>~550</td>
+                    </tr>
+                    <tr>
+                        <td><code>simulation_engine.py</code></td>
+                        <td>Symbolic ODE compilation, SciPy IVP solving, finite-difference PDE solver, parameter fitting</td>
+                        <td>SymPy, SciPy, NumPy</td>
+                        <td>~365</td>
+                    </tr>
+                    <tr>
+                        <td><code>abm_engine.py</code></td>
+                        <td>Cellular Potts Model with Hamiltonian dynamics, cell behaviors, diffusible fields</td>
+                        <td>NumPy</td>
+                        <td>~848</td>
+                    </tr>
+                    <tr>
+                        <td><code>multiscale.py</code></td>
+                        <td>ODE↔ABM↔PDE coupling coordinator, sensitivity analysis</td>
+                        <td>NumPy, simulation_engine, abm_engine</td>
+                        <td>~360</td>
+                    </tr>
+                    <tr>
+                        <td><code>maple_extractor.py</code></td>
+                        <td>LLM parameter extraction with retry loops and validation</td>
+                        <td>google-genai, Pydantic</td>
+                        <td>~425</td>
+                    </tr>
+                    <tr>
+                        <td><code>maple_schemas.py</code></td>
+                        <td>Pydantic schemas, hallucination detection, DOI verification, unit validation</td>
+                        <td>Pydantic v2, requests</td>
+                        <td>~748</td>
+                    </tr>
+                    <tr>
+                        <td><code>db_interface.py</code></td>
+                        <td>Reactome, STRING, OmniPath, SIGNOR, BioModels API connectors with fallbacks</td>
+                        <td>requests</td>
+                        <td>~401</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- 3. NLP PARSING -->
+        <h2 class="section-heading" id="sec-nlp"><span class="section-number">3.</span> Natural Language Parsing & Blueprint Compilation</h2>
+        <p>
+            The system accepts free-text descriptions of biological processes and compiles them into structured JSON blueprints that drive downstream simulation. We implement a <strong>dual-mode parser</strong>: an LLM-based parser that leverages Gemini's understanding of biological systems, and a robust rule-based fallback parser for offline use.
+        </p>
+
+        <h3 class="subsection-heading"><span class="subsection-number">3.1</span> LLM-Based Parsing</h3>
+        <p>
+            When a Gemini API key is provided, the system constructs a detailed prompt containing the input text and the expected JSON schema. The LLM is instructed to produce a blueprint with typed nodes (biological species), directed edges (activation/inhibition interactions with Hill-function parameters), optional spatial configuration for PDEs, and simulation metadata. The response is stripped of any markdown formatting and parsed as JSON.
+        </p>
+
+        <h3 class="subsection-heading"><span class="subsection-number">3.2</span> Rule-Based Fallback Parser</h3>
+        <p>
+            For offline operation or when no API key is available, we implement a regex-based parser that extracts biological entities and interactions from natural language. The parser handles:
+        </p>
+        <ul>
+            <li><strong>Activation verbs:</strong> activates, stimulates, triggers, induces, phosphorylates, increases, promotes, binds to</li>
+            <li><strong>Inhibition verbs:</strong> inhibits, blocks, suppresses, dephosphorylates, decreases, represses</li>
+            <li><strong>Initial conditions:</strong> "<em>X starts at 10.0</em>" or "<em>10 units of X</em>"</li>
+            <li><strong>Compound sentences:</strong> "<em>EGF binds to EGFR and activates it</em>" → single EGF→EGFR edge</li>
+            <li><strong>PDE detection:</strong> keywords like "reaction-diffusion", "Turing", "spatial", "diffusion"</li>
+        </ul>
+        <p>
+            A critical design decision is the <strong>stopword filtering</strong> system: English pronouns (it, them), conjunctions (and, or), and generic biology terms (protein, receptor) are excluded from being captured as species names by regex groups. This prevents the parser from creating spurious nodes when processing compound sentences.
+        </p>
+
+        <h3 class="subsection-heading"><span class="subsection-number">3.3</span> Blueprint Schema</h3>
+        <p>
+            The output blueprint is a JSON object conforming to a defined schema:
+        </p>
+        <div class="code-block">
+            <span class="code-label">Blueprint Schema</span>
+            <pre>{
+  "type": "ODE" | "PDE",
+  "nodes": [
+    { "id": "EGFR", "name": "EGF Receptor", "initial_value": 1.0 }
+  ],
+  "edges": [
+    { "source": "EGF", "target": "EGFR", "type": "activation",
+      "parameters": { "k": 0.5, "K_d": 1.0, "n": 2.0 } }
+  ],
+  "spatial": { ... },           // PDE only
+  "simulation_config": { "t_max": 50.0 }
+}</pre>
+        </div>
+
+        <!-- 4. RAG -->
+        <h2 class="section-heading" id="sec-rag"><span class="section-number">4.</span> Retrieval-Augmented Generation from Biological Databases</h2>
+        <p>
+            To ground model generation in curated biological knowledge, we implement a RAG pipeline that retrieves real molecular interactions from five external databases and transforms them into natural-language descriptions that seed the parser.
+        </p>
+
+        <div class="paper-table-wrapper">
+            <div class="table-caption"><strong>Table 2.</strong> External databases integrated into the RAG pipeline.</div>
+            <table class="paper-table">
+                <thead>
+                    <tr>
+                        <th>Database</th>
+                        <th>Data Retrieved</th>
+                        <th>API Type</th>
+                        <th>Fallback</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Reactome</td>
+                        <td>Pathway structures, contained reactions, reaction participants</td>
+                        <td>REST Content Service</td>
+                        <td>Mock pathway catalog</td>
+                    </tr>
+                    <tr>
+                        <td>STRING DB</td>
+                        <td>Protein-protein interaction networks with confidence scores</td>
+                        <td>REST JSON API</td>
+                        <td>Sequential chain generation</td>
+                    </tr>
+                    <tr>
+                        <td>OmniPath</td>
+                        <td>Directed signaling interactions with literature references (PMIDs)</td>
+                        <td>REST API</td>
+                        <td>Curated interaction lookup table</td>
+                    </tr>
+                    <tr>
+                        <td>SIGNOR</td>
+                        <td>Curated signaling relationships with mechanisms and effects</td>
+                        <td>REST API</td>
+                        <td>Pathway-specific mock data</td>
+                    </tr>
+                    <tr>
+                        <td>BioModels</td>
+                        <td>Published SBML mathematical models with XML content</td>
+                        <td>EBI REST API</td>
+                        <td>Curated model catalog</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <p>
+            The RAG workflow proceeds in three stages: (1) <strong>Retrieval</strong> — the user queries a database through the sidebar interface, receiving structured results (pathway names, interaction edges, SBML model IDs); (2) <strong>Augmentation</strong> — retrieved data is transformed into natural-language biological descriptions and injected into the text input area; (3) <strong>Generation</strong> — the augmented text is parsed by the LLM or rule-based parser to produce a grounded blueprint. Each database connector includes a mock fallback that returns representative data when the external API is unreachable, ensuring the platform remains functional offline.
+        </p>
+
+        <div class="highlight-box">
+            <h4>Design Decision: Why RAG Instead of Direct API-to-Blueprint?</h4>
+            <p>
+                We deliberately route retrieved interactions through the natural-language parser rather than directly constructing blueprints from API responses. This design choice preserves the user's ability to <em>edit, augment, and correct</em> the retrieved knowledge before compilation. It also enables the LLM to synthesize information from multiple sources and resolve conflicts between databases that may report different interaction types for the same protein pair.
+            </p>
+        </div>
+
+        <!-- 5. ODE -->
+        <h2 class="section-heading" id="sec-ode"><span class="section-number">5.</span> ODE Compilation & Symbolic Mathematics</h2>
+        <p>
+            The ODE compiler translates a blueprint's interaction graph into a system of coupled ordinary differential equations using Hill-function kinetics. The compilation is fully symbolic, implemented with SymPy, enabling automatic LaTeX rendering, parameter sensitivity analysis, and efficient numerical evaluation.
+        </p>
+
+        <h3 class="subsection-heading"><span class="subsection-number">5.1</span> Hill-Function ODE Formulation</h3>
+        <p>
+            For each species $X_i$ in the blueprint, we construct a derivative expression:
+        </p>
+        <div class="equation-block">
+            $$\frac{d[X_i]}{dt} = s_i + \left(\sum_{j \in \text{Act}(i)} \frac{k_j \cdot [X_j]^{n_j}}{K_{d,j}^{n_j} + [X_j]^{n_j}}\right) \cdot \prod_{k \in \text{Inh}(i)} \frac{K_{d,k}^{n_k}}{K_{d,k}^{n_k} + [X_k]^{n_k}} - \delta_i \cdot [X_i]$$
+            <span class="equation-label">(1)</span>
+        </div>
+        <p>
+            where $s_i$ is a basal synthesis rate, $\delta_i$ is a degradation rate constant, $\text{Act}(i)$ is the set of activators of species $i$, $\text{Inh}(i)$ is the set of inhibitors, and $k_j$, $K_{d,j}$, $n_j$ are the Hill activation rate constant, half-saturation constant, and cooperativity coefficient, respectively. All parameters are represented as SymPy symbols, enabling automatic differentiation and LaTeX export.
+        </p>
+
+        <h3 class="subsection-heading"><span class="subsection-number">5.2</span> Code Generation & Numerical Integration</h3>
+        <p>
+            After symbolic construction, the system of equations is <code>lambdified</code> into a NumPy-compatible callable function using <code>sympy.lambdify</code>. This function is passed to SciPy's <code>solve_ivp</code> with the RK45 (Dormand-Prince) adaptive time-stepping method. Parameter values are passed as a vector, enabling efficient sweeps and optimization without recompilation.
+        </p>
+
+        <h3 class="subsection-heading"><span class="subsection-number">5.3</span> Parameter Fitting</h3>
+        <p>
+            For fitting model parameters to experimental time-course data, we implement a least-squares optimization using <code>scipy.optimize.least_squares</code> with box constraints (parameters ≥ 0). The objective function runs the full ODE simulation at target time points and computes residuals against the observed data.
+        </p>
+
+        <!-- 6. PDE -->
+        <h2 class="section-heading" id="sec-pde"><span class="section-number">6.</span> PDE Solver for Reaction-Diffusion Systems</h2>
+        <p>
+            For spatial models, we solve 2D reaction-diffusion PDEs on a regular grid using an explicit Euler finite-difference scheme:
+        </p>
+        <div class="equation-block">
+            $$\frac{\partial u}{\partial t} = D_u \nabla^2 u + f(u, v), \qquad \frac{\partial v}{\partial t} = D_v \nabla^2 v + g(u, v)$$
+            <span class="equation-label">(2)</span>
+        </div>
+        <p>
+            The discrete Laplacian is computed using a 5-point stencil with Neumann (zero-flux) boundary conditions implemented via edge padding. Reaction terms $f(u,v)$ and $g(u,v)$ are specified as algebraic expressions in the blueprint and compiled to NumPy-vectorized functions via SymPy's <code>lambdify</code>. Initial conditions support random noise perturbation around a base value (for Turing instability onset) or localized spots.
+        </p>
+        <p>
+            The default demonstration system implements a Gierer-Meinhardt activator-inhibitor model:
+        </p>
+        <div class="equation-block">
+            $$f(u,v) = \frac{u^2}{v} - u + 0.02, \qquad g(u,v) = u^2 - v$$
+            <span class="equation-label">(3)</span>
+        </div>
+        <p>
+            with $D_u = 0.05$ and $D_v = 1.0$, satisfying the classical condition $D_v \gg D_u$ for diffusion-driven instability.
+        </p>
+
+        <!-- 7. ABM -->
+        <h2 class="section-heading" id="sec-abm"><span class="section-number">7.</span> Agent-Based Modeling: Cellular Potts Model</h2>
+        <p>
+            The ABM engine implements a full Glazier-Graner-Hogeweg (GGH) Cellular Potts Model with Monte Carlo Metropolis dynamics. Each cell is represented as a connected domain of lattice sites sharing a unique cell ID. The system evolves by minimizing a Hamiltonian energy functional:
+        </p>
+        <div class="equation-block">
+            $$H = \underbrace{\sum_{\langle i,j \rangle} J(\tau_i, \tau_j)(1 - \delta_{\sigma_i, \sigma_j})}_{\text{adhesion}} + \underbrace{\sum_{\sigma} \lambda_V (v_\sigma - V_T)^2}_{\text{volume}} + \underbrace{\sum_{\sigma} \lambda_S (s_\sigma - S_T)^2}_{\text{surface}} - \underbrace{\sum_{\sigma} \lambda_{\text{chem}} \Delta c}_{\text{chemotaxis}}$$
+            <span class="equation-label">(4)</span>
+        </div>
+
+        <h3 class="subsection-heading"><span class="subsection-number">7.1</span> Monte Carlo Dynamics</h3>
+        <p>
+            At each Monte Carlo Step (MCS), $W \times H$ random pixel copy attempts are made. For each attempt, a boundary pixel is selected and proposed for reassignment to a neighboring cell. The energy change $\Delta H$ is computed, and the copy is accepted with Boltzmann probability:
+        </p>
+        <div class="equation-block">
+            $$P(\text{accept}) = \begin{cases} 1 & \text{if } \Delta H \leq 0 \\ \exp(-\Delta H / T) & \text{if } \Delta H > 0 \end{cases}$$
+            <span class="equation-label">(5)</span>
+        </div>
+
+        <h3 class="subsection-heading"><span class="subsection-number">7.2</span> Cell Behaviors</h3>
+        <p>
+            Beyond energy minimization, cells execute biological behaviors at each MCS: <strong>growth</strong> (target volume increase), <strong>mitosis</strong> (random-axis division when volume exceeds threshold), <strong>apoptosis</strong> (stochastic death), <strong>secretion/uptake</strong> (coupling to diffusible fields), and <strong>chemotaxis</strong> (biased migration up concentration gradients). The engine supports four preset configurations: cell sorting, tumor growth, wound healing, and PDAC tumor microenvironment.
+        </p>
+
+        <!-- 8. MULTISCALE -->
+        <h2 class="section-heading" id="sec-multiscale"><span class="section-number">8.</span> Multi-Scale Coupling Architecture</h2>
+        <p>
+            The <code>MultiscaleSimulator</code> orchestrates coupled ODE-ABM-PDE simulations using time-scale separation. The coupling loop operates as:
+        </p>
+        <div class="figure">
+            <div class="figure-box">
+                <div class="figure-diagram">
+For each Monte Carlo Step (MCS):
+  ┌─────────────────────────────────────────────────────────┐
+  │ 1. ODE Step (fast)                                      │
+  │    For each living cell:                                 │
+  │      • Sense local field concentrations → inject to ODE  │
+  │      • Integrate ODE for Δt = dt × ode_steps_per_mcs    │
+  │      • Update cell's intracellular state                 │
+  │                                                          │
+  │ 2. Coupling Rules                                        │
+  │    For each cell:                                        │
+  │      • If ODE_species > threshold → modify ABM behavior  │
+  │      • e.g., ERK > 0.5 → increase growth_rate by 0.1    │
+  │                                                          │
+  │ 3. ABM Step (slow)                                       │
+  │    • W×H pixel copy attempts with Metropolis acceptance  │
+  │    • Execute cell behaviors (growth, division, death)    │
+  │                                                          │
+  │ 4. PDE Step (medium)                                     │
+  │    • Cell secretion/uptake into diffusible fields        │
+  │    • Diffusion + decay step (finite differences)         │
+  └─────────────────────────────────────────────────────────┘</div>
+            </div>
+            <div class="figure-caption">
+                <strong>Figure 2.</strong> Multi-scale coupling loop. Each MCS integrates three time scales: fast intracellular signaling (ODE), medium-rate diffusion (PDE), and slow cell-level morphogenesis (ABM). Coupling rules translate between scales.
+            </div>
+        </div>
+
+        <!-- 9. FEEDBACK -->
+        <h2 class="section-heading" id="sec-feedback"><span class="section-number">9.</span> Closed-Loop AI Feedback & Optimization</h2>
+        <p>
+            BioSimulateAI implements a closed-loop feedback system where the AI agent evaluates simulation outputs against user-defined behavioral targets and iteratively refines the model. The system supports four target metric types:
+        </p>
+
+        <div class="paper-table-wrapper">
+            <div class="table-caption"><strong>Table 3.</strong> Supported target metric types for simulation evaluation.</div>
+            <table class="paper-table">
+                <thead>
+                    <tr>
+                        <th>Metric Type</th>
+                        <th>Description</th>
+                        <th>Parameters</th>
+                        <th>Example</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>peak_time</code></td>
+                        <td>Time at which a species reaches maximum concentration</td>
+                        <td>min, max (time range)</td>
+                        <td>ERK peaks between 5–15 min</td>
+                    </tr>
+                    <tr>
+                        <td><code>peak_value</code></td>
+                        <td>Maximum concentration reached by a species</td>
+                        <td>min, max (concentration range)</td>
+                        <td>ERK peak ≥ 0.6</td>
+                    </tr>
+                    <tr>
+                        <td><code>decay_ratio</code></td>
+                        <td>Ratio of final concentration to peak concentration</td>
+                        <td>max (upper bound fraction)</td>
+                        <td>EGFR decays to < 20% of peak</td>
+                    </tr>
+                    <tr>
+                        <td><code>steady_state</code></td>
+                        <td>Final concentration value</td>
+                        <td>value, tolerance</td>
+                        <td>U settles at 1.0 ± 10.0</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <p>
+            When targets are not met, the refinement agent employs two strategies: (1) <strong>LLM-based refinement</strong>, where the full blueprint and failure messages are sent to Gemini with instructions to adjust parameters or topology; and (2) <strong>rule-based refinement</strong>, which applies heuristic parameter adjustments (e.g., increasing activation rate constants when peak time is too late, strengthening negative feedback when decay is insufficient). A sensitivity-enhanced variant first runs local sensitivity analysis to identify the most influential parameters before applying adjustments.
+        </p>
+
+        <!-- 10. MAPLE -->
+        <h2 class="section-heading" id="sec-maple"><span class="section-number">10.</span> MAPLE: Literature-Grounded Parameter Calibration</h2>
+        <p>
+            Inspired by Eliason & Popel's Model-Aware Parameterization from Literature Evidence (MAPLE) framework, we implement a structured pipeline for extracting quantitative calibration parameters from scientific literature. The key innovation is the use of <strong>Pydantic schema validation with targeted hallucination detectors</strong> that catch fabricated values and citations.
+        </p>
+
+        <h3 class="subsection-heading"><span class="subsection-number">10.1</span> Structured Schemas</h3>
+        <p>
+            We define two primary schemas: <code>SubmodelTarget</code> (for isolated experiments constraining individual parameters) and <code>CalibrationTarget</code> (for clinical endpoints constraining the full model). Each schema includes:
+        </p>
+        <ul>
+            <li><strong>Input Layer:</strong> extracted data values with verbatim source snippets, DOI-tracked citations, uncertainty quantification (SD, SEM, CI), and sample sizes</li>
+            <li><strong>Forward Model Layer:</strong> specification of the mathematical relationship between inputs and the target parameter, chosen from 15 built-in model types</li>
+            <li><strong>Relevance Assessment:</strong> indication match, species translation uncertainty, evidence type</li>
+        </ul>
+
+        <h3 class="subsection-heading"><span class="subsection-number">10.2</span> Hallucination Detection Validators</h3>
+        <p>
+            Four validators run on every extraction:
+        </p>
+        <ol>
+            <li><strong>Value-in-Snippet:</strong> Checks that every reported numeric value appears verbatim in the quoted source text. Numbers are extracted from the snippet via regex and compared with floating-point tolerance. Flagged as <em>"HALLUCINATION DETECTED"</em> on failure.</li>
+            <li><strong>DOI Resolution:</strong> Resolves each cited DOI via the doi.org API to verify the paper actually exists. Flagged as <em>"FABRICATED CITATION"</em> on failure.</li>
+            <li><strong>Unit Validation:</strong> Validates that reported units match recognized biological unit patterns (rates, concentrations, cell densities, etc.).</li>
+            <li><strong>Forward Model Execution:</strong> Compiles and test-executes the specified forward model with dummy parameters to catch malformed code or non-finite outputs.</li>
+        </ol>
+
+        <h3 class="subsection-heading"><span class="subsection-number">10.3</span> LLM Extraction with Retry Loops</h3>
+        <p>
+            The extraction pipeline runs up to 3 attempts per parameter. On each attempt, the LLM response is parsed as JSON, validated against the Pydantic schema, and run through all four validators. If validation fails, the error messages are appended to the prompt for the next attempt, implementing a form of <em>in-context error correction</em>. If all retries are exhausted, the system falls back to a demonstration target with known-good provenance.
+        </p>
+
+        <!-- 11. FRONTEND -->
+        <h2 class="section-heading" id="sec-frontend"><span class="section-number">11.</span> Frontend & Visualization</h2>
+        <p>
+            The frontend is implemented as a single-page application using vanilla HTML, CSS, and JavaScript, with three external libraries for specialized rendering:
+        </p>
+        <ul>
+            <li><strong>Cytoscape.js</strong> renders the interaction graph as a force-directed network layout with color-coded activation (cyan) and inhibition (red) edges.</li>
+            <li><strong>Chart.js</strong> renders ODE time-series data as responsive line charts with hover tooltips.</li>
+            <li><strong>KaTeX</strong> renders the compiled LaTeX equations in the Equations tab.</li>
+            <li><strong>Canvas 2D</strong> renders PDE heatmaps with a plasma colormap palette and ABM lattice visualizations with per-cell-type coloring.</li>
+        </ul>
+        <p>
+            The interface is organized into six tabs: Blueprint (graph + JSON), Equations (LaTeX), Simulator (parameters + visualization), Feedback (optimization logs + target progress ring), Agent-Based (CPM lattice), and MAPLE (extraction form + validation results). A sidebar provides the text input, database RAG interface, and target constraint editor.
+        </p>
+
+        <!-- 12. DISCUSSION -->
+        <h2 class="section-heading" id="sec-discussion"><span class="section-number">12.</span> Discussion</h2>
+
+        <h3 class="subsection-heading"><span class="subsection-number">12.1</span> Limitations</h3>
+        <p>
+            Several limitations should be noted. The rule-based parser, while robust to common phrasing, cannot handle complex biological descriptions involving multi-step mechanisms, allosteric regulation, or post-translational modification cascades without explicit enumeration. The PDE solver uses an explicit Euler scheme, which imposes stability constraints on the time step relative to the grid spacing and diffusion coefficients. The ABM engine, while featuring a full Hamiltonian formulation, does not currently implement elastic or persistence-based motility models.
+        </p>
+
+        <h3 class="subsection-heading"><span class="subsection-number">12.2</span> Design Decisions</h3>
+        <p>
+            A key architectural choice was the <strong>blueprint-centric design</strong>: all simulation engines consume the same JSON blueprint schema, enabling seamless switching between ODE, PDE, and ABM representations. This also enables the closed-loop agent to modify the blueprint and re-simulate without engine-specific knowledge. Another critical decision was implementing <strong>comprehensive fallback systems</strong> at every level — mock database responses, rule-based parsing, and demo calibration targets — ensuring the platform remains fully functional without network access or an API key.
+        </p>
+
+        <h3 class="subsection-heading"><span class="subsection-number">12.3</span> Future Work</h3>
+        <p>
+            Future extensions include: integration of stochastic simulation algorithms (Gillespie SSA) for low-copy-number species; support for SBML Level 3 with qualitative models and multi-compartment reactions; GPU-accelerated PDE solvers for larger grid sizes; and a DPO (Direct Preference Optimization) training loop that uses the refinement history to fine-tune the LLM agent's parameter adjustment strategy.
+        </p>
+
+        <!-- 13. CONCLUSION -->
+        <h2 class="section-heading" id="sec-conclusion"><span class="section-number">13.</span> Conclusion</h2>
+        <p>
+            BioSimulateAI demonstrates that the combination of Retrieval-Augmented Generation, Large Language Models, and multi-scale simulation can substantially automate the biological modeling workflow. By grounding LLM outputs in curated databases and validating extracted parameters with hallucination-detection schemas, we achieve a system that is both flexible and reliable. The platform's blueprint-centric architecture enables seamless transitions between modeling scales (ODE, PDE, ABM) and supports iterative AI-driven refinement toward user-defined experimental targets. All components are accessible through a browser interface with no installation required, lowering the barrier to entry for quantitative biological modeling.
+        </p>
+
+        <hr>
+
+        <!-- REFERENCES -->
+        <div class="references" id="references">
+            <h2>References</h2>
+            <ol class="ref-list">
+                <li>Glazier, J. A. & Graner, F. Simulation of the differential adhesion driven rearrangement of biological cells. <em>Physical Review E</em> <strong>47</strong>, 2128–2154 (1993).</li>
+                <li>Kholodenko, B. N. Negative feedback and ultrasensitivity can bring about oscillations in the mitogen-activated protein kinase cascades. <em>European Journal of Biochemistry</em> <strong>267</strong>, 1583–1588 (2000).</li>
+                <li>Turing, A. M. The chemical basis of morphogenesis. <em>Philosophical Transactions of the Royal Society B</em> <strong>237</strong>, 37–72 (1952).</li>
+                <li>Gierer, A. & Meinhardt, H. A theory of biological pattern formation. <em>Kybernetik</em> <strong>12</strong>, 30–39 (1972).</li>
+                <li>Lewis, P. et al. Retrieval-augmented generation for knowledge-intensive NLP tasks. <em>Advances in Neural Information Processing Systems</em> <strong>33</strong>, 9459–9474 (2020).</li>
+                <li>Fabregat, A. et al. The Reactome Pathway Knowledgebase. <em>Nucleic Acids Research</em> <strong>46</strong>, D649–D655 (2018).</li>
+                <li>Szklarczyk, D. et al. The STRING database in 2023. <em>Nucleic Acids Research</em> <strong>51</strong>, D483–D489 (2023).</li>
+                <li>Türei, D. et al. Integrated intra- and intercellular signaling knowledge for multicellular omics analysis. <em>Molecular Systems Biology</em> <strong>17</strong>, e9923 (2021).</li>
+                <li>Licata, L. et al. SIGNOR 2.0: a manually curated resource of causal relationships. <em>Nucleic Acids Research</em> <strong>48</strong>, D504–D510 (2020).</li>
+                <li>Malik-Sheriff, R. S. et al. BioModels—15 years of sharing computational models. <em>Nucleic Acids Research</em> <strong>48</strong>, D407–D415 (2020).</li>
+                <li>Eliason, J. R. & Popel, A. S. MAPLE: Model-Aware Parameterization from Literature Evidence for QSP calibration. <em>CPT: Pharmacometrics & Systems Pharmacology</em> (2026).</li>
+                <li>Swat, M. H. et al. Multi-scale modeling of tissues using CompuCell3D. <em>Methods in Cell Biology</em> <strong>110</strong>, 325–366 (2012).</li>
+                <li>Meurer, A. et al. SymPy: symbolic computing in Python. <em>PeerJ Computer Science</em> <strong>3</strong>, e103 (2017).</li>
+                <li>Virtanen, P. et al. SciPy 1.0: fundamental algorithms for scientific computing. <em>Nature Methods</em> <strong>17</strong>, 261–272 (2020).</li>
+            </ol>
+        </div>
+    </div>
+</body>
+</html>

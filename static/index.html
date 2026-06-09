@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BioSimulateAI — AI-Powered Biological Modeling & Simulation</title>
+    <meta name="description" content="AI-powered platform for automated biological model generation, simulation, and calibration. Supports ODE, PDE, and Agent-Based Models.">
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/png" href="favicon.png">
+    
+    <!-- Google Fonts: Outfit & JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- KaTeX CSS for LaTeX rendering -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+    
+    <!-- Custom Style Sheet -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- HEADER -->
+        <header class="app-header">
+            <div class="header-logo">
+                <span class="logo-icon">🧬</span>
+                <div class="logo-text">
+                    <h1>BioSimulateAI</h1>
+                    <p>Living Model Compilation & Simulation Copilot</p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <div class="api-key-container">
+                    <label for="api-key-input">Gemini API Key:</label>
+                    <input type="password" id="api-key-input" placeholder="Paste your API key here..." autocomplete="current-password">
+                </div>
+                <div class="status-badge" id="system-status">
+                    <span class="status-dot green"></span>
+                    <span>Ready</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- MAIN LAYOUT -->
+        <div class="app-body">
+            <!-- SIDEBAR: INPUT & DATABASES -->
+            <aside class="app-sidebar">
+                <!-- BIO DESCRIPTION SECTION -->
+                <div class="sidebar-section card">
+                    <h2 class="section-title">1. Biological Knowledge</h2>
+                    <div class="preset-buttons">
+                        <button class="btn btn-secondary btn-sm" id="load-egfr-btn">EGF/EGFR (ODE)</button>
+                        <button class="btn btn-secondary btn-sm" id="load-turing-btn">Turing (PDE)</button>
+                    </div>
+                    <textarea id="bio-input" placeholder="Type a biological description here... e.g. EGF binds and activates EGFR. EGFR activates RAS. RAS activates RAF. RAF activates MEK. MEK activates ERK. ERK inhibits EGFR."></textarea>
+                    <button class="btn btn-primary" id="btn-parse-text">Compile Blueprint</button>
+                </div>
+
+                <!-- DB SEARCH SECTION -->
+                <div class="sidebar-section card">
+                    <h2 class="section-title">2. Database RAG</h2>
+                    <div class="db-tabs">
+                        <button class="db-tab-btn active" data-db="reactome">Reactome</button>
+                        <button class="db-tab-btn" data-db="string">STRING</button>
+                        <button class="db-tab-btn" data-db="omnipath">OmniPath</button>
+                        <button class="db-tab-btn" data-db="signor">SIGNOR</button>
+                        <button class="db-tab-btn" data-db="biomodels">BioModels</button>
+                    </div>
+                    <div class="search-box">
+                        <input type="text" id="db-query-input" placeholder="Search pathways (e.g. EGFR)...">
+                        <button class="btn btn-secondary" id="btn-db-search">Search</button>
+                    </div>
+                    <div class="search-results" id="db-results-container">
+                        <p class="placeholder-text">Query databases to fetch biological components.</p>
+                    </div>
+                </div>
+
+                <!-- EXPERIMENTAL TARGETS -->
+                <div class="sidebar-section card">
+                    <h2 class="section-title">3. Target Behaviors</h2>
+                    <div id="targets-list"></div>
+                    <button class="btn btn-secondary btn-sm" id="add-target-btn">+ Add Target</button>
+                </div>
+            </aside>
+
+            <!-- CONTENT AREA (TABS) -->
+            <main class="app-main">
+                <nav class="main-tabs">
+                    <button class="tab-btn active" data-tab="blueprint">Blueprint</button>
+                    <button class="tab-btn" data-tab="equations">Equations</button>
+                    <button class="tab-btn" data-tab="simulator">Simulator</button>
+                    <button class="tab-btn" data-tab="feedback">Feedback</button>
+                    <button class="tab-btn" data-tab="abm">Agent-Based</button>
+                    <button class="tab-btn" data-tab="maple">MAPLE</button>
+                </nav>
+
+                <div class="tab-content-container">
+                    <!-- TAB 1: BLUEPRINT -->
+                    <div class="tab-content active" id="tab-blueprint">
+                        <div class="blueprint-grid">
+                            <div class="network-card card">
+                                <h3 class="card-title">Interaction Graph</h3>
+                                <div id="cy-container"></div>
+                            </div>
+                            <div class="json-card card">
+                                <h3 class="card-title">Blueprint JSON</h3>
+                                <pre id="blueprint-json-viewer">Compile a biological description to view the blueprint.</pre>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- TAB 2: EQUATIONS -->
+                    <div class="tab-content" id="tab-equations">
+                        <div class="card equation-card">
+                            <h3 class="card-title">Compiled Equations</h3>
+                            <div id="equations-container" class="math-display">
+                                <p class="placeholder-text">Mathematical equations will render here after blueprint compilation.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- TAB 3: SIMULATOR -->
+                    <div class="tab-content" id="tab-simulator">
+                        <div class="simulator-grid">
+                            <div class="card param-card">
+                                <h3 class="card-title">Simulation Parameters</h3>
+                                <div class="sim-config-group">
+                                    <label for="sim-tmax">t_max:</label>
+                                    <input type="number" id="sim-tmax" value="60" min="1" max="1000">
+                                </div>
+                                <div id="parameters-sliders-container">
+                                    <p class="placeholder-text">Parameters will load here.</p>
+                                </div>
+                                <button class="btn btn-primary" id="btn-run-simulation">Run Simulation</button>
+                            </div>
+                            <div class="card graph-card">
+                                <div class="graph-header">
+                                    <h3 class="card-title" id="vis-title">Simulation Output</h3>
+                                    <div class="vis-controls" id="pde-controls" style="display: none;">
+                                        <button class="btn btn-secondary btn-sm" id="btn-pde-play">Play</button>
+                                        <button class="btn btn-secondary btn-sm" id="btn-pde-pause">Pause</button>
+                                        <label for="pde-frame-slider">Frame:</label>
+                                        <input type="range" id="pde-frame-slider" min="0" max="0" value="0">
+                                        <select id="pde-species-select"></select>
+                                    </div>
+                                </div>
+                                <div class="visualizer-container">
+                                    <canvas id="ode-chart" style="width: 100%; height: 100%;"></canvas>
+                                    <canvas id="pde-canvas" style="display: none;"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- TAB 4: CLOSED-LOOP FEEDBACK -->
+                    <div class="tab-content" id="tab-feedback">
+                        <div class="feedback-grid">
+                            <div class="card log-card">
+                                <h3 class="card-title">Optimization History & Analysis</h3>
+                                <div class="feedback-actions">
+                                    <button class="btn btn-primary" id="btn-run-feedback-loop">Start Closed-Loop Optimization</button>
+                                </div>
+                                <div id="feedback-log" class="console-log">
+                                    <p class="log-placeholder">Start the loop to see logs of target evaluations and parameter adjustments...</p>
+                                </div>
+                            </div>
+                            <div class="card status-card">
+                                <h3 class="card-title">Target Constraints</h3>
+                                <div class="score-widget">
+                                    <svg class="progress-ring" width="120" height="120">
+                                        <circle class="progress-ring__circle-bg" stroke="rgba(255,255,255,0.05)" stroke-width="8" fill="transparent" r="50" cx="60" cy="60"/>
+                                        <circle class="progress-ring__circle" stroke="#00f2fe" stroke-width="8" fill="transparent" r="50" cx="60" cy="60" id="target-progress-bar"/>
+                                    </svg>
+                                    <div class="score-text">
+                                        <span id="target-score-percentage">0%</span>
+                                        <p>Targets Met</p>
+                                    </div>
+                                </div>
+                                <div id="target-eval-list"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- TAB 5: AGENT-BASED MODEL -->
+                    <div class="tab-content" id="tab-abm">
+                        <div class="abm-grid">
+                            <div class="card abm-config-card">
+                                <h3 class="card-title">ABM Configuration</h3>
+                                <div class="abm-preset-buttons">
+                                    <button class="btn btn-secondary btn-sm abm-preset-btn" data-preset="cell_sorting">Cell Sorting</button>
+                                    <button class="btn btn-secondary btn-sm abm-preset-btn" data-preset="tumor_growth">Tumor Growth</button>
+                                    <button class="btn btn-secondary btn-sm abm-preset-btn" data-preset="wound_healing">Wound Healing</button>
+                                    <button class="btn btn-secondary btn-sm abm-preset-btn" data-preset="pdac_tme">PDAC TME</button>
+                                </div>
+                                <div id="abm-info-panel">
+                                    <p class="placeholder-text">Select a preset to configure the Agent-Based Model.</p>
+                                </div>
+                                <div id="abm-params-panel"></div>
+                                <button class="btn btn-primary" id="btn-run-abm">Run ABM Simulation</button>
+                                <div class="abm-playback" id="abm-playback" style="display:none;">
+                                    <button class="btn btn-secondary btn-sm" id="btn-abm-play">▶ Play</button>
+                                    <button class="btn btn-secondary btn-sm" id="btn-abm-pause">⏸ Pause</button>
+                                    <label for="abm-frame-slider">Frame:</label>
+                                    <input type="range" id="abm-frame-slider" min="0" max="0" value="0">
+                                    <span id="abm-frame-label">0 / 0</span>
+                                </div>
+                                <div id="abm-cell-counts" class="cell-count-panel"></div>
+                            </div>
+                            <div class="card abm-viz-card">
+                                <h3 class="card-title" id="abm-viz-title">Cellular Potts Model Lattice</h3>
+                                <div class="abm-canvas-container">
+                                    <canvas id="abm-canvas"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- TAB 6: MAPLE CALIBRATION -->
+                    <div class="tab-content" id="tab-maple">
+                        <div class="maple-grid">
+                            <div class="card maple-extract-card">
+                                <h3 class="card-title">MAPLE Parameter Extraction</h3>
+                                <p class="card-description">Extract calibration parameters from literature using structured validation with hallucination detection.</p>
+                                <div class="maple-form">
+                                    <label for="maple-param-name">Parameter Name:</label>
+                                    <input type="text" id="maple-param-name" placeholder="e.g., k_prolif_cancer">
+                                    <label for="maple-param-units">Units:</label>
+                                    <input type="text" id="maple-param-units" placeholder="e.g., 1/day">
+                                    <label for="maple-param-desc">Description:</label>
+                                    <input type="text" id="maple-param-desc" placeholder="e.g., Cancer cell proliferation rate">
+                                    <label for="maple-param-context">Mechanistic Context:</label>
+                                    <textarea id="maple-param-context" rows="3" placeholder="e.g., This parameter controls the rate of cancer cell division in the tumor growth module..."></textarea>
+                                </div>
+                                <button class="btn btn-primary" id="btn-maple-extract">Extract & Validate</button>
+                                <h4 class="subsection-title">BioModels SBML Import</h4>
+                                <div class="maple-import">
+                                    <input type="text" id="biomodel-id-input" placeholder="e.g., BIOMD0000000006">
+                                    <button class="btn btn-secondary" id="btn-import-sbml">Import SBML</button>
+                                </div>
+                            </div>
+                            <div class="card maple-results-card">
+                                <h3 class="card-title">Extraction Results & Validation</h3>
+                                <div id="maple-results-container">
+                                    <p class="placeholder-text">Results will appear after extraction.</p>
+                                </div>
+                                <div id="maple-validation-container"></div>
+                                <div id="maple-logs-container" class="console-log"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- CDNs -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.26.0/cytoscape.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+    
+    <!-- Custom Application Logic -->
+    <script src="app.js"></script>
+</body>
+</html>
