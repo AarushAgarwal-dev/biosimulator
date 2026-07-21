@@ -1,0 +1,16 @@
+# OPTIONAL extras for running BioSimulateAI with LOCAL in-process models (CPU GGUF via
+# llama.cpp) and/or AWS SSO/login credential auth. These are NOT required for a cloud
+# deploy that talks to AWS Bedrock with a Bedrock API key (AWS_BEARER_TOKEN_BEDROCK).
+#
+# Install alongside the base requirements:
+#     pip install -r requirements.txt -r requirements-local.txt
+
+# In-process GGUF inference on CPU. Builds llama.cpp from source and can need several
+# GB of RAM to compile. For a prebuilt CPU wheel (no compile) use:
+#     pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+llama-cpp-python>=0.3.0
+huggingface_hub>=0.23.0
+
+# awscrt is only needed for AWS SSO/login (botocore[crt]) credential providers.
+# The Bedrock API-key (bearer token) path does NOT need it.
+awscrt>=0.19
