@@ -1,7 +1,8 @@
 """
 MAPLE Parameter Extraction Pipeline.
 
-Uses LLM (Gemini 3.5 Flash) to extract calibration parameters from scientific 
+Uses an open-source LLM (a local GGUF model via llama-cpp-python, or a remote
+OpenAI-compatible endpoint) to extract calibration parameters from scientific
 literature with structured validation and retry loops.
 """
 
@@ -10,10 +11,7 @@ import re
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 
-try:
-    from google import genai
-except ImportError:
-    genai = None
+import llm_provider
 
 from maple_schemas import (
     SubmodelTarget, CalibrationTarget, ForwardModelType,
@@ -41,7 +39,7 @@ Extract data from the provided text or your knowledge to fill a SubmodelTarget s
 
 CRITICAL RULES:
 1. Every numeric value you report MUST appear verbatim in a quoted text snippet
-2. Do NOT fabricate or hallucinate values — use only what is explicitly stated
+2. Do NOT fabricate or hallucinate values; use only what is explicitly stated
 3. Include DOI, title, authors, and year for every source
 4. Specify the forward model type that best fits the data
 5. Assess source relevance honestly (indication match, species translation)
@@ -50,12 +48,12 @@ CRITICAL RULES:
 ## Schema Format
 Return a JSON object with this structure:
 {{
-    "target_id": "string — unique ID like 'k_prolif_cancer'",
-    "description": "string — what this target measures",
+    "target_id": "string, a unique ID like 'k_prolif_cancer'",
+    "description": "string, what this target measures",
     "target_parameter": "{param_name}",
     "inputs": [
         {{
-            "name": "string — descriptive name",
+            "name": "string, a descriptive name",
             "value": float,
             "units": "string",
             "uncertainty_value": float or null,
@@ -132,11 +130,14 @@ Return ONLY raw JSON, no markdown code blocks or extra text.
 class MAPLEExtractor:
     """LLM-powered parameter extraction with structured validation."""
 
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key
+    def __init__(self, llm: Optional[Dict[str, Any]] = None):
+        self.llm = llm
         self.client = None
-        if api_key and genai:
-            self.client = genai.Client(api_key=api_key)
+        if llm_provider.wants_llm(llm):
+            try:
+                self.client = llm_provider.build_client(llm)
+            except Exception:
+                self.client = None
         self.extraction_history: List[Dict[str, Any]] = []
 
     def extract_submodel_target(
@@ -174,14 +175,7 @@ class MAPLEExtractor:
             logs.append(f"Extraction attempt {attempt + 1}/{max_retries}")
 
             try:
-                response = self.client.models.generate_content(
-                    model="gemini-3.5-flash",
-                    contents=prompt
-                )
-                raw_text = response.text.replace("```json", "").replace("```", "").strip()
-
-                # Parse JSON
-                data = json.loads(raw_text)
+                data = llm_provider.generate_json(self.client, prompt)
                 target = SubmodelTarget(**data)
                 logs.append(f"Schema validation passed on attempt {attempt + 1}.")
 
@@ -201,11 +195,11 @@ class MAPLEExtractor:
                     prompt += "\n".join(f"- {e}" for e in errors)
                     prompt += "\n\nPlease fix these issues and try again."
 
-            except json.JSONDecodeError as e:
+            except (json.JSONDecodeError, llm_provider.LLMError) as e:
                 logs.append(f"JSON parse error: {e}")
                 prompt += f"\n\nYour previous response was not valid JSON. Error: {e}"
             except Exception as e:
-                logs.append(f"Pydantic validation error: {e}")
+                logs.append(f"Schema validation error: {e}")
                 prompt += f"\n\nSchema validation error: {e}\nPlease fix and retry."
 
         if target is None:
@@ -253,12 +247,7 @@ class MAPLEExtractor:
         for attempt in range(max_retries):
             logs.append(f"Extraction attempt {attempt + 1}/{max_retries}")
             try:
-                response = self.client.models.generate_content(
-                    model="gemini-3.1-pro-preview",
-                    contents=prompt
-                )
-                raw_text = response.text.replace("```json", "").replace("```", "").strip()
-                data = json.loads(raw_text)
+                data = llm_provider.generate_json(self.client, prompt)
                 target = CalibrationTarget(**data)
                 report = validate_calibration_target(target)
 

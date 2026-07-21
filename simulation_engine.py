@@ -1,8 +1,18 @@
+import re
 import numpy as np
 import scipy.integrate
 import scipy.optimize
 import sympy as sp
-from typing import Dict, List, Any, Tuple, Callable
+from typing import Dict, List, Any, Tuple, Callable, Optional
+
+try:
+    from scipy.stats import qmc  # Quasi-Monte-Carlo (Latin Hypercube / Sobol)
+    _HAS_QMC = True
+except Exception:  # pragma: no cover - very old scipy fallback
+    _HAS_QMC = False
+
+# np.trapz was renamed to np.trapezoid in NumPy 2.0
+_trapz = getattr(np, "trapezoid", getattr(np, "trapz", None))
 
 # ==========================================
 # 1. ODE COMPILER & SOLVER
@@ -29,9 +39,16 @@ class ODEModel:
         # Keep track of generated parameters
         self.params_dict = {}  # name -> default_value
         self.param_symbols = {}  # name -> sympy_symbol
-        
-        # Compile expressions
-        self.deriv_exprs = self._compile_system()
+
+        # Compile expressions. Two modes:
+        #  - custom kinetics: explicit rate laws (blueprint["odes"] + optional
+        #    shared fluxes) — reproduces exact mechanistic models (mass-conserving
+        #    shared fluxes, arbitrary kinetics), like a published paper's ODE system.
+        #  - generic: Hill activation/inhibition compiled from edges (default).
+        if blueprint.get("odes"):
+            self.deriv_exprs = self._compile_custom_system()
+        else:
+            self.deriv_exprs = self._compile_system()
         
         # Compile to a callable function
         # Signature: f(t, y_values, param_values)
@@ -67,13 +84,13 @@ class ODEModel:
             node = self.node_map[nid]
             initial_val = node.get("initial_value", 0.0)
             
-            # Basal synthesis rate
+            # Basal synthesis rate (carried on the node so tuned values persist)
             synthesis_param = f"syn_{nid}"
-            synthesis = self._get_param_symbol(synthesis_param, 0.0) # default 0 basal
-            
-            # Basal degradation rate
+            synthesis = self._get_param_symbol(synthesis_param, float(node.get("synthesis", 0.0)))
+
+            # Basal degradation rate (carried on the node so tuned values persist)
             deg_param = f"deg_{nid}"
-            deg = self._get_param_symbol(deg_param, 0.1) # default degradation 0.1
+            deg = self._get_param_symbol(deg_param, float(node.get("degradation", 0.1)))
             degradation = deg * self.vars[nid]
             
             # Group activators and inhibitors
@@ -131,29 +148,130 @@ class ODEModel:
                 total_production = activation_expr * inhibition_expr
                 
             derivs[nid] = total_production - degradation
-            
+
         return derivs
 
-    def get_equations_latex(self) -> Dict[str, str]:
+    def _compile_custom_system(self) -> Dict[str, sp.Expr]:
+        """
+        Build the ODE system from explicit rate laws (custom kinetics):
+
+            blueprint["parameters"] : {name: value}          - rate constants etc.
+            blueprint["fluxes"]     : {name: "expression"}    - named shared fluxes
+            blueprint["odes"]       : {species_id: "d/dt expr"}
+
+        Fluxes are substituted into the ODEs, so a single flux (e.g. v2, v3) can
+        appear in several equations with opposite signs — exactly the mass-conserving
+        structure the generic Hill compiler cannot express. All names are parsed with
+        SymPy; species and declared parameters resolve to symbols.
+        """
+        params = self.blueprint.get("parameters", {}) or {}
+        for pname, pval in params.items():
+            try:
+                self._get_param_symbol(str(pname), float(pval))
+            except (TypeError, ValueError):
+                self._get_param_symbol(str(pname), 0.0)
+
+        # Symbol table: species + declared parameters (+ flux names as placeholders).
+        local = {nid: self.vars[nid] for nid in self.node_ids}
+        local.update({p: sym for p, sym in self.param_symbols.items()})
+
+        fluxes = self.blueprint.get("fluxes", {}) or {}
+        flux_syms = {f: sp.Symbol(f) for f in fluxes}
+        local_with_flux = {**local, **flux_syms}
+
+        flux_exprs = {f: sp.sympify(str(expr), locals=local_with_flux)
+                      for f, expr in fluxes.items()}
+        # Resolve any flux-referencing-flux by repeated substitution.
+        for _ in range(len(flux_exprs) + 1):
+            flux_exprs = {f: e.subs({flux_syms[g]: flux_exprs[g]
+                                     for g in flux_exprs if g != f})
+                          for f, e in flux_exprs.items()}
+
+        odes = self.blueprint.get("odes", {}) or {}
+        derivs: Dict[str, sp.Expr] = {}
+        for nid in self.node_ids:
+            expr = sp.sympify(str(odes.get(nid, "0")), locals=local_with_flux)
+            expr = expr.subs({flux_syms[f]: flux_exprs[f] for f in flux_exprs})
+            derivs[nid] = expr
+
+        # Register any parameter used in the equations but not pre-declared, so the
+        # lambdified function has a value for it (default from parameters, else 1.0).
+        for nid in self.node_ids:
+            for sym in derivs[nid].free_symbols:
+                name = str(sym)
+                if sym in self.vars.values() or name in self.param_symbols or sym == self.t:
+                    continue
+                self._get_param_symbol(name, float(params.get(name, 1.0)))
+
+        return derivs
+
+    def _verbose_param_latex(self, pname: str) -> str:
+        """Map a compact parameter name (e.g. act_EGFR_to_CBL_k) to a spelled-out LaTeX label."""
+        # Underscores are literal in a parameter name but are subscript operators in
+        # LaTeX/KaTeX, and are illegal inside \text{}/\mathrm{}. Escape them so
+        # custom-kinetics names like t_on, t_off, K_d render instead of erroring.
+        def esc(s):
+            return str(s).replace("\\", r"\backslash ").replace("_", r"\_")
+        if pname.startswith("deg_"):
+            return f"\\text{{degradation}}_{{\\mathrm{{{esc(pname[4:])}}}}}"
+        if pname.startswith("syn_"):
+            return f"\\text{{synthesis}}_{{\\mathrm{{{esc(pname[4:])}}}}}"
+        m = re.match(r"^(act|inh)_(.+)_to_(.+)_(k|Kd|n)$", pname)
+        if m:
+            kind, src, tgt, suffix = m.groups()
+            label = {"k": "activation strength",
+                     "Kd": "half-saturation",
+                     "n": "Hill coefficient"}[suffix]
+            edge = f"\\mathrm{{{esc(src)}}}\\!\\to\\!\\mathrm{{{esc(tgt)}}}"
+            sup = "" if kind == "act" else "^{\\text{inh}}"
+            return f"\\text{{{label}}}{sup}_{{{edge}}}"
+        return f"\\text{{{esc(pname)}}}"
+
+    def get_equations_latex(self, verbose: bool = False) -> Dict[str, str]:
         """
         Returns LaTeX representation of the equations for front-end rendering.
+
+        verbose=True spells out every parameter (degradation, synthesis,
+        activation strength, half-saturation, Hill coefficient) and uses each
+        species' full descriptive name instead of its short id.
         """
+        symbol_names = {}
+        if verbose:
+            for nid in self.node_ids:
+                full = self.node_map[nid].get("name") or nid
+                symbol_names[self.vars[nid]] = f"[\\text{{{full}}}]"
+            for pname, sym in self.param_symbols.items():
+                symbol_names[sym] = self._verbose_param_latex(pname)
+
         latex_eqs = {}
         for nid in self.node_ids:
             expr = self.deriv_exprs[nid]
-            latex_expr = sp.latex(expr)
-            latex_eqs[nid] = f"\\frac{{d[{nid}]}}{{dt}} = {latex_expr}"
+            if verbose:
+                latex_expr = sp.latex(expr, symbol_names=symbol_names)
+                lhs = self.node_map[nid].get("name") or nid
+                latex_eqs[nid] = f"\\frac{{d[\\text{{{lhs}}}]}}{{dt}} = {latex_expr}"
+            else:
+                latex_expr = sp.latex(expr)
+                latex_eqs[nid] = f"\\frac{{d[{nid}]}}{{dt}} = {latex_expr}"
         return latex_eqs
 
-    def simulate(self, t_max: float, num_points: int = 100, custom_params: Dict[str, float] = None) -> Dict[str, Any]:
+    def simulate(self, t_max: float, num_points: int = 100, custom_params: Dict[str, float] = None,
+                 custom_initial: Dict[str, float] = None) -> Dict[str, Any]:
         """
-        Runs the simulation using scipy.integrate.solve_ivp
+        Runs the simulation using scipy.integrate.solve_ivp.
+        custom_initial overrides specific species' initial values (used by the
+        multi-condition tests, e.g. bistability from a low vs. high start).
         """
         t_span = (0.0, t_max)
         t_eval = np.linspace(0.0, t_max, num_points)
-        
-        # Initial values vector
-        y0 = [self.node_map[nid].get("initial_value", 0.0) for nid in self.node_ids]
+
+        # Initial values vector (with optional per-species overrides)
+        y0 = []
+        for nid in self.node_ids:
+            if custom_initial and nid in custom_initial:
+                y0.append(custom_initial[nid])
+            else:
+                y0.append(self.node_map[nid].get("initial_value", 0.0))
         
         # Parameter values vector
         param_vals = []
@@ -361,4 +479,192 @@ def solve_pde(
         "x_size": Nx,
         "y_size": Ny,
         "species": history
+    }
+
+
+# ==========================================
+# 3. PARAMETER-SPACE EXPLORATION (SAMPLING)
+# ==========================================
+
+def _unit_samples(method: str, dims: int, n_samples: int, seed: int = 0) -> np.ndarray:
+    """
+    Draw `n_samples` points in the unit hypercube [0, 1]^dims using the
+    requested sampling strategy. Falls back gracefully if scipy.stats.qmc
+    is unavailable.
+    """
+    method = (method or "lhs").lower()
+    rng = np.random.default_rng(seed)
+
+    if _HAS_QMC and method in ("lhs", "latin", "latin_hypercube"):
+        sampler = qmc.LatinHypercube(d=dims, seed=seed)
+        return sampler.random(n=n_samples)
+    if _HAS_QMC and method in ("sobol", "quasi"):
+        sampler = qmc.Sobol(d=dims, scramble=True, seed=seed)
+        # Sobol is happiest with power-of-two counts, but random() handles any n.
+        return sampler.random(n=n_samples)
+    if method in ("grid", "factorial"):
+        # Even factorial grid; number of points per axis chosen so the total
+        # is close to (but not more than) n_samples.
+        per_axis = max(2, int(round(n_samples ** (1.0 / max(1, dims)))))
+        axes = [np.linspace(0.0, 1.0, per_axis) for _ in range(dims)]
+        mesh = np.meshgrid(*axes, indexing="ij")
+        grid = np.stack([m.ravel() for m in mesh], axis=-1)
+        if grid.shape[0] > n_samples:
+            idx = np.linspace(0, grid.shape[0] - 1, n_samples).astype(int)
+            grid = grid[idx]
+        return grid
+
+    # Plain Monte-Carlo fallback (also the manual-LHS path when qmc missing)
+    if not _HAS_QMC and method in ("lhs", "latin", "latin_hypercube"):
+        # Manual Latin Hypercube: one stratified draw per axis, shuffled.
+        cut = np.linspace(0.0, 1.0, n_samples + 1)
+        u = rng.uniform(size=(n_samples, dims))
+        pts = cut[:n_samples, None] + u * (1.0 / n_samples)
+        for j in range(dims):
+            rng.shuffle(pts[:, j])
+        return pts
+    return rng.uniform(size=(n_samples, dims))
+
+
+def _scale_samples(unit: np.ndarray, lows: np.ndarray, highs: np.ndarray) -> np.ndarray:
+    """Scale unit-cube samples into [low, high] per dimension (safe for low==high)."""
+    span = highs - lows
+    # Degenerate axes (min == max) stay pinned at the shared value.
+    span = np.where(span <= 0, 0.0, span)
+    return lows + unit * span
+
+
+def _trajectory_metrics(t: np.ndarray, y: np.ndarray) -> Dict[str, float]:
+    """Summary statistics for a single species time-course."""
+    if y.size == 0:
+        return {"peak_value": 0.0, "peak_time": 0.0, "final_value": 0.0, "auc": 0.0}
+    peak_idx = int(np.argmax(y))
+    return {
+        "peak_value": float(y[peak_idx]),
+        "peak_time": float(t[peak_idx]),
+        "final_value": float(y[-1]),
+        "auc": float(_trapz(y, t)) if _trapz else float(np.sum(y)),
+    }
+
+
+def explore_parameter_space(
+    blueprint: Dict[str, Any],
+    param_bounds: Dict[str, Dict[str, float]],
+    n_samples: int = 64,
+    method: str = "lhs",
+    target_species: Optional[str] = None,
+    t_max: Optional[float] = None,
+    seed: int = 0,
+    max_trajectories: int = 60,
+) -> Dict[str, Any]:
+    """
+    Explore a model's parameter space by sampling the requested parameters
+    (Latin Hypercube by default) inside user-supplied [min, max] bounds,
+    running a simulation for each sample, and summarising the outcome for a
+    chosen target species.
+
+    param_bounds: {param_name: {"min": float, "max": float}}
+    Returns per-sample parameter sets, output metrics, and (for the first
+    `max_trajectories` samples) the target-species trajectories for an
+    ensemble plot.
+    """
+    model = ODEModel(blueprint)
+
+    # Only sample parameters the model actually knows about.
+    names = sorted(p for p in param_bounds.keys() if p in model.params_dict)
+    if not names:
+        raise ValueError("None of the requested parameters exist in this model.")
+
+    n_samples = int(max(1, min(n_samples, 2000)))
+    lows = np.array([float(param_bounds[p].get("min", 0.0)) for p in names], dtype=float)
+    highs = np.array([float(param_bounds[p].get("max", 1.0)) for p in names], dtype=float)
+    # Repair inverted bounds instead of failing.
+    swap = highs < lows
+    lows[swap], highs[swap] = highs[swap], lows[swap]
+
+    unit = _unit_samples(method, len(names), n_samples, seed)
+    scaled = _scale_samples(unit, lows, highs)
+    actual_n = scaled.shape[0]
+
+    # Simulation horizon + evaluation grid (shared across samples).
+    if t_max is None:
+        t_max = float(blueprint.get("simulation_config", {}).get("t_max", 50.0))
+    num_points = 100
+    t_eval = np.linspace(0.0, t_max, num_points)
+    t_span = (0.0, t_max)
+    y0 = [model.node_map[nid].get("initial_value", 0.0) for nid in model.node_ids]
+
+    # Choose the species we report metrics/trajectories for.
+    if target_species not in model.node_ids:
+        target_species = model.node_ids[-1] if model.node_ids else None
+    tgt_idx = model.node_ids.index(target_species) if target_species else 0
+
+    samples_out: List[Dict[str, Any]] = []
+    failures = 0
+
+    for i in range(actual_n):
+        # Build the parameter vector: sampled values override defaults.
+        overrides = {names[j]: float(scaled[i, j]) for j in range(len(names))}
+        param_vals = [
+            overrides.get(name, model.params_dict[name]) for name in model.param_names
+        ]
+
+        def rhs(t, y, _pv=param_vals):
+            return model._f_lambdified(t, y, _pv)
+
+        try:
+            sol = scipy.integrate.solve_ivp(
+                rhs, t_span, y0, t_eval=t_eval, method="RK45"
+            )
+            ok = bool(sol.success)
+        except Exception:
+            ok = False
+
+        if not ok:
+            failures += 1
+            samples_out.append({
+                "id": i,
+                "params": overrides,
+                "ok": False,
+                "metrics": {"peak_value": 0.0, "peak_time": 0.0, "final_value": 0.0, "auc": 0.0},
+            })
+            continue
+
+        y_tgt = np.asarray(sol.y[tgt_idx], dtype=float)
+        metrics = _trajectory_metrics(sol.t, y_tgt)
+        entry = {
+            "id": i,
+            "params": overrides,
+            "ok": True,
+            "metrics": metrics,
+        }
+        if i < max_trajectories:
+            # Round to keep the JSON payload light.
+            entry["trajectory"] = [round(float(v), 4) for v in y_tgt]
+        samples_out.append(entry)
+
+    # Aggregate ranges for quick summary display.
+    ok_samples = [s for s in samples_out if s["ok"]]
+    def _range(key):
+        vals = [s["metrics"][key] for s in ok_samples]
+        return {"min": float(min(vals)), "max": float(max(vals)),
+                "mean": float(np.mean(vals))} if vals else {"min": 0, "max": 0, "mean": 0}
+
+    return {
+        "method": method,
+        "param_names": names,
+        "bounds": {names[j]: {"min": float(lows[j]), "max": float(highs[j])}
+                   for j in range(len(names))},
+        "target_species": target_species,
+        "t": [round(float(v), 4) for v in t_eval],
+        "n_requested": n_samples,
+        "n_evaluated": actual_n,
+        "n_failed": failures,
+        "samples": samples_out,
+        "metric_ranges": {
+            "peak_value": _range("peak_value"),
+            "peak_time": _range("peak_time"),
+            "final_value": _range("final_value"),
+            "auc": _range("auc"),
+        },
     }

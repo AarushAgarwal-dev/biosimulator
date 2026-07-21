@@ -1,5 +1,11 @@
+import re
 import requests
 from typing import List, Dict, Any, Optional
+
+
+def _strip_html(text: str) -> str:
+    """Remove HTML highlighting tags Reactome embeds in search result names."""
+    return re.sub(r"<[^>]+>", "", text or "").strip()
 
 
 # Base URLs
@@ -15,23 +21,26 @@ def search_reactome_pathways(query: str, species: str = "Homo sapiens") -> List[
         "query": query,
         "species": species,
         "types": "Pathway",
-        "rows": 10
+        "rows": 25
     }
     try:
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
         results = []
-        if "results" in data:
-            for item in data["results"]:
-                # Ensure it has a stable identifier
+        # Reactome groups results by type: data["results"] -> [{entries: [...]}]
+        for group in data.get("results", []):
+            for item in group.get("entries", []):
+                species_list = item.get("species", [])
+                if isinstance(species_list, str):
+                    species_list = [species_list]
                 results.append({
-                    "id": item.get("stId", ""),
-                    "name": item.get("name", ""),
-                    "species": item.get("species", [""])[0],
-                    "details": item.get("compartment", [""])[0] if item.get("compartment") else ""
+                    "id": item.get("stId", "") or item.get("id", ""),
+                    "name": _strip_html(item.get("name", "")),
+                    "species": species_list[0] if species_list else "",
+                    "details": item.get("exactType", item.get("type", ""))
                 })
-        return results
+        return results if results else get_mock_pathway_search(query)
     except Exception as e:
         print(f"Error searching Reactome pathways: {e}")
         # Fallback to local mockup for demo pathways if API fails or offline
@@ -47,14 +56,22 @@ def get_reactome_pathway_reactions(pathway_id: str) -> List[Dict[str, Any]]:
         response.raise_for_status()
         data = response.json()
         reactions = []
+        # containedEvents mixes full event dicts with bare dbId integers for
+        # events Reactome did not inline; skip the ints and keep reaction-like events.
+        reaction_classes = {
+            "Reaction", "ReactionLikeEvent", "BlackBoxEvent",
+            "Polymerisation", "Depolymerisation", "FailedReaction"
+        }
         for item in data:
-            if item.get("schemaClass") == "Reaction":
+            if not isinstance(item, dict):
+                continue
+            if item.get("schemaClass") in reaction_classes:
                 reactions.append({
                     "id": item.get("stId", ""),
                     "name": item.get("displayName", ""),
                     "type": "reaction"
                 })
-        return reactions
+        return reactions if reactions else get_mock_reactions(pathway_id)
     except Exception as e:
         print(f"Error fetching Reactome reactions: {e}")
         return get_mock_reactions(pathway_id)
@@ -106,6 +123,10 @@ def get_string_network(proteins: List[str], species: int = 9606) -> List[Dict[st
     params = {
         "identifiers": "\r".join(proteins),
         "species": species,
+        # Pull in extra interactors so the network isn't limited to just the
+        # typed proteins, and lower the confidence floor to capture more edges.
+        "add_nodes": 15,
+        "required_score": 200,
         "caller_identity": "biosimulator_copilot"
     }
     try:
@@ -140,6 +161,9 @@ def search_omnipath_interactions(proteins: List[str], organism: int = 9606) -> L
     params = {
         "partners": ",".join(proteins),
         "organisms": organism,
+        # genesymbols=1 adds source_genesymbol/target_genesymbol; without it
+        # OmniPath returns only UniProt IDs and the gene-symbol fields are empty.
+        "genesymbols": "1",
         "fields": "sources,references,type",
         "format": "json"
     }
@@ -149,7 +173,7 @@ def search_omnipath_interactions(proteins: List[str], organism: int = 9606) -> L
         data = response.json()
         
         interactions = []
-        for item in data[:50]:  # Limit results
+        for item in data[:300]:  # Capture a broad set of interactions
             interactions.append({
                 "source": item.get("source_genesymbol", ""),
                 "target": item.get("target_genesymbol", ""),
@@ -187,7 +211,7 @@ def search_signor_pathway(query: str) -> List[Dict[str, Any]]:
         if response.status_code == 200:
             data = response.json()
             results = []
-            for item in data[:30]:
+            for item in data[:300]:
                 results.append({
                     "source": item.get("entitya", ""),
                     "target": item.get("entityb", ""),

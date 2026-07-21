@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Abstract - BioSimulateAI</title>
+    <style>
+        @page {
+            size: letter;
+            margin: 1in;
+        }
+        body {
+            font-family: "Times New Roman", Times, serif;
+            font-size: 12pt;
+            line-height: 1.6;
+            color: #000;
+            background: #fff;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .citation {
+            margin-bottom: 40px;
+            text-align: left;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #ccc;
+        }
+        .title {
+            text-align: center;
+            font-size: 16pt;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        .authors {
+            text-align: center;
+            font-size: 14pt;
+            margin-bottom: 30px;
+        }
+        .heading {
+            font-size: 14pt;
+            font-weight: bold;
+            margin-bottom: 15px;
+            text-align: center;
+            text-transform: uppercase;
+        }
+        .abstract-body {
+            text-align: justify;
+            text-indent: 0.5in;
+        }
+        .keywords {
+            margin-top: 30px;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Full Citation at Top -->
+    <div class="citation">
+        <p><strong>Poster Citation:</strong><br>
+        Agarwal, A., & Li, L. (2026, June 25). <em>BioSimulateAI: An AI-powered platform for automated multi-scale biological model generation, simulation, and calibration</em>. Advancing Morphogenetic Biosciences and Bioengineering Symposium, Notre Dame, IN.</p>
+    </div>
+
+    <!-- Title and Authors -->
+    <div class="title">
+        BioSimulateAI: An AI-Powered Platform for Automated Multi-Scale Biological Model Generation, Simulation, and Calibration
+    </div>
+    <div class="authors">
+        Aarush Agarwal, L. Li<br>
+        <em>Purdue University</em>
+    </div>
+
+    <!-- Abstract Content -->
+    <div class="heading">Abstract</div>
+    
+    <div class="abstract-body">
+        <p>Mathematical modeling of biological systems has traditionally been a highly manual and error-prone process requiring deep expertise in both biology and applied mathematics. We present <strong>BioSimulateAI</strong>, an integrated web platform that automates the translation of natural-language descriptions of biological systems into executable, multi-scale mathematical models. The system combines Retrieval-Augmented Generation (RAG) from curated biological knowledge bases (Reactome, STRING, OmniPath, SIGNOR, BioModels) with Large Language Model (LLM) compilation to produce structured simulation blueprints. These blueprints drive three tightly coupled simulation engines: (i) a symbolic Ordinary Differential Equation (ODE) compiler using Hill-function kinetics with SymPy-based code generation, (ii) a finite-difference Partial Differential Equation (PDE) solver for reaction-diffusion systems, and (iii) a Cellular Potts Model (CPM) for spatial, agent-based tissue simulations.</p>
+        
+        <p>To ensure physical and biological accuracy, the platform features a strict validation layer that preemptively rejects impossible conditions, such as mass conservation violations. A closed-loop AI feedback agent evaluates simulation outcomes against user-defined experimental targets, iteratively refining model parameters and topology. Additionally, we implement structured parameter extraction from scientific literature using hallucination-detection validators to ground the models in published empirical data. BioSimulateAI is accessible through a browser-based interface requiring no local installation and operates with or without an LLM API key via robust rule-based fallback parsers, accelerating the iterative cycle of hypothesis testing and model validation in systems biology.</p>
+    </div>
+
+    <div class="keywords">
+        <strong>Keywords:</strong> systems biology, multi-scale simulation, retrieval-augmented generation (RAG), large language models, cellular Potts model, mathematical modeling, automated calibration
+    </div>
+
+</body>
+</html>

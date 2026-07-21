@@ -14,17 +14,17 @@ BioSimulateAI is a web-based platform that translates natural-language descripti
 
 ### Natural Language → Mathematical Model
 - Type biological descriptions like *"EGF binds to EGFR and activates it. EGFR activates RAS."*
-- **Rule-based parser** (regex) or **Gemini LLM** compiles text into structured JSON blueprints
+- **Rule-based parser** (regex) or an **open-source LLM** (bundled local model, or a remote endpoint) compiles text into structured JSON blueprints
 - Automatic generation of Hill-function ODE systems with symbolic math (SymPy)
 - LaTeX equation rendering via KaTeX
 
 ### Multi-Scale Simulation Engine
 | Scale | Method | Implementation |
 |-------|--------|----------------|
-| **Intracellular** | ODE (Ordinary Differential Equations) | `simulation_engine.py` — SymPy symbolic compilation → SciPy `solve_ivp` |
-| **Tissue-level** | PDE (Reaction-Diffusion) | `simulation_engine.py` — Finite difference Euler scheme with Neumann BCs |
-| **Cell-level** | ABM (Cellular Potts Model) | `abm_engine.py` — Full GGH/CPM with Hamiltonian energy minimization |
-| **Coupled** | ODE ↔ ABM ↔ PDE | `multiscale.py` — Time-scale separated coupling coordinator |
+| **Intracellular** | ODE (Ordinary Differential Equations) | `simulation_engine.py`: SymPy symbolic compilation → SciPy `solve_ivp` |
+| **Tissue-level** | PDE (Reaction-Diffusion) | `simulation_engine.py`: Finite difference Euler scheme with Neumann BCs |
+| **Cell-level** | ABM (Cellular Potts Model) | `abm_engine.py`: Full GGH/CPM with Hamiltonian energy minimization |
+| **Coupled** | ODE ↔ ABM ↔ PDE | `multiscale.py`: Time-scale separated coupling coordinator |
 
 ### Database RAG (Retrieval-Augmented Generation)
 Real-time retrieval from 5 biological knowledge databases to ground model generation:
@@ -42,7 +42,7 @@ Retrieved interactions are transformed into natural-language descriptions and fe
 ### Closed-Loop AI Feedback
 - Define **target behaviors** (peak time, peak value, decay ratio, steady state)
 - Automated **target evaluation** against simulation results
-- **AI-driven refinement**: Gemini adjusts parameters/topology to meet targets
+- **AI-driven refinement**: the LLM adjusts parameters/topology to meet targets
 - **Rule-based fallback**: heuristic parameter tuning when LLM unavailable
 - **Sensitivity-guided refinement**: local sensitivity analysis ranks parameter importance
 
@@ -67,7 +67,7 @@ Inspired by Eliason & Popel (2026), implements structured parameter extraction f
 ┌──────────────────────┴───────────────────────────────┐
 │                    Backend (Python)                    │
 │                                                       │
-│  agent.py          - NLP parser + Gemini LLM agent    │
+│  agent.py          - NLP parser + open-source LLM agent│
 │  simulation_engine - ODE compiler + PDE solver        │
 │  abm_engine        - Cellular Potts Model (CPM/GGH)   │
 │  multiscale        - ODE↔ABM↔PDE coupling coordinator │
@@ -95,14 +95,30 @@ git clone <repository-url>
 cd biosimulator
 
 # Install dependencies
-pip install fastapi uvicorn numpy scipy sympy pydantic requests
+pip install -r requirements.txt
 
-# (Optional) For Gemini LLM features
-pip install google-genai
+# (Optional) For local open-source LLM inference (CPU), a prebuilt wheel:
+pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+pip install huggingface_hub
 
 # Run the server
 python main.py
 ```
+
+### AI language model (open source)
+
+The natural-language features are powered by an **open-source LLM**, with no proprietary
+API key required. Open the **🧠 AI** control in the header and choose:
+
+- **Rule-based (offline)**: deterministic regex parser, no model, instant.
+- **Local model**: a GGUF model (Llama 3.2 3B, Gemma 2 2B, Qwen2.5 3B, Llama 3.1 8B,
+  or gpt-oss 20B) downloaded once from HuggingFace and run **in-process on your CPU**
+  via `llama-cpp-python`. Pick a model and click **Download**.
+- **Remote endpoint**: any OpenAI-compatible server (a model you host on AWS with
+  vLLM/TGI, Ollama, LM Studio, Groq, …). Best when accuracy/speed matter most.
+
+> Local CPU inference of a 3B model takes tens of seconds to ~2 minutes per call on a
+> laptop; use a smaller model or a remote endpoint for faster responses.
 
 The app will be available at **http://127.0.0.1:8000**
 
@@ -160,7 +176,8 @@ Extract quantitative parameters from literature:
 ```
 biosimulator/
 ├── main.py                 # FastAPI server & API routes
-├── agent.py                # NLP text parser & Gemini LLM agent
+├── llm_provider.py         # Open-source LLM backend (local GGUF + remote endpoints)
+├── agent.py                # NLP text parser & open-source LLM agent
 ├── simulation_engine.py    # ODE compiler (SymPy) & PDE solver
 ├── abm_engine.py           # Cellular Potts Model engine
 ├── abm_blueprints.py       # Preset ABM configurations
@@ -188,6 +205,10 @@ biosimulator/
 | `/api/blueprint` | POST | Parse natural language → blueprint JSON |
 | `/api/compile` | POST | Compile blueprint → LaTeX equations + parameters |
 | `/api/simulate` | POST | Run ODE or PDE simulation |
+| `/api/sample` | POST | Latin-Hypercube parameter-space exploration |
+| `/api/llm/models` | GET | List open-source LLMs + download status |
+| `/api/llm/download` | POST | Download a model's weights from HuggingFace |
+| `/api/llm/status` | GET | Poll a model's download status |
 | `/api/optimize` | POST | Fit parameters to target data |
 | `/api/refine` | POST | Closed-loop AI model refinement |
 | `/api/sensitivity` | POST | Local sensitivity analysis |
@@ -211,7 +232,7 @@ biosimulator/
 - **Symbolic Math**: SymPy (ODE compilation, LaTeX generation)
 - **Numerical Solvers**: SciPy (solve_ivp, least_squares), NumPy
 - **Validation**: Pydantic v2 (schema validation, hallucination detection)
-- **LLM**: Google Gemini API (text parsing, parameter extraction, model refinement)
+- **LLM**: Open-source models via llama-cpp-python (local GGUF: Llama / Gemma / Qwen / gpt-oss) or any OpenAI-compatible remote endpoint (text parsing, parameter extraction, model refinement)
 - **Frontend**: Vanilla HTML/CSS/JS
 - **Visualization**: Cytoscape.js (network graphs), Chart.js (time series), KaTeX (LaTeX), Canvas API (heatmaps, CPM lattices)
 

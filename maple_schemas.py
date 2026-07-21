@@ -100,9 +100,9 @@ class SourceReference(BaseModel):
         """Basic DOI format check."""
         v = v.strip()
         if not v.startswith("10."):
-            raise ValueError(f"DOI must start with '10.' — got: {v}")
+            raise ValueError(f"DOI must start with '10.', got: {v}")
         if "/" not in v:
-            raise ValueError(f"DOI must contain '/' separator — got: {v}")
+            raise ValueError(f"DOI must contain '/' separator, got: {v}")
         return v
 
 

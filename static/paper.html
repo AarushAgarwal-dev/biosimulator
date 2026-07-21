@@ -549,7 +549,7 @@
     <div class="paper-container">
         <!-- TITLE BLOCK -->
         <header class="paper-header">
-            <div class="paper-journal">Technical Report — BioSimulateAI</div>
+            <div class="paper-journal">Technical Report: BioSimulateAI</div>
             <h1 class="paper-title">BioSimulateAI: An AI-Powered Platform for Automated Multi-Scale Biological Model Generation, Simulation, and Calibration</h1>
             <div class="paper-date">June 2026</div>
             <div class="paper-badges">
@@ -653,7 +653,7 @@
                     <tr>
                         <td><code>agent.py</code></td>
                         <td>Natural language parsing, LLM-driven compilation, closed-loop refinement, sensitivity-enhanced feedback</td>
-                        <td>google-genai, regex, NumPy</td>
+                        <td>llama-cpp-python, regex, NumPy</td>
                         <td>~550</td>
                     </tr>
                     <tr>
@@ -677,7 +677,7 @@
                     <tr>
                         <td><code>maple_extractor.py</code></td>
                         <td>LLM parameter extraction with retry loops and validation</td>
-                        <td>google-genai, Pydantic</td>
+                        <td>llama-cpp-python, Pydantic</td>
                         <td>~425</td>
                     </tr>
                     <tr>
@@ -699,12 +699,12 @@
         <!-- 3. NLP PARSING -->
         <h2 class="section-heading" id="sec-nlp"><span class="section-number">3.</span> Natural Language Parsing & Blueprint Compilation</h2>
         <p>
-            The system accepts free-text descriptions of biological processes and compiles them into structured JSON blueprints that drive downstream simulation. We implement a <strong>dual-mode parser</strong>: an LLM-based parser that leverages Gemini's understanding of biological systems, and a robust rule-based fallback parser for offline use.
+            The system accepts free-text descriptions of biological processes and compiles them into structured JSON blueprints that drive downstream simulation. We implement a <strong>dual-mode parser</strong>: an LLM-based parser that leverages an open-source language model's understanding of biological systems, and a robust rule-based fallback parser for offline use.
         </p>
 
         <h3 class="subsection-heading"><span class="subsection-number">3.1</span> LLM-Based Parsing</h3>
         <p>
-            When a Gemini API key is provided, the system constructs a detailed prompt containing the input text and the expected JSON schema. The LLM is instructed to produce a blueprint with typed nodes (biological species), directed edges (activation/inhibition interactions with Hill-function parameters), optional spatial configuration for PDEs, and simulation metadata. The response is stripped of any markdown formatting and parsed as JSON.
+            When an LLM engine is enabled (a local open-source model, or a remote OpenAI-compatible endpoint), the system constructs a detailed prompt containing the input text and the expected JSON schema. The LLM is instructed to produce a blueprint with typed nodes (biological species), directed edges (activation/inhibition interactions with Hill-function parameters), optional spatial configuration for PDEs, and simulation metadata. The response is stripped of any markdown formatting and parsed as JSON.
         </p>
 
         <h3 class="subsection-heading"><span class="subsection-number">3.2</span> Rule-Based Fallback Parser</h3>
@@ -795,7 +795,7 @@
         </div>
 
         <p>
-            The RAG workflow proceeds in three stages: (1) <strong>Retrieval</strong> — the user queries a database through the sidebar interface, receiving structured results (pathway names, interaction edges, SBML model IDs); (2) <strong>Augmentation</strong> — retrieved data is transformed into natural-language biological descriptions and injected into the text input area; (3) <strong>Generation</strong> — the augmented text is parsed by the LLM or rule-based parser to produce a grounded blueprint. Each database connector includes a mock fallback that returns representative data when the external API is unreachable, ensuring the platform remains functional offline.
+            The RAG workflow proceeds in three stages: (1) <strong>Retrieval</strong>: the user queries a database through the sidebar interface, receiving structured results (pathway names, interaction edges, SBML model IDs); (2) <strong>Augmentation</strong>: retrieved data is transformed into natural-language biological descriptions and injected into the text input area; (3) <strong>Generation</strong>: the augmented text is parsed by the LLM or rule-based parser to produce a grounded blueprint. Each database connector includes a mock fallback that returns representative data when the external API is unreachable, ensuring the platform remains functional offline.
         </p>
 
         <div class="highlight-box">
@@ -962,7 +962,7 @@ For each Monte Carlo Step (MCS):
         </div>
 
         <p>
-            When targets are not met, the refinement agent employs two strategies: (1) <strong>LLM-based refinement</strong>, where the full blueprint and failure messages are sent to Gemini with instructions to adjust parameters or topology; and (2) <strong>rule-based refinement</strong>, which applies heuristic parameter adjustments (e.g., increasing activation rate constants when peak time is too late, strengthening negative feedback when decay is insufficient). A sensitivity-enhanced variant first runs local sensitivity analysis to identify the most influential parameters before applying adjustments.
+            When targets are not met, the refinement agent employs two strategies: (1) <strong>LLM-based refinement</strong>, where the full blueprint and failure messages are sent to the open-source LLM with instructions to adjust parameters or topology; and (2) <strong>rule-based refinement</strong>, which applies heuristic parameter adjustments (e.g., increasing activation rate constants when peak time is too late, strengthening negative feedback when decay is insufficient). A sensitivity-enhanced variant first runs local sensitivity analysis to identify the most influential parameters before applying adjustments.
         </p>
 
         <!-- 10. MAPLE -->
@@ -1022,7 +1022,7 @@ For each Monte Carlo Step (MCS):
 
         <h3 class="subsection-heading"><span class="subsection-number">12.2</span> Design Decisions</h3>
         <p>
-            A key architectural choice was the <strong>blueprint-centric design</strong>: all simulation engines consume the same JSON blueprint schema, enabling seamless switching between ODE, PDE, and ABM representations. This also enables the closed-loop agent to modify the blueprint and re-simulate without engine-specific knowledge. Another critical decision was implementing <strong>comprehensive fallback systems</strong> at every level — mock database responses, rule-based parsing, and demo calibration targets — ensuring the platform remains fully functional without network access or an API key.
+            A key architectural choice was the <strong>blueprint-centric design</strong>: all simulation engines consume the same JSON blueprint schema, enabling seamless switching between ODE, PDE, and ABM representations. This also enables the closed-loop agent to modify the blueprint and re-simulate without engine-specific knowledge. Another critical decision was implementing <strong>comprehensive fallback systems</strong> at every level (mock database responses, rule-based parsing, and demo calibration targets), ensuring the platform remains fully functional without network access or an API key.
         </p>
 
         <h3 class="subsection-heading"><span class="subsection-number">12.3</span> Future Work</h3>
@@ -1051,7 +1051,7 @@ For each Monte Carlo Step (MCS):
                 <li>Szklarczyk, D. et al. The STRING database in 2023. <em>Nucleic Acids Research</em> <strong>51</strong>, D483–D489 (2023).</li>
                 <li>Türei, D. et al. Integrated intra- and intercellular signaling knowledge for multicellular omics analysis. <em>Molecular Systems Biology</em> <strong>17</strong>, e9923 (2021).</li>
                 <li>Licata, L. et al. SIGNOR 2.0: a manually curated resource of causal relationships. <em>Nucleic Acids Research</em> <strong>48</strong>, D504–D510 (2020).</li>
-                <li>Malik-Sheriff, R. S. et al. BioModels—15 years of sharing computational models. <em>Nucleic Acids Research</em> <strong>48</strong>, D407–D415 (2020).</li>
+                <li>Malik-Sheriff, R. S. et al. BioModels: 15 years of sharing computational models. <em>Nucleic Acids Research</em> <strong>48</strong>, D407–D415 (2020).</li>
                 <li>Eliason, J. R. & Popel, A. S. MAPLE: Model-Aware Parameterization from Literature Evidence for QSP calibration. <em>CPT: Pharmacometrics & Systems Pharmacology</em> (2026).</li>
                 <li>Swat, M. H. et al. Multi-scale modeling of tissues using CompuCell3D. <em>Methods in Cell Biology</em> <strong>110</strong>, 325–366 (2012).</li>
                 <li>Meurer, A. et al. SymPy: symbolic computing in Python. <em>PeerJ Computer Science</em> <strong>3</strong>, e103 (2017).</li>

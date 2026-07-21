@@ -253,7 +253,7 @@ class MultiscaleSimulator:
 
         for cell_id in self.cpm.cells:
             if cell_id not in self.cell_ode_states:
-                # New cell — inherit parent's state (approximate)
+                # New cell: inherit parent's state (approximate)
                 self.cell_ode_states[cell_id] = {
                     node["id"]: node.get("initial_value", 0.0)
                     for node in self.ode_blueprint.get("nodes", [])

@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BioSimulateAI — AI-Powered Biological Modeling & Simulation</title>
+    <title>BioSimulateAI: AI-Powered Biological Modeling & Simulation</title>
     <meta name="description"
         content="AI-powered platform for automated biological model generation, simulation, and calibration. Supports ODE, PDE, and Agent-Based Models.">
 
@@ -39,11 +39,10 @@
             <div class="header-actions">
                 <a href="paper.html" target="_blank" class="btn btn-secondary btn-sm"
                     style="margin-right: 15px; text-decoration: none;">📄 Read Paper</a>
-                <div class="api-key-container">
-                    <label for="api-key-input">Gemini API Key:</label>
-                    <input type="password" id="api-key-input" placeholder="Paste your API key here..."
-                        autocomplete="current-password">
-                </div>
+                <button class="btn btn-secondary btn-sm" id="btn-ai-settings" style="margin-right: 15px;"
+                    title="Configure the open-source AI language model">
+                    🧠 <span id="ai-engine-label">Rule-based</span>
+                </button>
                 <div class="status-badge" id="system-status">
                     <span class="status-dot green"></span>
                     <span>Ready</span>
@@ -61,6 +60,18 @@
                     <div class="preset-buttons">
                         <button class="btn btn-secondary btn-sm" id="load-egfr-btn">EGF/EGFR (ODE)</button>
                         <button class="btn btn-secondary btn-sm" id="load-turing-btn">Turing (PDE)</button>
+                        <button class="btn btn-secondary btn-sm" id="load-oscillator-btn">Oscillator (ODE)</button>
+                        <button class="btn btn-secondary btn-sm" id="load-bistable-btn">Bistable (ODE)</button>
+                        <button class="btn btn-secondary btn-sm" id="load-foldchange-btn">Fold-change (ODE)</button>
+                    </div>
+                    <div class="preset-group-label">📄 Published models — exact paper kinetics</div>
+                    <div class="preset-buttons">
+                        <button class="btn btn-secondary btn-sm" id="load-berridge-btn"
+                            title="Berridge & Goldbeter 1990 — sustained cytosolic Ca²⁺ oscillations">Ca²⁺ Oscillations (Berridge)</button>
+                        <button class="btn btn-secondary btn-sm" id="load-zhabotinsky-btn"
+                            title="Zhabotinsky 2000 — CaMKII bistable memory switch">CaMKII Memory (Zhabotinsky)</button>
+                        <button class="btn btn-secondary btn-sm" id="load-lyashenko-btn"
+                            title="Lyashenko et al. 2020 — receptor fold-change detection">Fold-change (Lyashenko)</button>
                     </div>
                     <textarea id="bio-input"
                         placeholder="Type a biological description here... e.g. EGF binds and activates EGFR. EGFR activates RAS. RAS activates RAF. RAF activates MEK. MEK activates ERK. ERK inhibits EGFR."></textarea>
@@ -84,6 +95,11 @@
                     <div class="search-results" id="db-results-container">
                         <p class="placeholder-text">Query databases to fetch biological components.</p>
                     </div>
+                    <button class="btn btn-outline btn-block" id="btn-open-conn-library">
+                        <span class="btn-icon">📖</span> Connection Library
+                    </button>
+                    <p class="hint-text">Browse curated interactions and add new connections (inhibition, activation…)
+                        to your current model without disturbing existing edges.</p>
                 </div>
 
                 <!-- EXPERIMENTAL TARGETS -->
@@ -124,7 +140,13 @@
                     <!-- TAB 2: EQUATIONS -->
                     <div class="tab-content" id="tab-equations">
                         <div class="card equation-card">
-                            <h3 class="card-title">Compiled Equations</h3>
+                            <div class="equation-head">
+                                <h3 class="card-title">Compiled Equations</h3>
+                                <div class="seg-control" id="eq-mode-toggle" title="Switch between short symbols and fully spelled-out terms">
+                                    <button class="seg-btn active" data-mode="symbols">Symbols</button>
+                                    <button class="seg-btn" data-mode="full">Full names</button>
+                                </div>
+                            </div>
                             <div id="equations-container" class="math-display">
                                 <p class="placeholder-text">Mathematical equations will render here after blueprint
                                     compilation.</p>
@@ -141,10 +163,63 @@
                                     <label for="sim-tmax">t_max:</label>
                                     <input type="number" id="sim-tmax" value="60" min="1" max="1000">
                                 </div>
+
+                                <!-- Boundary / Initial Conditions (Task: display BCs in ODE interface) -->
+                                <div class="panel collapsible" id="bc-panel">
+                                    <button class="panel-head" id="btn-toggle-bc" aria-expanded="false"
+                                        type="button">
+                                        <span class="panel-title">Boundary &amp; Initial Conditions</span>
+                                        <span class="chevron">▸</span>
+                                    </button>
+                                    <div class="panel-body" id="bc-content" hidden>
+                                        <p class="placeholder-text">Compile a model to view its conditions.</p>
+                                    </div>
+                                </div>
+
+                                <!-- Reaction parameters with editable bounds -->
+                                <div class="param-section-head">
+                                    <span class="panel-title">Reaction Parameters</span>
+                                    <button class="mini-link" id="btn-toggle-bounds" type="button"
+                                        title="Show or hide editable min/max bounds for every parameter">
+                                        Edit bounds
+                                    </button>
+                                </div>
                                 <div id="parameters-sliders-container">
                                     <p class="placeholder-text">Parameters will load here.</p>
                                 </div>
-                                <button class="btn btn-primary" id="btn-run-simulation">Run Simulation</button>
+                                <button class="btn btn-primary btn-block" id="btn-run-simulation">Run
+                                    Simulation</button>
+
+                                <!-- Parameter-space exploration (Latin Hypercube sampling) -->
+                                <div class="panel explore-panel">
+                                    <div class="param-section-head">
+                                        <span class="panel-title">Parameter-Space Exploration</span>
+                                        <span class="tag tag-accent">LHS</span>
+                                    </div>
+                                    <p class="hint-text">Sweep the ranges above across the parameter space and view the
+                                        ensemble of outcomes.</p>
+                                    <div class="explore-controls">
+                                        <div class="field">
+                                            <label for="explore-method">Sampling</label>
+                                            <select id="explore-method">
+                                                <option value="lhs">Latin Hypercube</option>
+                                                <option value="sobol">Sobol (quasi-random)</option>
+                                                <option value="random">Uniform random</option>
+                                                <option value="grid">Grid</option>
+                                            </select>
+                                        </div>
+                                        <div class="field">
+                                            <label for="explore-samples">Samples</label>
+                                            <input type="number" id="explore-samples" value="48" min="2" max="500">
+                                        </div>
+                                        <div class="field">
+                                            <label for="explore-target">Track species</label>
+                                            <select id="explore-target"></select>
+                                        </div>
+                                    </div>
+                                    <button class="btn btn-accent btn-block" id="btn-explore">Explore Parameter
+                                        Space</button>
+                                </div>
                             </div>
                             <div class="card graph-card">
                                 <div class="graph-header">
@@ -160,6 +235,13 @@
                                 <div class="visualizer-container">
                                     <canvas id="ode-chart" style="width: 100%; height: 100%;"></canvas>
                                     <canvas id="pde-canvas" style="display: none;"></canvas>
+                                </div>
+                                <!-- Exploration results footer -->
+                                <div class="explore-results" id="explore-results" hidden>
+                                    <div class="explore-summary" id="explore-summary"></div>
+                                    <div class="explore-table-wrap">
+                                        <table class="explore-table" id="explore-table"></table>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -277,13 +359,165 @@
         </div>
     </div>
 
+    <!-- CONNECTION LIBRARY MODAL ("book" of interactions) -->
+    <div class="modal-overlay" id="conn-modal" hidden>
+        <div class="modal book" role="dialog" aria-modal="true" aria-labelledby="conn-modal-title">
+            <div class="modal-header">
+                <div class="book-title">
+                    <span class="logo-icon">📖</span>
+                    <div>
+                        <h3 id="conn-modal-title">Connection Library</h3>
+                        <p>Select curated protein interactions to add to your model. Existing connections are kept
+                            untouched.</p>
+                    </div>
+                </div>
+                <button class="modal-close" id="conn-modal-close" aria-label="Close">&times;</button>
+            </div>
+
+            <div class="modal-toolbar">
+                <div class="seg-control" id="conn-db-tabs">
+                    <button class="seg-btn active" data-db="omnipath">OmniPath</button>
+                    <button class="seg-btn" data-db="string">STRING</button>
+                    <button class="seg-btn" data-db="signor">SIGNOR</button>
+                </div>
+                <div class="conn-search">
+                    <input type="text" id="conn-query" placeholder="Proteins, e.g. EGFR, RAF1, MAPK1">
+                    <button class="btn btn-primary btn-sm" id="conn-search-btn">Search</button>
+                </div>
+                <div class="conn-filters" id="conn-filters">
+                    <label class="chk"><input type="checkbox" data-type="activation" checked> Activation</label>
+                    <label class="chk"><input type="checkbox" data-type="inhibition" checked> Inhibition</label>
+                    <label class="chk"><input type="checkbox" data-type="association" checked> Association</label>
+                </div>
+            </div>
+
+            <div class="modal-body book-pages" id="conn-results">
+                <p class="placeholder-text">Search a protein-interaction database to browse connections.</p>
+            </div>
+
+            <div class="modal-footer">
+                <div class="footer-left">
+                    <button class="mini-link" id="conn-select-all" type="button">Select all new</button>
+                    <button class="mini-link" id="conn-clear" type="button">Clear</button>
+                    <span class="conn-count" id="conn-selected-count">0 selected</span>
+                </div>
+                <button class="btn btn-primary" id="conn-add-btn" disabled>Add Selected Connections</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI LANGUAGE MODEL SETTINGS MODAL -->
+    <div class="modal-overlay" id="llm-modal" hidden>
+        <div class="modal llm-modal" role="dialog" aria-modal="true" aria-labelledby="llm-modal-title">
+            <div class="modal-header">
+                <div class="book-title">
+                    <span class="logo-icon">🧠</span>
+                    <div>
+                        <h3 id="llm-modal-title">AI Language Model</h3>
+                        <p>Powers natural-language compilation, closed-loop refinement, and MAPLE extraction.
+                            Run an open-source model fully offline on your machine, or link a hosted endpoint.</p>
+                    </div>
+                </div>
+                <button class="modal-close" id="llm-modal-close" aria-label="Close">&times;</button>
+            </div>
+
+            <div class="modal-body llm-body">
+                <div class="seg-control llm-engine-tabs" id="llm-engine-tabs">
+                    <button class="seg-btn active" data-engine="off" type="button">Rule-based (offline)</button>
+                    <button class="seg-btn" data-engine="local" type="button">Local model</button>
+                    <button class="seg-btn" data-engine="remote" type="button">Remote endpoint</button>
+                    <button class="seg-btn" data-engine="bedrock" type="button">AWS Bedrock</button>
+                </div>
+
+                <!-- OFF -->
+                <div class="llm-panel" id="llm-panel-off">
+                    <p class="hint-text">No language model. Uses the built-in deterministic regex parser and
+                        rule-based refinement. Fast, fully offline, nothing to download.</p>
+                </div>
+
+                <!-- LOCAL -->
+                <div class="llm-panel" id="llm-panel-local" hidden>
+                    <p class="hint-text">Runs an open-source model in-process on your CPU (llama.cpp). Each model is
+                        downloaded once from HuggingFace and cached locally. No server, no API key.</p>
+                    <div id="llm-runtime-warning" class="llm-warn" hidden>
+                        <code>llama-cpp-python</code> is not installed. Install it, then reopen this dialog.
+                    </div>
+                    <div id="llm-model-list" class="llm-model-list">
+                        <p class="placeholder-text">Loading models…</p>
+                    </div>
+                </div>
+
+                <!-- REMOTE -->
+                <div class="llm-panel" id="llm-panel-remote" hidden>
+                    <p class="hint-text">Point at any OpenAI-compatible endpoint: a model you host on AWS
+                        (vLLM / TGI), Ollama, LM Studio, Groq, OpenRouter, etc. Best when accuracy matters most.</p>
+                    <div class="field">
+                        <label for="llm-remote-url">Endpoint URL</label>
+                        <input type="text" id="llm-remote-url" placeholder="https://your-host/v1">
+                    </div>
+                    <div class="field">
+                        <label for="llm-remote-model">Model name</label>
+                        <input type="text" id="llm-remote-model" placeholder="e.g. llama-3.1-70b-instruct">
+                    </div>
+                    <div class="field">
+                        <label for="llm-remote-key">API key <span class="muted">(optional)</span></label>
+                        <input type="password" id="llm-remote-key" placeholder="Bearer token, if the endpoint requires one">
+                    </div>
+                </div>
+
+                <!-- AWS BEDROCK (native Converse API) -->
+                <div class="llm-panel" id="llm-panel-bedrock" hidden>
+                    <p class="hint-text">Calls a model hosted on <strong>AWS Bedrock</strong> directly (Converse API).
+                        Easiest: put a Bedrock <strong>API key</strong> in the project's <code>.env</code> file
+                        (<code>AWS_BEARER_TOKEN_BEDROCK=...</code>) and the app uses it automatically — nothing to enter here.
+                        Or paste credentials below. Blank fields fall back to the machine's AWS credentials.</p>
+                    <div class="field">
+                        <label for="llm-bedrock-model">Bedrock model ID</label>
+                        <input type="text" id="llm-bedrock-model"
+                            placeholder="mistral.mistral-large-3-675b-instruct"
+                            value="mistral.mistral-large-3-675b-instruct">
+                    </div>
+                    <div class="field">
+                        <label for="llm-bedrock-region">AWS region</label>
+                        <input type="text" id="llm-bedrock-region" placeholder="us-east-2" value="us-east-2">
+                    </div>
+                    <div class="field">
+                        <label for="llm-bedrock-bearer-token">Bedrock API key <span class="muted">(bearer token — recommended)</span></label>
+                        <input type="password" id="llm-bedrock-bearer-token" placeholder="bedrock-api-key-... (or set AWS_BEARER_TOKEN_BEDROCK in .env)" autocomplete="off">
+                    </div>
+                    <div class="field">
+                        <label for="llm-bedrock-access-key">AWS Access Key ID <span class="muted">(optional)</span></label>
+                        <input type="text" id="llm-bedrock-access-key" placeholder="AKIA... — leave blank to use this machine's AWS credentials" autocomplete="off">
+                    </div>
+                    <div class="field">
+                        <label for="llm-bedrock-secret-key">AWS Secret Access Key <span class="muted">(optional)</span></label>
+                        <input type="password" id="llm-bedrock-secret-key" placeholder="Kept in memory only — never written to disk" autocomplete="off">
+                    </div>
+                    <div class="field">
+                        <label for="llm-bedrock-session-token">AWS Session Token <span class="muted">(only for temporary credentials)</span></label>
+                        <input type="password" id="llm-bedrock-session-token" placeholder="For STS/SSO temporary credentials" autocomplete="off">
+                    </div>
+                    <div class="llm-warn">Enter your keys to call Bedrock directly, or leave them blank to use this
+                        machine's AWS credentials (<code>aws login</code> / env vars / IAM role). The secret key and
+                        session token are held in memory only and are never saved to disk. Enable model access in the
+                        Bedrock console and copy the model ID exactly.</div>
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <span class="conn-count" id="llm-current-note"></span>
+                <button class="btn btn-primary" id="llm-save-btn">Save</button>
+            </div>
+        </div>
+    </div>
+
     <!-- CDNs -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.26.0/cytoscape.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
 
     <!-- Custom Application Logic -->
-    <script src="app.js"></script>
+    <script src="app.js?v=2"></script>
 </body>
 
 </html>

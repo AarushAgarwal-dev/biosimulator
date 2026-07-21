@@ -1,4 +1,14 @@
 import os
+
+# Load a local .env (AWS credentials, Bedrock config, etc.) into the process
+# environment at startup so boto3's default credential chain and the Bedrock
+# defaults pick them up — no keys ever need to be typed into the app UI.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+except Exception:
+    pass  # dotenv optional; real env vars / ~/.aws still work without it
+
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,8 +16,9 @@ from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
 
 import db_interface
-from simulation_engine import ODEModel, solve_pde
+from simulation_engine import ODEModel, solve_pde, explore_parameter_space
 import agent
+import llm_provider
 
 app = FastAPI(title="BioSimulateAI - Biological Modeling & Simulation Copilot")
 
@@ -23,7 +34,8 @@ app.add_middleware(
 # API Pydantic schemas
 class ParseRequest(BaseModel):
     text: str
-    api_key: Optional[str] = None
+    llm: Optional[Dict[str, Any]] = None
+    api_key: Optional[str] = None  # deprecated (Gemini); ignored
 
 class CompileRequest(BaseModel):
     blueprint: Dict[str, Any]
@@ -42,7 +54,8 @@ class RefineRequest(BaseModel):
     blueprint: Dict[str, Any]
     simulation_results: Dict[str, Any]
     targets: List[Dict[str, Any]]
-    api_key: Optional[str] = None
+    llm: Optional[Dict[str, Any]] = None
+    api_key: Optional[str] = None  # deprecated (Gemini); ignored
 
 class StringRequest(BaseModel):
     proteins: List[str]
@@ -60,7 +73,8 @@ class MAPLEExtractRequest(BaseModel):
     param_units: Optional[str] = ""
     param_description: Optional[str] = ""
     mechanistic_context: Optional[str] = ""
-    api_key: Optional[str] = None
+    llm: Optional[Dict[str, Any]] = None
+    api_key: Optional[str] = None  # deprecated (Gemini); ignored
 
 class MAPLEValidateRequest(BaseModel):
     target_data: Dict[str, Any]
@@ -85,6 +99,14 @@ class OmniPathRequest(BaseModel):
     proteins: List[str]
     organism: Optional[int] = 9606
 
+class SampleRequest(BaseModel):
+    blueprint: Dict[str, Any]
+    param_bounds: Dict[str, Dict[str, float]]   # name -> {"min": x, "max": y}
+    n_samples: Optional[int] = 64
+    method: Optional[str] = "lhs"               # "lhs" | "sobol" | "grid" | "random"
+    target_species: Optional[str] = None
+    seed: Optional[int] = 0
+
 
 # --- Existing Endpoints ---
 
@@ -92,7 +114,7 @@ class OmniPathRequest(BaseModel):
 def generate_blueprint(req: ParseRequest):
     """Generates structured blueprint from natural language text."""
     try:
-        blueprint = agent.parse_biological_text(req.text, req.api_key)
+        blueprint = agent.parse_biological_text(req.text, req.llm)
         return blueprint
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -115,9 +137,11 @@ def compile_blueprint(req: CompileRequest):
             # ODE compile
             model = ODEModel(req.blueprint)
             latex_eqs = model.get_equations_latex()
+            latex_eqs_verbose = model.get_equations_latex(verbose=True)
             # Also return parameter names and defaults
             return {
                 "equations": latex_eqs,
+                "equations_verbose": latex_eqs_verbose,
                 "parameters": model.params_dict
             }
     except Exception as e:
@@ -161,8 +185,11 @@ def simulate_blueprint(req: SimulateRequest):
             model = ODEModel(bp)
             config = bp.get("simulation_config", {})
             t_max = config.get("t_max", 50.0)
-            
-            result = model.simulate(t_max, custom_params=req.custom_params)
+
+            # Resolution scales with the time horizon so fast dynamics (oscillations,
+            # sharp fold-change transients) are captured, not aliased by a coarse 100-point grid.
+            num_points = int(min(5000, max(300, t_max * 15)))
+            result = model.simulate(t_max, num_points=num_points, custom_params=req.custom_params)
             return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -192,7 +219,7 @@ def refine_model_endpoint(req: RefineRequest):
             blueprint=req.blueprint,
             simulation_results=req.simulation_results,
             targets=req.targets,
-            api_key=req.api_key
+            llm=req.llm
         )
         return {
             "blueprint": refined_bp,
@@ -303,7 +330,7 @@ def maple_extract(req: MAPLEExtractRequest):
         from maple_extractor import MAPLEExtractor
         from maple_schemas import submodel_target_to_dict, validation_report_to_dict
         
-        extractor = MAPLEExtractor(api_key=req.api_key)
+        extractor = MAPLEExtractor(llm=req.llm)
         target, report, logs = extractor.extract_submodel_target(
             param_name=req.param_name,
             param_units=req.param_units or "",
@@ -362,6 +389,84 @@ def simulate_multiscale(req: MultiscaleRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# --- NEW: Multi-condition target evaluation (oscillation/bistability/fold-change) ---
+
+class EvaluateRequest(BaseModel):
+    blueprint: Dict[str, Any]
+    targets: List[Dict[str, Any]]
+    custom_params: Optional[Dict[str, float]] = None
+
+@app.get("/api/llm/env")
+def llm_env():
+    """Report whether the server environment (.env / env vars / AWS profile) is
+    pre-configured for Bedrock, so the UI can auto-select it with no key entry.
+    Never returns any credential value — only booleans and non-secret config."""
+    return {
+        "bedrock_env_ready": llm_provider.bedrock_env_ready(),
+        "model": llm_provider.BEDROCK_DEFAULT_MODEL,
+        "region": llm_provider.BEDROCK_DEFAULT_REGION,
+        "engine_default": (os.getenv("LLM_ENGINE", "").strip().lower() or None),
+    }
+
+
+@app.post("/api/evaluate")
+def evaluate_targets(req: EvaluateRequest):
+    """Evaluate targets on a blueprint, running the extra sims that bistability/fold-change need."""
+    try:
+        t_max = float(req.blueprint.get("simulation_config", {}).get("t_max", 50.0))
+        met_count, results = agent.evaluate_targets_on_blueprint(
+            req.blueprint, req.targets, t_max=t_max, custom_params=req.custom_params
+        )
+        return {"met_count": met_count, "total": len(req.targets), "results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- NEW: Open-source LLM management (local GGUF models) ---
+
+class LLMDownloadRequest(BaseModel):
+    model: str
+
+@app.get("/api/llm/models")
+def llm_models():
+    """List available open-source models and their download status."""
+    return llm_provider.list_models()
+
+@app.post("/api/llm/download")
+def llm_download(req: LLMDownloadRequest):
+    """Start downloading a model's weights from HuggingFace (runs in background)."""
+    try:
+        return llm_provider.start_download(req.model)
+    except llm_provider.LLMError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/llm/status")
+def llm_status(model: str):
+    """Poll download status for a model."""
+    return llm_provider.download_status(model)
+
+
+# --- NEW: Parameter-Space Exploration (Latin Hypercube Sampling) ---
+
+@app.post("/api/sample")
+def sample_parameter_space(req: SampleRequest):
+    """Sample the parameter space (Latin Hypercube by default) and summarise outputs."""
+    try:
+        result = explore_parameter_space(
+            blueprint=req.blueprint,
+            param_bounds=req.param_bounds,
+            n_samples=req.n_samples or 64,
+            method=req.method or "lhs",
+            target_species=req.target_species,
+            seed=req.seed or 0,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # --- NEW: Sensitivity Analysis ---
 
 @app.post("/api/sensitivity")
@@ -381,7 +486,18 @@ def run_sensitivity(req: SensitivityRequest):
 
 # Serve Static files - must be loaded after api routes
 os.makedirs("static", exist_ok=True)
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
+class NoCacheStaticFiles(StaticFiles):
+    """Serve static assets with no-cache headers so edits to app.js/index.html/style.css
+    are picked up on the next reload instead of being served from the browser cache."""
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
+app.mount("/", NoCacheStaticFiles(directory="static", html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
