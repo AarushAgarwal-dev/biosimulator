@@ -118,6 +118,88 @@ def _step_first_order(state: float, u: float, dt: float, spec: Dict[str, Any]) -
     return float(state + dt * (-state / tau + gain * u))
 
 
+class ReactionNetworkPlant:
+    """A plant that is THE MODEL THE RESEARCHER PREPARED, not a textbook system.
+
+    Why this exists. The workflow's premise is "prepare a domain, topology, mesh and model
+    ONCE, then choose one approach", and MPC ignored all of it: it simulated its own
+    ``dx/dt = -x/tau + gain*u`` with tau = 5, gain = 1, while ``controlled_input`` and
+    ``measured_output`` were the strings "u" and "y" -- ports of that toy system, not
+    species in anyone's network. The result was a correct, well-validated controller
+    demonstration with no connection to the biology, and nothing said so.
+
+    What this controls instead: the stage-4 reaction network, as a WELL-MIXED system. Each
+    field's ``reaction`` expression is its rate law, diffusion is dropped, and what is left
+    is d[field]/dt = reaction(fields, parameters) -- the ordinary-differential reduction of
+    the reaction-diffusion model, which is the standard way to ask a control question about
+    kinetics without committing to geometry. That reduction is stated to the researcher
+    rather than hidden, because a spatially averaged answer is not the same as a spatial
+    one.
+
+    The control acts as a DOSE: u is added to the input species' rate of change, which is
+    what "how much of this do I infuse per unit time" means. It is deliberately not a
+    multiplier on the rate law -- that would silently rescale a rate constant the
+    researcher chose.
+
+    This makes MPC a biological question: hold ERK at 40% of its peak, and tell me the
+    infusion schedule that does it.
+    """
+
+    def __init__(self, model: Dict[str, Any], input_species: str, output_species: str):
+        import pde_model
+
+        fields = [f for f in (model or {}).get("fields") or [] if f.get("name")]
+        if not fields:
+            raise ValueError("the stage-4 model defines no fields, so there is no "
+                             "reaction network to control")
+        self.names = [str(f["name"]) for f in fields]
+        if input_species not in self.names:
+            raise ValueError(f"controlled_input {input_species!r} is not one of the "
+                             f"model's species: {', '.join(self.names)}")
+        if output_species not in self.names:
+            raise ValueError(f"measured_output {output_species!r} is not one of the "
+                             f"model's species: {', '.join(self.names)}")
+        self.input_species = input_species
+        self.output_species = output_species
+
+        parameters = dict((model or {}).get("parameters") or {})
+        allowed = list(self.names) + list(parameters.keys())
+        self._rates = []
+        for field in fields:
+            expr = pde_model.parse_safe(field.get("reaction", "0"), allowed)
+            expr = expr.subs({sp_name: value for sp_name, value in parameters.items()}) \
+                if hasattr(expr, "subs") else expr
+            self._rates.append(pde_model.lambdify_scalar(expr, self.names))
+
+        self.state = []
+        for field in fields:
+            try:
+                self.state.append(float(pde_model.parse_safe(
+                    field.get("initial", "0"), list(parameters.keys())).subs(parameters)))
+            except Exception:
+                self.state.append(0.0)
+
+    def output(self) -> float:
+        return float(self.state[self.names.index(self.output_species)])
+
+    def step(self, u: float, dt: float) -> float:
+        """Explicit Euler on the reaction network, with u dosed into the input species."""
+        rates = []
+        for rate in self._rates:
+            try:
+                rates.append(float(rate(*self.state)))
+            except Exception:
+                rates.append(0.0)
+        index = self.names.index(self.input_species)
+        rates[index] += float(u)
+        self.state = [float(value + dt * rate)
+                      for value, rate in zip(self.state, rates)]
+        # A concentration cannot go negative; clamping here keeps a controller that
+        # overshoots from driving the plant into a region the model cannot represent.
+        self.state = [value if value > 0.0 else 0.0 for value in self.state]
+        return self.output()
+
+
 class MPCAdapter(ApproachAdapter):
     approach_id = "mpc"
     label = "MPC (Model Predictive Control)"
@@ -140,14 +222,16 @@ class MPCAdapter(ApproachAdapter):
             notes=("Receding-horizon constrained optimal control. The predictive model "
                    "and the plant are configured separately, so model mismatch is "
                    "explicit rather than assumed away. "
-                   "USES: only the MPC settings on this stage. IGNORES: the domain, the "
-                   "mesh, the stage-4 reaction-diffusion model and the stage-5 boundary "
-                   "conditions. The plant simulated here is this stage's own first-order "
-                   "system dx/dt = -x/tau + gain*u -- NOT the model you prepared "
-                   "earlier. 'controlled_input' and 'measured_output' name that "
-                   "system's input and output, not species in your network. So this "
-                   "result demonstrates the controller; it is not yet a statement about "
-                   "your biology."),
+                   "USES: the MPC settings here, and -- when the plant kind is "
+                   "'reaction_network' -- YOUR STAGE-4 MODEL as the plant, integrated as "
+                   "a well-mixed system with the control dosed into the species named by "
+                   "controlled_input. That makes this a biological question: what "
+                   "infusion schedule holds a species at a chosen level? IGNORES: the "
+                   "domain, the mesh and the stage-5 boundary conditions, because the "
+                   "well-mixed reduction drops space -- a spatially averaged answer is "
+                   "not a spatial one. With the default 'first_order' plant it simulates "
+                   "dx/dt = -x/tau + gain*u instead, which demonstrates the controller "
+                   "and says nothing about your biology."),
         )
 
     # -- validation ---------------------------------------------------------
@@ -230,11 +314,43 @@ class MPCAdapter(ApproachAdapter):
 
         for spec_name in ("model", "plant"):
             spec = config.get(spec_name) or {}
-            if str(spec.get("kind", "first_order")) != "first_order":
+            kind = str(spec.get("kind", "first_order"))
+
+            # The PLANT may be the researcher's own stage-4 reaction network. The
+            # predictive MODEL stays first-order: MPC's premise is that the controller's
+            # internal model is deliberately simpler than the plant, so the mismatch is
+            # explicit rather than assumed away, and allowing the true model on both sides
+            # would quietly turn this into perfect-model control.
+            if spec_name == "plant" and kind == "reaction_network":
+                fields = [f.get("name") for f in
+                          ((project or {}).get("model") or {}).get("fields") or []
+                          if f.get("name")]
+                if not fields:
+                    issues.append(ValidationIssue(
+                        "error", "mpc_plant_network_empty",
+                        "The plant is set to the prepared reaction network, but the "
+                        "stage-4 model defines no species to control.",
+                        f"{path}.plant.kind"))
+                    continue
+                for key in ("controlled_input", "measured_output"):
+                    name = str(config.get(key) or "")
+                    if name not in fields:
+                        issues.append(ValidationIssue(
+                            "error", f"mpc_{key}_not_a_species",
+                            f"{key} is {name!r}, which is not a species in the prepared "
+                            f"model. Available: {', '.join(fields)}. With a "
+                            f"reaction_network plant these must name real species, not "
+                            f"the placeholder ports of the first-order test system.",
+                            f"{path}.{key}"))
+                continue
+
+            if kind != "first_order":
                 issues.append(ValidationIssue(
                     "error", f"mpc_{spec_name}_kind_unsupported",
-                    f"Only the 'first_order' {spec_name} is implemented; got "
-                    f"{spec.get('kind')!r}.", f"{path}.{spec_name}.kind"))
+                    f"Only the 'first_order' {spec_name} is implemented"
+                    + (" (the plant may also be 'reaction_network')"
+                       if spec_name == "plant" else "")
+                    + f"; got {spec.get('kind')!r}.", f"{path}.{spec_name}.kind"))
                 continue
             try:
                 if float(spec.get("tau", 5.0)) <= 0:
@@ -287,6 +403,10 @@ class MPCAdapter(ApproachAdapter):
             "config": config,
             "steps": steps,
             "interval": interval,
+            # The stage-4 model travels with the compiled plan, because run() only
+            # receives `compiled` and the plant may need to BE that model rather than the
+            # built-in first-order system.
+            "model": (project or {}).get("model") or {},
             "engine_version": self.get_capabilities().engine_version,
         }
 
@@ -312,7 +432,20 @@ class MPCAdapter(ApproachAdapter):
         model_spec = config["model"]
         plant_spec = config["plant"]
 
+        # If the project asks for it, the plant becomes the STAGE-4 MODEL rather than the
+        # built-in first-order system. Failure here is loud: a controller that silently
+        # falls back to a toy plant would report a beautifully converged result about a
+        # system the researcher never described, which is the whole defect this addresses.
+        network_plant = None
+        if str(plant_spec.get("kind", "")).strip() == "reaction_network":
+            network_plant = ReactionNetworkPlant(
+                compiled.get("model") or {},
+                input_species=str(config.get("controlled_input") or ""),
+                output_species=str(config.get("measured_output") or ""))
+
         state = float(config["initial_state"])
+        if network_plant is not None:
+            state = network_plant.output()
         previous_u = 0.0
 
         times: List[float] = []
@@ -399,7 +532,15 @@ class MPCAdapter(ApproachAdapter):
             u_applied = float(np.clip(u_applied, u_min, u_max))
 
             # Advance the PLANT (which may differ from the model).
-            state = _step_first_order(state, u_applied, dt, plant_spec)
+            #
+            # When plant.kind is "reaction_network" the plant IS the stage-4 model the
+            # researcher prepared, integrated as a well-mixed system, with u dosed into
+            # the named input species. Otherwise it stays the first-order test system,
+            # which is a controller demonstration rather than a statement about biology.
+            if network_plant is not None:
+                state = network_plant.step(u_applied, dt)
+            else:
+                state = _step_first_order(state, u_applied, dt, plant_spec)
 
             times.append(float(t + dt))
             outputs.append(float(state))
