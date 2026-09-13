@@ -285,11 +285,44 @@ class OdeEvaluationStillWorks(unittest.TestCase):
         "simulation_config": {"t_max": 10.0},
     }
 
-    def test_ode_steady_state_is_still_graded_on_the_trajectory(self):
+    def test_ode_steady_state_refuses_a_trajectory_still_moving(self):
+        """A(10) = 0.368 on a pure decay is NOT a steady state -- the real one is 0.
+
+        This test previously asserted met == 1 here, which enshrined the defect a fresh
+        review later measured: `steady_state` read y[-1] with no stationarity test, so the
+        instantaneous value of a trajectory still travelling was reported as its steady
+        state. Its sharpest demonstration was dX/dt = 0.002*(10 - X): X(100) = 1.8127 was
+        reported as meeting a target of 1.8 +/- 0.1 while the true fixed point is 10, with
+        X(1000) = 8.6466.
+
+        A(t) = exp(-0.1 t) is the same shape. At t = 10 it is 0.3679 and still falling
+        toward zero, so the honest answer is not "met" and not "failed" but that the run
+        cannot answer the question -- extend t_max. The ODE path is still exercised; it is
+        the verdict that changed.
+        """
         met, results = agent.evaluate_targets_on_blueprint(
             self.ODE_BP, [{"species": "A", "type": "steady_state",
                            "value": 0.368, "tolerance": 0.02}])
-        self.assertEqual(met, 1)          # 1.0 * exp(-0.1 * 10) = 0.3679
+        self.assertEqual(met, 0)
+        self.assertTrue(results[0]["refused"],
+                        f"an unsettled trajectory should be refused, not graded: "
+                        f"{results[0]['detail']}")
+        self.assertIn("settled", results[0]["detail"].lower())
+
+    def test_ode_steady_state_is_graded_once_it_has_settled(self):
+        """The gate must not refuse a genuine steady state -- only an unsettled one."""
+        settled = {
+            "type": "ODE",
+            "nodes": [{"id": "A", "initial_value": 0.0}],
+            "parameters": {"r": 0.5, "Amax": 2.0},
+            "odes": {"A": "r*(Amax - A)"},
+            "simulation_config": {"t_max": 60.0},
+        }
+        met, results = agent.evaluate_targets_on_blueprint(
+            settled, [{"species": "A", "type": "steady_state",
+                       "value": 2.0, "tolerance": 0.05}])
+        self.assertEqual(met, 1, f"a settled trajectory was not graded: "
+                                 f"{results[0]['detail']}")
         self.assertFalse(results[0]["refused"])
 
     def test_an_unknown_ode_target_type_is_refused_not_credited(self):

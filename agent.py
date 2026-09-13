@@ -1971,16 +1971,51 @@ def sustained_oscillation_amplitude(y) -> float:
 
 
 def _prominent_peaks(seg: np.ndarray, frac: float = 0.05) -> int:
+    """Count local maxima whose TOPOGRAPHIC PROMINENCE is at least ``frac`` of the range.
+
+    This used to be a three-point neighbour test: seg[i-1] < seg[i] > seg[i+1] and
+    (seg[i] - min(neighbours)) > frac * range. Neighbour differences at a smooth apex
+    scale as the square of the sample spacing, so THE TEST GOT WORSE AS SAMPLING
+    IMPROVED. Measured on the shipped oscillator preset (t_max 300, period 26,
+    relative amplitude 1.96):
+
+        num_points  |  150   200   400   4500
+        peaks found |    6     6     0      0
+
+    At 4500 points -- which is what /api/simulate actually uses -- there are ~390
+    samples per period, the apex neighbour difference is about 3.3e-4, and the threshold
+    is 0.05 * 2.54 = 0.127. It failed by roughly 400x. Berridge behaved the same way: 7
+    peaks at 150-300 points, 0 at 5000.
+
+    Both oscillator presets therefore passed their oscillation target ONLY because
+    evaluate_targets_on_blueprint happens to call simulate(num_points=200) while the
+    plot the researcher looks at uses 4500. The score and the graph were computed from
+    different sampling, and the metric was an artefact of the coarser one.
+
+    Prominence is the sampling-independent quantity: a smooth peak sampled ten times
+    more finely has ~100x smaller neighbour differences but the SAME prominence.
+    test_preset_behaviour.peak_indices already made exactly this fix, with exactly this
+    reasoning, and the production detector was left behind -- so this now uses the same
+    scipy.signal.find_peaks call. It also feeds the optimizer objective through
+    _target_violation, which was scoring candidate parameter sets on the artefact.
+    """
     seg = np.asarray(seg, dtype=float)
-    if seg.size < 3 or not np.all(np.isfinite(seg)):
+    if seg.size < 5 or not np.all(np.isfinite(seg)):
         return 0
     rng = float(seg.max() - seg.min())
     if rng < 1e-9:
         return 0
-    thresh = frac * rng
-    return sum(1 for i in range(1, len(seg) - 1)
-               if seg[i - 1] < seg[i] > seg[i + 1]
-               and (seg[i] - min(seg[i - 1], seg[i + 1])) > thresh)
+    try:
+        from scipy.signal import find_peaks
+    except Exception:
+        # No scipy: fall back to the neighbour test rather than reporting no peaks,
+        # and keep it honest by scaling the threshold with the sample spacing.
+        thresh = frac * rng
+        return sum(1 for i in range(1, len(seg) - 1)
+                   if seg[i - 1] < seg[i] > seg[i + 1]
+                   and (seg[i] - min(seg[i - 1], seg[i + 1])) > thresh)
+    idx, _ = find_peaks(seg, prominence=frac * rng)
+    return int(len(idx))
 
 
 def count_sustained_peaks(y) -> int:
@@ -1999,6 +2034,10 @@ class TargetMetric:
     def __init__(self, target_def: Dict[str, Any]):
         self.species = target_def.get("species")
         self.metric_type = target_def.get("type")  # "peak_time", "peak_value", "decay_ratio", "steady_state"
+        # Set by evaluate() when the target could not be JUDGED at all, as opposed to
+        # being judged and not met. The caller copies it onto the result so the UI can
+        # show "could not be evaluated" instead of a red failure.
+        self.refused = False
         self.min_val = target_def.get("min")
         self.max_val = target_def.get("max")
         self.expected_val = target_def.get("value")
@@ -2045,6 +2084,32 @@ class TargetMetric:
             
         elif self.metric_type == "steady_state":
             final_val = y_arr[-1]
+            # A STEADY STATE HAS TO HAVE SETTLED. This used to read y[-1] and compare it
+            # to the target, with no stationarity test at all, so the instantaneous value
+            # of a trajectory still travelling was reported as its steady state.
+            #
+            # Demonstration: dX/dt = 0.002*(10 - X), X(0) = 0, target 1.8 +/- 0.1.
+            #   X(100)  = 1.8127  -> reported MET, "Steady state 1.81 met requirements."
+            #   X(1000) = 8.6466
+            # The true steady state is 10. The trajectory was 18% of the way to its fixed
+            # point and the tool called that number its steady state.
+            #
+            # _final_stable already exists, is careful, and rejects a monotone drifting
+            # tail -- it was written for exactly this and consulted only by
+            # bistability_states. A drift is now a REFUSAL rather than a pass or a
+            # failure: the model may be perfectly good and simply not settled within
+            # t_max, which is a different statement from "your model has the wrong
+            # steady state", and the UI now renders those differently.
+            if not _final_stable(y_arr):
+                tail = y_arr[max(0, len(y_arr) - max(3, len(y_arr) // 10)):]
+                drift = float(tail[-1] - tail[0])
+                self.refused = True
+                return False, (
+                    f"{self.species} has NOT settled by the end of the run, so it has no "
+                    f"steady state to compare: the last stretch is still moving by "
+                    f"{drift:+.4g} (ending at {final_val:.4g}). This is not a failed "
+                    f"target -- extend t_max until the trajectory flattens, then judge it."
+                )
             if self.expected_val is not None:
                 diff = abs(final_val - self.expected_val)
                 if diff > self.tolerance:
@@ -2740,6 +2805,9 @@ def evaluate_targets_on_blueprint(blueprint: Dict[str, Any],
         if ty in SINGLE_TRAJECTORY_TYPES:
             m = TargetMetric(tgt)
             ok, detail = m.evaluate(base_res["t"], base_res["species"].get(sp, []))
+            # A metric can decline to judge -- e.g. a steady-state target on a trajectory
+            # that has not settled. That is not a failure of the model.
+            refused = bool(getattr(m, "refused", False))
         elif ty == "bistability":
             lo, hi, stable = bistability_states(model, sp, t_max, cp)
             sep = (abs(hi - lo) / max(abs(hi), abs(lo), 1.0)) if stable else 0.0
