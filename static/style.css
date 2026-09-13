@@ -1780,6 +1780,49 @@ textarea:focus {
 .eq-image-status { margin-top:8px; font-size:12px; color:var(--text-secondary); font-family:'JetBrains Mono', monospace; min-height:14px; word-break:break-word; }
 
 /* ===== Editable Model Summary table ===== */
+/* PERSISTENT COMPILER DISCLOSURE.
+   This panel records decisions the compiler made on the researcher's behalf --
+   most importantly initial values it chose because the description gave none.
+   It replaced a 5-second toast that also deleted the notice, so the disclosure
+   used to be unrecoverable. Given that job, it is deliberately styled to be
+   noticed: an amber left edge, matching .log-line.warning's #ffaa00, which is
+   this stylesheet's existing "warning, not error" colour. It is not red --
+   nothing here is a failure, it is the product telling you what it assumed. */
+.model-notice-card {
+    margin-top: 16px;
+    border-left: 3px solid #ffaa00;
+    background: rgba(255, 170, 0, 0.06);
+}
+
+.model-notice-text {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--text-primary);
+}
+
+/* A small secondary action sitting on a card header row. */
+.btn-tiny {
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+    transition: all .2s;
+}
+
+.btn-tiny:hover,
+.btn-tiny:focus-visible {
+    color: var(--text-primary);
+    border-color: var(--border-hover);
+}
+
 .model-summary-card { margin-top:16px; }
 .model-summary-hint { font-size:12px; color:var(--text-muted); }
 .model-summary { display:flex; flex-direction:column; gap:18px; }
