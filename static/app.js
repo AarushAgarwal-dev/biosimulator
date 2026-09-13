@@ -68,8 +68,23 @@ RAF starts at 1.0.`,
         blueprint: {
             type: "ODE",
             nodes: [
-                { id: "EGF", initial_value: 10.0 }, { id: "EGFR", initial_value: 1.0 },
-                { id: "RAS", initial_value: 1.0 }, { id: "RAF", initial_value: 1.0 },
+                // Resting values. These rate laws are in FRACTIONAL-ACTIVATION form,
+                // k*S*(1 - X) - d*X, so X is the activated FRACTION of each pool and
+                // the total pool is implicit in the (1 - X) term. X = 1.0 therefore
+                // means "100% active at rest", which is what these three used to say:
+                // EGFR, RAS and RAF all started fully active and could only decay, so
+                // each peaked at t = 0 and fell monotonically while MEK and ERK rose.
+                // A biologist reading that plot sees the cascade running backwards, and
+                // EGFR's decay_ratio target was measuring decline from an artificially
+                // high start rather than from a stimulated peak.
+                //
+                // The 1.0 values were inherited from the earlier generic-Hill version
+                // of this preset, where 1.0 was a total pool rather than a fraction --
+                // they were not updated when the mechanism changed. An unstimulated
+                // kinase cascade rests near zero activation; EGF is the stimulus and
+                // keeps its 10.0.
+                { id: "EGF", initial_value: 10.0 }, { id: "EGFR", initial_value: 0.0 },
+                { id: "RAS", initial_value: 0.0 }, { id: "RAF", initial_value: 0.0 },
                 { id: "MEK", initial_value: 0.0 }, { id: "ERK", initial_value: 0.0 }
             ],
             edges: [
@@ -85,7 +100,14 @@ RAF starts at 1.0.`,
                 kR: 1.8, KmR: 5.0,               // receptor activation by ligand
                 KiR: 0.06, nR: 3.0,              // ERK negative feedback on the receptor
                 dR: 0.25,                        // receptor turnover
-                k1: 0.9, k2: 0.9, k3: 0.9, k4: 0.9,
+                k1: 0.9, k2: 0.9, k3: 0.9, k4: 1.05,
+                // k4 (MEK -> ERK) is 1.05 rather than 0.9 because the resting initial
+                // conditions were corrected: EGFR, RAS and RAF now start at 0 activated
+                // fraction instead of 1.0, so each stage has to be switched on and less
+                // signal integrates into ERK. At k4 = 0.9 ERK peaked at 0.5955, just
+                // under the shipped peak_value target of 0.6. The parameter was raised
+                // rather than the target lowered -- the target states the behaviour the
+                // preset exists to demonstrate, so it is the thing that should not move.
                 d1: 0.35, d2: 0.35, d3: 0.35, d4: 0.35   // dephosphorylation per stage
             },
             odes: {
@@ -586,7 +608,14 @@ function renderTargets() {
             <select class="tgt-type" data-idx="${idx}">
                 <option value="peak_time" ${tgt.type === 'peak_time' ? 'selected' : ''}>Peak Time</option>
                 <option value="peak_value" ${tgt.type === 'peak_value' ? 'selected' : ''}>Peak Val</option>
-                <option value="decay_ratio" ${tgt.type === 'decay_ratio' ? 'selected' : ''}>Decay %</option>
+                <!-- NOT "Decay %". The metric is the RETAINED fraction, final/peak, on
+                     a 0-1 scale: the shipped EGFR target is max 0.2, meaning "ends
+                     below 20% of its peak". Labelled as a percentage, a biologist
+                     wanting 80% decay types 80, which sets max: 80 -- and since
+                     final/peak can never exceed 1, that target can NEVER FAIL. An
+                     unfalsifiable target that always reports "met" is worse than no
+                     target, so the label states the quantity and its scale. -->
+                <option value="decay_ratio" ${tgt.type === 'decay_ratio' ? 'selected' : ''}>Remaining (final/peak, 0-1)</option>
                 <option value="steady_state" ${tgt.type === 'steady_state' ? 'selected' : ''}>Steady State</option>
                 <option value="oscillation" ${tgt.type === 'oscillation' ? 'selected' : ''}>Oscillation</option>
                 <option value="bistability" ${tgt.type === 'bistability' ? 'selected' : ''}>Bistability</option>
