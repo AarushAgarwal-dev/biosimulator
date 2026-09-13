@@ -154,3 +154,13 @@ _srv*.err
 _wf_probe*.log
 _wf_probe*.err
 _probe_*.py
+# `_probe_*.py` alone was too narrow: it missed probe_bedrock_llm.py,
+# probe_bedrock_results.json and _dump_probe.py, all of which turned up untracked
+# and would have been swept into a commit by `git add -A`. Probes are scratch by
+# definition, wherever the word sits in the name. A real deliverable is a test_*.py
+# or a named module, so none of these patterns can shadow one.
+probe_*.py
+probe_*.json
+*_probe.py
+_dump_*.py
+_chk*.ps1
