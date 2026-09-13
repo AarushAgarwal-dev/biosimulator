@@ -18,6 +18,30 @@
     <!-- The existing design system, then workflow-specific additions built on its tokens. -->
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="workflow.css">
+
+    <!--
+      PAGE-SCROLL OVERRIDE. style.css is written for index.html, which is a
+      FIXED-HEIGHT app shell whose panels scroll internally: it sets
+      `body { overflow: hidden; height: 100vh }` (style.css lines 38-39). This page is
+      the opposite -- one long document that must scroll -- so inheriting that rule
+      made everything below the fold unreachable. A researcher could not get to the
+      approach configuration, the run controls, or the results at all.
+      Scoped here, in the page's own head, so index.html's shell is untouched.
+    -->
+    <style>
+        html, body {
+            overflow: auto;
+            overflow-x: hidden;
+            height: auto;
+            min-height: 100vh;
+        }
+        /* The stage rail is position:sticky. Without a bounded height a rail taller
+           than the viewport pins in place with its lower stages unreachable. */
+        .wf-rail {
+            max-height: calc(100vh - 36px);
+            overflow-y: auto;
+        }
+    </style>
 </head>
 
 <body>
@@ -134,8 +158,23 @@
                 <section class="wf-stage card" data-stage="topology" hidden>
                     <div class="wf-stage-head">
                         <h2 class="section-title">2. Nodes, edges &amp; cells</h2>
-                        <p class="wf-hint">Click the canvas to place nodes. Select two nodes to connect them; select a
-                            closed loop to make a cell.</p>
+                        <!-- This hint used to read "Click the canvas to place nodes",
+                             which is false: the SELECT tool is active by default, so
+                             clicking the canvas does nothing at all. Verified in the
+                             browser -- a canvas click with Select active produces no
+                             node and no backend call. The instruction omitted the one
+                             step you cannot skip, and a researcher following it
+                             concluded the feature was broken. -->
+                        <p class="wf-hint">
+                            <strong>1.</strong> Pick <strong>Add node</strong> below, then click the canvas
+                            for each node — the <strong>Select</strong> tool is active first and will not
+                            place anything.
+                            <strong>2.</strong> Pick <strong>Connect</strong> and click two nodes to join them
+                            with an edge.
+                            <strong>3.</strong> With <strong>Select</strong>, click the nodes of a closed loop,
+                            then press <strong>Make cell from selection</strong>. <strong>Find loops</strong>
+                            detects closed loops for you.
+                        </p>
                     </div>
                     <div class="wf-canvas-slot" data-slot="topology"></div>
                     <div class="wf-two-col">

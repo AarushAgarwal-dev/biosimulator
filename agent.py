@@ -641,17 +641,36 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
     """
     text_lower = text.lower()
     
-    # Stopwords that should never be treated as species/node names
+    # Stopwords that should never be treated as species/node names.
+    #
+    # These are ENGLISH FUNCTION WORDS only. This set used to also contain PROTEIN,
+    # MOLECULE, RECEPTOR, ENZYME, FACTOR and COMPLEX -- every one of which is a species
+    # name a biologist actually writes. "LIGAND activates RECEPTOR. RECEPTOR activates
+    # KINASE. KINASE activates TARGET." lost RECEPTOR entirely, which broke the chain, so
+    # KINASE and TARGET came out completely FLAT and only LIGAND moved. A four-step
+    # cascade -- the most basic thing anyone types into this box -- silently produced a
+    # model missing a step, with no warning anywhere.
+    #
+    # The intent was to catch generic usage ("the protein activates X"). Dropping the
+    # word was the wrong remedy: a missing node breaks every downstream species
+    # invisibly, whereas modelling a generically-named species is at worst inelegant and
+    # is exactly what the researcher described. Anything rejected here is now also
+    # REPORTED if a relation referenced it, so a lost species can never be silent.
     STOPWORDS = {
         "IT", "ITSELF", "THEM", "THIS", "THAT", "WHICH", "THE", "AND", "OR",
         "TO", "IS", "ARE", "WAS", "WERE", "IN", "ON", "AT", "BY", "OF",
         "A", "AN", "ITS", "THEN", "ALSO", "BOTH", "EACH", "WITH", "FROM",
         "NOT", "BUT", "IF", "SO", "AS", "BE", "HAS", "HAD", "HAVE",
         "SELF", "DOES", "DO", "DID", "WILL", "CAN", "MAY", "SHOULD",
-        "PROTEIN", "MOLECULE", "RECEPTOR", "ENZYME", "FACTOR", "COMPLEX",
+        # Adverbs the PDE branch reads as diffusion-rate hints, not species.
         "SLOWLY", "QUICKLY", "RAPIDLY", "FAST", "SLOW",
     }
-    
+
+    #: Names rejected by is_valid_species that a relation actually referred to. A
+    #: dropped endpoint means the described chain is broken, which the caller must
+    #: surface rather than returning a quietly incomplete model.
+    rejected_in_relations = set()
+
     def is_valid_species(name: str) -> bool:
         """Check if a name is a valid biological species identifier."""
         raw = (name or "").strip()
@@ -665,9 +684,67 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
         if len(raw) == 1:
             return raw.isupper()
         if upper in STOPWORDS:
+            rejected_in_relations.add(upper)
             return False
         return True
     
+    # Adverbs and connectives that sit BETWEEN the subject and its verb, which pushes
+    # the real subject out of the capture slot: "INSULIN in turn lowers GLUCOSE" parsed
+    # as TURN -| GLUCOSE, and "P53 also drives production of MDM2" as ALSO -> MDM2. The
+    # species was replaced by an English word and the real relation was lost. These are
+    # removed from the copy of the sentence used for RELATION matching only -- the
+    # original text still feeds the PDE/diffusion-rate detection, which reads words like
+    # "slowly" as meaningful.
+    interjections = re.compile(
+        r"\b(?:in\s+turn|then|also|subsequently|in\s+addition|additionally|however|"
+        r"therefore|thus|consequently|meanwhile|finally|next|again|further|furthermore|"
+        r"moreover|indeed|actually|effectively|directly|indirectly|strongly|weakly|"
+        r"rapidly|slowly|quickly|steadily|gradually|immediately|eventually|typically|"
+        r"normally|usually|often|sometimes|always|only|just|both|either)\b",
+        re.IGNORECASE)
+
+    def _scrub(text: str) -> str:
+        """Drop interjections and collapse the whitespace they leave behind."""
+        return re.sub(r"\s{2,}", " ", interjections.sub(" ", text)).strip()
+
+    def _first_valid_species(sentence: str):
+        """The first token in the sentence that could be a species.
+
+        Used only to recover the SUBJECT of a passive clause that a conjunction has
+        pushed out of reach: "P53 is produced steadily and is degraded by MDM2" matches
+        `<word> is degraded by <word>` with the first word being "and", which is not a
+        species. The subject of such a sentence is its opening species, so falling back
+        to it recovers MDM2 -| P53 instead of discarding the clause. Returns None when
+        the sentence opens with nothing usable, and the relation is then skipped.
+        """
+        for token in re.findall(r"\w+", sentence):
+            upper = token.upper()
+            if is_valid_species(upper) and not token.replace(".", "").isdigit():
+                return upper
+        return None
+
+    def _orient(match, is_reversed: bool, sentence: str):
+        """Resolve one regex match into (source, target), or (None, None) to skip.
+
+        `is_reversed` is set for passive voice, where the sentence names the target
+        first: "ERK is phosphorylated by MEK" is the edge MEK -> ERK, and emitting it
+        the other way round would invert the biology while looking perfectly sane.
+        """
+        first, second = str(match[0]).upper(), str(match[1]).upper()
+        if is_reversed:
+            target, source = first, second
+            if not is_valid_species(target):
+                # A conjunction stole the subject slot -- recover it from the sentence.
+                recovered = _first_valid_species(sentence)
+                if recovered is None:
+                    return None, None
+                target = recovered
+        else:
+            source, target = first, second
+        if not is_valid_species(source) or not is_valid_species(target):
+            return None, None
+        return source, target
+
     # 1. Detect PDE vs ODE
     is_pde = any(w in text_lower for w in ["pde", "reaction-diffusion", "turing", "spatial", "pattern", "diffusion"])
     
@@ -721,24 +798,69 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
     edges = []
     
     # Compound sentence pattern: "X binds to Y and activates Y/it"
+    # A NOMINALISATION between the verb and the species names a PROCESS, not a species.
+    # "GLUCOSE stimulates release of INSULIN" used to parse as GLUCOSE -> RELEASE, with
+    # INSULIN dropped entirely and no warning: a two-species model with a fabricated
+    # species, both traces flat, presented as a successful parse. Skipping the
+    # nominalisation is what makes the real target reachable.
+    nominalisation = (
+        r"(?:(?:the|a|an)\s+)?"
+        r"(?:release|production|expression|synthesis|secretion|transcription|"
+        r"translation|degradation|breakdown|accumulation|activation|inactivation|"
+        r"phosphorylation|dephosphorylation|formation|cleavage|activity|levels?|"
+        r"amount|concentration|abundance)\s+of\s+"
+    )
+    # A species slot: an optional nominalisation, optional article, then the name.
+    sp = rf"(?:{nominalisation})?(?:(?:the|a|an)\s+)?(\w+)"
+
     compound_activation_patterns = [
         r"(\w+)\s+(?:binds\s+to|binds)\s+(\w+)\s+and\s+(?:activates|stimulates|triggers|induces)\s+(?:it|itself|\w+)",
     ]
-    
+
+    # Each entry is (pattern, reversed). `reversed` means the FIRST group is the target
+    # and the second is the source, which is how passive voice reads: "ERK is
+    # phosphorylated by MEK" is MEK -> ERK. Passive voice is standard in biological
+    # writing and previously produced NO species at all -- the parser refused the whole
+    # description, which is honest but useless.
     activation_patterns = [
-        r"(\w+)\s+(?:activates|stimulates|triggers|induces|phosphorylates)\s+(\w+)",
-        r"(\w+)\s+(?:increases|promotes)\s+(\w+)",
-        r"(\w+)\s+(?:binds\s+to|binds)\s+(\w+)",
+        # Active voice.
+        (rf"(\w+)\s+(?:activates|activate|stimulates|stimulate|triggers|trigger|"
+         rf"induces|induce|phosphorylates|phosphorylate|upregulates|upregulate|"
+         rf"up-regulates|drives|drive|causes|cause|produces|produce|switches\s+on|"
+         rf"turns\s+on|catalyses|catalyzes|promotes|promote|increases|increase|"
+         rf"enhances|enhance|amplifies|amplify|recruits|recruit|expresses|express|"
+         rf"secretes|secrete|releases|release)\s+{sp}", False),
+        (rf"(\w+)\s+(?:leads\s+to|results\s+in|gives\s+rise\s+to|feeds\s+into)\s+{sp}", False),
+        (rf"(\w+)\s+(?:binds\s+to|binds)\s+{sp}", False),
+        # Passive voice -- target first, source after "by".
+        (rf"(\w+)\s+(?:is|are|gets|becomes)\s+(?:activated|phosphorylated|stimulated|"
+         rf"induced|upregulated|up-regulated|switched\s+on|turned\s+on|driven|produced|"
+         rf"promoted|increased|enhanced|expressed|secreted|released|recruited)\s+by\s+{sp}", True),
+        # Arrow notation, which biologists write constantly and the parser ignored.
+        (rf"(\w+)\s*(?:-+>|=+>|\u2192)\s*{sp}", False),
     ]
     inhibition_patterns = [
-        r"(\w+)\s+(?:inhibits|blocks|suppresses|dephosphorylates)\s+(\w+)",
-        r"(\w+)\s+(?:decreases|represses)\s+(\w+)"
+        (rf"(\w+)\s+(?:inhibits|inhibit|blocks|block|suppresses|suppress|represses|"
+         rf"repress|dephosphorylates|dephosphorylate|downregulates|downregulate|"
+         rf"down-regulates|degrades|degrade|sequesters|sequester|inactivates|"
+         rf"inactivate|antagonises|antagonizes|decreases|decrease|reduces|reduce|"
+         rf"lowers|lower|switches\s+off|turns\s+off|removes|remove|"
+         rf"consumes|consume)\s+{sp}", False),
+        (rf"(\w+)\s+(?:is|are|gets|becomes)\s+(?:inhibited|blocked|suppressed|"
+         rf"repressed|dephosphorylated|downregulated|down-regulated|degraded|"
+         rf"sequestered|inactivated|switched\s+off|turned\s+off|removed|"
+         rf"consumed|antagonised|antagonized)\s+by\s+{sp}", True),
+        (rf"(\w+)\s*(?:-+\|+|\u22a3)\s*{sp}", False),
     ]
     initial_patterns = [
         r"(?:initial\s+)?(\w+)\s+(?:starts\s+at|is)\s+([0-9.]+)",
         r"([0-9.]+)\s+units?\s+of\s+(\w+)"
     ]
     
+    # Species whose initial value the description states outright. Anything else got a
+    # placeholder, and a placeholder must never be mistaken for the researcher's intent.
+    explicit_initials = set()
+
     for sentence in sentences:
         sentence = sentence.strip()
         if not sentence:
@@ -765,11 +887,13 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
                     continue
                 if is_valid_species(name):
                     nodes[name] = {"id": name, "name": f"{name} molecule", "initial_value": val}
+                    explicit_initials.add(name)
         
         # First try compound patterns (e.g. "X binds to Y and activates it")
+        relation_text = _scrub(sentence)
         compound_matched = False
         for pattern in compound_activation_patterns:
-            matches = re.findall(pattern, sentence, re.IGNORECASE)
+            matches = re.findall(pattern, relation_text, re.IGNORECASE)
             for m in matches:
                 src, tgt = m[0].upper(), m[1].upper()
                 if is_valid_species(src) and is_valid_species(tgt):
@@ -790,11 +914,12 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
             continue
                 
         # Parse activations
-        for pattern in activation_patterns:
-            matches = re.findall(pattern, sentence, re.IGNORECASE)
-            for m in matches:
-                src, tgt = m[0].upper(), m[1].upper()
-                if not is_valid_species(src) or not is_valid_species(tgt):
+        for pattern, is_reversed in activation_patterns:
+            for m in re.findall(pattern, relation_text, re.IGNORECASE):
+                src, tgt = _orient(m, is_reversed, sentence)
+                if src is None:
+                    continue
+                if src == tgt:
                     continue
                 if src not in nodes:
                     nodes[src] = {"id": src, "name": f"{src} protein", "initial_value": 0.0}
@@ -808,11 +933,12 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
                 })
                 
         # Parse inhibitions
-        for pattern in inhibition_patterns:
-            matches = re.findall(pattern, sentence, re.IGNORECASE)
-            for m in matches:
-                src, tgt = m[0].upper(), m[1].upper()
-                if not is_valid_species(src) or not is_valid_species(tgt):
+        for pattern, is_reversed in inhibition_patterns:
+            for m in re.findall(pattern, relation_text, re.IGNORECASE):
+                src, tgt = _orient(m, is_reversed, sentence)
+                if src is None:
+                    continue
+                if src == tgt:
                     continue
                 if src not in nodes:
                     nodes[src] = {"id": src, "name": f"{src} protein", "initial_value": 0.0}
@@ -855,7 +981,49 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
             ),
         }
 
-    return {
+    # DRIVE THE MODEL. Every species found through a relation gets initial_value 0.0,
+    # so a description that names no starting amounts -- which is most prose -- compiled
+    # to a model sitting entirely at zero. Each rate law is a Hill term in its
+    # regulators, and a Hill term of zero is zero, so nothing ever moved: the researcher
+    # got a structurally correct cascade whose every trace was a flat line at the
+    # origin, which reads as "the model does nothing" rather than "nothing started it".
+    #
+    # A species with no incoming edge has no upstream regulator in the description, so it
+    # IS the input the researcher is describing. Giving those a unit starting amount is
+    # what makes the described behaviour visible. Species that are downstream legitimately
+    # start empty, and any value the description stated is never touched.
+    # A species can only RISE if something activates it. So the test is not "has any
+    # incoming edge" but "has an incoming ACTIVATION": a species that is only ever
+    # inhibited has no production term at all, and starting it at zero makes the
+    # description unrealisable -- the inhibition acts on nothing and the trace is a flat
+    # line at the origin. This also covers a closed feedback loop such as
+    # "GLUCOSE stimulates INSULIN. INSULIN lowers GLUCOSE.", where every species has an
+    # incoming edge, nothing was ever seeded, and the whole loop sat at zero.
+    if nodes and edges:
+        activated = {str(edge.get("target")) for edge in edges
+                     if edge.get("type") == "activation"}
+        seeded = []
+        for node_id, node in nodes.items():
+            if node_id in activated or node_id in explicit_initials:
+                continue
+            if float(node.get("initial_value") or 0.0) == 0.0:
+                node["initial_value"] = 1.0
+                seeded.append(node_id)
+        if seeded:
+            _seed_note = (
+                "No starting amount was given for %s, and nothing in your description "
+                "activates them, so each was set to 1.0 -- a species that is only "
+                "inhibited (or never regulated) cannot rise from zero, and the whole "
+                "model would read as inert. Set your own values in the "
+                "initial-conditions panel."
+                % ", ".join(sorted(seeded))
+            )
+        else:
+            _seed_note = ""
+    else:
+        _seed_note = ""
+
+    blueprint = {
         "type": "ODE",
         "nodes": list(nodes.values()),
         "edges": edges,
@@ -863,6 +1031,39 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
             "t_max": 50.0
         }
     }
+
+    # A relation that named something we refused to treat as a species leaves a HOLE in
+    # the chain: the edge is absent, everything downstream of it never gets driven, and
+    # those species simulate as flat lines. That looked like a working model with boring
+    # dynamics. Say so instead.
+    if rejected_in_relations:
+        dropped = ", ".join(sorted(rejected_in_relations))
+        blueprint["_llm_notice"] = (
+            f"These words were read as ordinary English rather than as species and were "
+            f"left out of the model: {dropped}. Any step of your description that used "
+            f"them is missing, so species downstream of it may not change at all. Rename "
+            f"them to something specific (for example 'EGFR' instead of 'receptor') and "
+            f"compile again."
+        )
+
+    if _seed_note:
+        existing = blueprint.get("_llm_notice", "")
+        blueprint["_llm_notice"] = (existing + " " if existing else "") + _seed_note
+
+    # Species named in a relation but never reachable from a driver will simulate flat.
+    # Report them, because a flat trace is indistinguishable from a modelling choice.
+    if nodes and edges:
+        driven = {str(edge.get("target")) for edge in edges}
+        drivers = {str(edge.get("source")) for edge in edges}
+        orphans = sorted(set(nodes) - driven - drivers)
+        if orphans:
+            existing = blueprint.get("_llm_notice", "")
+            blueprint["_llm_notice"] = (existing + " " if existing else "") + (
+                f"These species take part in no interaction, so they will stay at their "
+                f"initial value: {', '.join(orphans)}."
+            )
+
+    return blueprint
 
 def get_default_egfr_blueprint() -> Dict[str, Any]:
     return {

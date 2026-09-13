@@ -544,6 +544,11 @@ async function loadPreset(name) {
     // species exactly matching the targets, so the closed-loop optimizer works reliably.
     if (preset.blueprint) {
         state.blueprint = JSON.parse(JSON.stringify(preset.blueprint));
+        // Remember which preset this came from and the text it shipped with, so the
+        // Compile button can tell "the user loaded a preset" from "the user wrote their
+        // own description" and does not throw the curated model away.
+        state.presetName = name;
+        state.presetText = preset.text;
         document.getElementById("blueprint-json-viewer").textContent = JSON.stringify(state.blueprint, null, 2);
         renderCytoscape();
         renderTargets();
@@ -781,6 +786,29 @@ document.getElementById("btn-parse-text").addEventListener("click", async () => 
     const text = document.getElementById("bio-input").value.trim();
     if (!text) return alert("Please type a biological process description first!");
 
+    // If a preset supplied a CURATED blueprint and the description has not been edited
+    // since, compile that blueprint instead of re-deriving one from the text.
+    //
+    // Why: this button is the obvious next action after loading a preset, and it used to
+    // always re-parse the text. That silently DISCARDED the preset's curated model and
+    // replaced it with whatever the LLM inferred -- which for EGF/EGFR invented separate
+    // activated forms (ERK_act, MEK_act, ...), leaving the plain ERK that the preset's
+    // own targets name as a different species. The researcher then saw a model that
+    // failed the targets shipped alongside it (ERK peaking at 4.71 against a target
+    // maximum of 1.0), having pressed the one button the interface most invites.
+    // Editing the text is the signal that you want it re-derived; loading a preset and
+    // pressing compile is not.
+    if (state.blueprint && state.presetText && text === state.presetText.trim()) {
+        updateStatus("Compiling the preset's model...", "yellow");
+        const ok = await compileBlueprint();
+        if (ok && typeof showToast === "function") {
+            showToast(`Compiled the curated ${state.presetName || "preset"} model. `
+                      + `Edit the description and press this again to re-derive it from `
+                      + `your text instead.`, "info", 7000);
+        }
+        return ok;
+    }
+
     updateStatus("Parsing text...", "yellow");
 
     try {
@@ -789,6 +817,10 @@ document.getElementById("btn-parse-text").addEventListener("click", async () => 
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text: text, llm: getLlmConfig() })
         });
+        // The text is now the source of truth, so a later press must not fall back to
+        // the preset's curated model.
+        state.presetText = null;
+        state.presetName = null;
         return await loadBlueprintIntoUI(data);
     } catch (e) {
         console.error("Blueprint parsing failed", e);

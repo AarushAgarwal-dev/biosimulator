@@ -9,14 +9,18 @@ try:
 except Exception:
     pass  # dotenv optional; real env vars / ~/.aws still work without it
 
+import contextlib
+import math
+import time
 import traceback
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, NoReturn, Optional
 
+import sympy
 import db_interface
 from simulation_engine import ODEModel, solve_pde, explore_parameter_space
 import agent
@@ -121,7 +125,10 @@ class MultiscaleRequest(BaseModel):
     abm_blueprint: Dict[str, Any]
     ode_blueprint: Optional[Dict[str, Any]] = None
     coupling_rules: Optional[List[Dict[str, Any]]] = None
-    num_mcs: Optional[int] = 100
+    # num_mcs has NO default: it is the size of the run, and defaulting it to 100
+    # is what let a 16-byte body buy a 100-step simulation over a 100x100 lattice.
+    # save_every only sets the reporting cadence, so it keeps its default.
+    num_mcs: Optional[int] = None
     save_every: Optional[int] = 10
 
 class SensitivityRequest(BaseModel):
@@ -140,6 +147,326 @@ class SampleRequest(BaseModel):
     method: Optional[str] = "lhs"               # "lhs" | "sobol" | "grid" | "random"
     target_species: Optional[str] = None
     seed: Optional[int] = 0
+
+
+# =============================================================================
+# Request validation and execution budgets
+#
+# Every simulation endpoint below hands caller-supplied numbers to an unbounded
+# numerical kernel. Four failure modes were measured on the live routes and are
+# closed here, at the edge, before any solver is entered:
+#
+#   * NO EXECUTION BUDGET. One /api/simulate request with odes {"X": "X**X**X"}
+#     and t_max=1e9 returned no bytes in 120 s and held the endpoint. A horizon
+#     bound alone does not fix that -- see _ode_execution_budget.
+#   * A FULL DEFAULT RUN FOR AN EMPTY BODY. POST {"blueprint": {}} to
+#     /api/abm/simulate answered 200 with 5,621,290 bytes: a 100x100 lattice over
+#     500 Monte Carlo steps, from a 16-byte unauthenticated request.
+#   * NONSENSE NUMERICS REPORTED AS SUCCESS. t_max=-10 integrated backwards in
+#     time, dt=-0.1 integrated nothing, num_mcs=-5 returned a single frame -- all
+#     200, all indistinguishable downstream from a real run.
+#   * BARE PYTHON REPRS AS 500s. A node with no id surfaced as
+#     500 {"detail": "'id'"}, odes {"X": "1/0"} as 500 {"detail":
+#     "'ComplexInfinity'"} -- nothing a caller can act on, for ordinary bad input.
+#
+# The rule applied throughout: a request whose numbers cannot describe a run is
+# REFUSED and told which field and which value was wrong. Truncating, reversing
+# or defaulting the run and reporting it as complete is the worse outcome,
+# because nothing downstream can tell such a result from a real one.
+# =============================================================================
+
+def _env_positive_float(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 and math.isfinite(value) else default
+
+
+# Wall-clock ceiling for the integration inside ONE request.
+SIMULATE_BUDGET_SECONDS = _env_positive_float("BIOSIM_SIMULATE_BUDGET_SECONDS", 20.0)
+# Largest integration horizon accepted. Far past anything this app's models need;
+# the point is that the horizon is BOUNDED, not that 1e6 is biologically special.
+MAX_T_MAX = _env_positive_float("BIOSIM_MAX_T_MAX", 1.0e6)
+# Explicit-scheme step ceilings. Both PDE solvers materialise one Python list
+# entry per step (`step_sizes = [dt] * n_full`), so t_max/dt is a MEMORY bound as
+# well as a time bound: t_end=1e9 at the stability-limited dt raised MemoryError
+# inside /api/pde/solve1d and came back as an opaque 500.
+MAX_PDE_STEPS = 2_000_000
+MAX_MONTE_CARLO_STEPS = 100_000
+MAX_SAMPLES = 2000
+# The strategies simulation_engine._unit_samples actually implements. Anything
+# else used to fall through to plain Monte-Carlo while the response echoed the
+# name the caller sent, so "telepathy" was reported as the method used.
+SAMPLING_METHODS = ("lhs", "latin", "latin_hypercube", "sobol", "quasi",
+                    "grid", "factorial", "random")
+
+
+def _reject(detail: Any) -> NoReturn:
+    """422: the request was understood and is unusable. Never a 500."""
+    raise HTTPException(status_code=422, detail=detail)
+
+
+def _finite_number(field: str, value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        _reject(f"{field} must be a number; got {value!r}.")
+    if not math.isfinite(number):
+        _reject(f"{field} must be a finite number; got {value!r}.")
+    return number
+
+
+def _positive_number(field: str, value: Any, reason: str = "") -> float:
+    number = _finite_number(field, value)
+    if number <= 0:
+        _reject(f"{field} must be greater than zero; got {number:g}."
+                + (f" {reason}" if reason else ""))
+    return number
+
+
+def _positive_int(field: str, value: Any, reason: str = "") -> int:
+    number = _finite_number(field, value)
+    if number != int(number):
+        _reject(f"{field} must be a whole number; got {value!r}.")
+    if int(number) <= 0:
+        _reject(f"{field} must be at least 1; got {int(number)}."
+                + (f" {reason}" if reason else ""))
+    return int(number)
+
+
+class ExecutionBudgetExceeded(Exception):
+    """One request's integration ran past its wall-clock budget."""
+
+    def __init__(self, budget_seconds: float, t_max: float):
+        self.budget_seconds = budget_seconds
+        self.t_max = t_max
+        super().__init__(f"execution budget of {budget_seconds:g}s exceeded")
+
+
+@contextlib.contextmanager
+def _ode_execution_budget(model, t_max: float, budget_seconds: Optional[float] = None):
+    """Enforce a wall-clock deadline INSIDE the integration, not around it.
+
+    A horizon bound is not an execution bound. LSODA takes as many internal steps
+    as the right-hand side demands, so a stiff or explosive system spends unbounded
+    time on a horizon that looks modest -- measured with odes {"X": "X**X**X"},
+    which produced no bytes in 120 s. Checking the clock before or after the call
+    cannot help, because there is nothing to check until the call returns.
+
+    ODEModel integrates exclusively through `_f_lambdified`, so wrapping that one
+    callable puts the deadline on the solver's own inner loop, which is the only
+    place that can interrupt it. The exception propagates out of SciPy's LSODA
+    wrapper (verified), and the original callable is restored on the way out, so
+    the model object is left exactly as it was found.
+    """
+    budget = SIMULATE_BUDGET_SECONDS if budget_seconds is None else budget_seconds
+    original = model._f_lambdified
+    deadline = time.monotonic() + budget
+
+    def guarded(t, y, params):
+        if time.monotonic() > deadline:
+            raise ExecutionBudgetExceeded(budget, t_max)
+        return original(t, y, params)
+
+    model._f_lambdified = guarded
+    try:
+        yield
+    finally:
+        model._f_lambdified = original
+
+
+def _budget_exceeded(exc: ExecutionBudgetExceeded) -> HTTPException:
+    """400 naming the limit and the horizon that blew it.
+
+    Deliberately not a truncated 200: a horizon the solver never reached, reported
+    as a completed run, cannot be told apart from a real result by anything
+    downstream -- including the closed-loop refinement that grades these runs.
+    """
+    return HTTPException(
+        status_code=400,
+        detail=(
+            f"This model exceeded the server's {exc.budget_seconds:g}-second execution "
+            f"budget for a single request while integrating to t_max={exc.t_max:g}. "
+            f"The run was ABANDONED, not shortened. Reduce t_max, soften the "
+            f"stiffness of the equations, or run this model offline."
+        ),
+    )
+
+
+def _validated_horizon(config: Dict[str, Any], default: float,
+                       field: str = "simulation_config.t_max") -> float:
+    """A t_max that is positive, finite and inside the server's bound."""
+    supplied = config.get("t_max", default) if isinstance(config, dict) else default
+    t_max = _positive_number(
+        field, supplied,
+        "A negative horizon integrates backwards in time and a zero horizon "
+        "integrates nothing; either one is reported as a successful run.")
+    if t_max > MAX_T_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"{field}={t_max:g} exceeds the server limit of {MAX_T_MAX:g}. "
+                    f"The horizon is bounded so one request cannot occupy the "
+                    f"endpoint indefinitely; the limit is not silently applied, "
+                    f"because a shortened run reported as complete is worse than "
+                    f"this refusal."),
+        )
+    return t_max
+
+
+def _validated_ode_model(blueprint: Dict[str, Any], where: str = "blueprint"):
+    """Build an ODEModel, turning every malformed-input failure into a 422.
+
+    ODEModel indexes `node["id"]` directly and lambdifies whatever SymPy produced,
+    so a node with no id surfaced as 500 {"detail": "'id'"} and odes {"X": "1/0"}
+    as 500 {"detail": "'ComplexInfinity'"}. Both are ordinary bad input and both
+    are named here, with the offending index or species.
+    """
+    nodes = blueprint.get("nodes") if isinstance(blueprint, dict) else None
+    if not isinstance(nodes, list) or not nodes:
+        _reject(f"{where}.nodes must be a non-empty list of species objects, each "
+                f"with an 'id'.")
+    seen: Dict[str, int] = {}
+    for index, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            _reject(f"{where}.nodes[{index}] must be an object with an 'id'; got "
+                    f"{type(node).__name__}.")
+        node_id = node.get("id")
+        if node_id is None or str(node_id).strip() == "":
+            _reject(f"{where}.nodes[{index}] has no 'id'. Every species needs one, "
+                    f"because the id IS the state variable in the equations.")
+        if str(node_id) in seen:
+            _reject(f"{where}.nodes[{index}] repeats the id {str(node_id)!r}, already "
+                    f"used by nodes[{seen[str(node_id)]}].")
+        seen[str(node_id)] = index
+
+    odes = blueprint.get("odes") or {}
+    if odes and not isinstance(odes, dict):
+        _reject(f"{where}.odes must be an object mapping a species id to its rate "
+                f"expression; got {type(odes).__name__}.")
+    for species, expression in (odes.items() if isinstance(odes, dict) else ()):
+        try:
+            parsed = sympy.sympify(str(expression))
+        except (sympy.SympifyError, SyntaxError, TypeError, AttributeError) as exc:
+            _reject(f"{where}.odes[{species!r}] is not a readable expression "
+                    f"({type(exc).__name__}): {expression!r}.")
+        if parsed.has(sympy.zoo) or parsed.has(sympy.oo) or parsed.has(sympy.nan):
+            _reject(f"{where}.odes[{species!r}] = {expression!r} is not finite: it "
+                    f"evaluates to {parsed}, which is a division by zero. Such a "
+                    f"rate law cannot be compiled or integrated.")
+
+    try:
+        return ODEModel(blueprint)
+    except HTTPException:
+        raise
+    except KeyError as exc:
+        missing = exc.args[0] if exc.args else "a required field"
+        _reject(f"{where} is missing {missing!r}, which compiling the equations "
+                f"requires.")
+    except (TypeError, ValueError, AttributeError) as exc:
+        _reject(f"{where} could not be compiled into an ODE system "
+                f"({type(exc).__name__}): {exc}")
+
+
+def _blueprint_species(blueprint: Dict[str, Any]) -> List[str]:
+    """Every species name this blueprint can be graded on.
+
+    Nodes first (the ODE state), then spatial reaction keys (the PDE fields), so a
+    PDE blueprint that declares its fields only under `spatial.reactions` is still
+    matched.
+    """
+    names: List[str] = []
+    for node in (blueprint.get("nodes") or []):
+        if isinstance(node, dict) and node.get("id") is not None:
+            names.append(str(node["id"]))
+    spatial = blueprint.get("spatial") or {}
+    for key in (spatial.get("reactions") or {}):
+        if str(key) not in names:
+            names.append(str(key))
+    return names
+
+
+def _validated_pde_config(blueprint: Dict[str, Any]) -> Dict[str, float]:
+    """t_max, dt and grid dimensions that can actually describe a spatial run."""
+    spatial = blueprint.get("spatial") or {}
+    config = blueprint.get("simulation_config") or {}
+    t_max = _validated_horizon(config, 100.0)
+    dt = _positive_number(
+        "simulation_config.dt", config.get("dt", 0.1),
+        "A non-positive dt takes no time step at all: the solver returned a single "
+        "frame at t=0 and reported the whole horizon as solved.")
+
+    for key, read_as in (("nx", "x_grid"), ("ny", "y_grid")):
+        if key in spatial:
+            _reject(f"spatial.{key} is not a field the PDE solver reads, so it was "
+                    f"silently ignored and the grid fell back to the 50x50 default. "
+                    f"Use spatial.{read_as} instead (got spatial.{key}="
+                    f"{spatial[key]!r}).")
+    for key in ("x_grid", "y_grid"):
+        if key in spatial:
+            _positive_int(f"spatial.{key}", spatial[key],
+                          "A grid needs at least one cell along each axis.")
+
+    steps = math.floor(t_max / dt)
+    if steps > MAX_PDE_STEPS:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"t_max={t_max:g} with dt={dt:g} needs {steps:,} explicit time "
+                    f"steps, above the server limit of {MAX_PDE_STEPS:,}. Raise dt "
+                    f"or lower t_max; the horizon is not shortened silently."),
+        )
+    return {"t_max": t_max, "dt": dt, "steps": steps}
+
+
+def _missing_lattice_fields(blueprint: Any, where: str) -> List[str]:
+    """The fields without which there is no ABM to run.
+
+    POST {"blueprint": {}} used to answer 200 with a 100x100 lattice over 500
+    Monte Carlo steps: a success reported for input nobody supplied, and an
+    amplification vector -- a handful of concurrent 16-byte bodies saturate the
+    process. Requiring these makes the caller state the size of the run.
+    """
+    if not isinstance(blueprint, dict):
+        return [f"{where} must be an object describing the model, "
+                f"not {type(blueprint).__name__}."]
+    missing: List[str] = []
+    grid = blueprint.get("grid")
+    if not isinstance(grid, dict) or grid.get("width") is None or grid.get("height") is None:
+        missing.append(f"{where}.grid.width and {where}.grid.height - the lattice size")
+    cell_types = blueprint.get("cell_types")
+    if not isinstance(cell_types, list) or not cell_types:
+        missing.append(f"{where}.cell_types - at least one cell type, each with a type_id")
+    else:
+        for index, entry in enumerate(cell_types):
+            if not isinstance(entry, dict) or entry.get("type_id") is None:
+                missing.append(f"{where}.cell_types[{index}].type_id")
+    if not blueprint.get("initial_config"):
+        missing.append(f"{where}.initial_config - where the cells start; without it "
+                       f"the lattice is empty and every step is wasted")
+    return missing
+
+
+def _validated_lattice(blueprint: Dict[str, Any], where: str) -> None:
+    """Grid dimensions of a lattice model, after its required fields are present."""
+    grid = blueprint.get("grid") or {}
+    _positive_int(f"{where}.grid.width", grid.get("width"))
+    _positive_int(f"{where}.grid.height", grid.get("height"))
+
+
+def _validated_monte_carlo(num_mcs: Any, save_every: Any, where: str) -> Dict[str, int]:
+    """num_mcs / save_every that describe a run instead of an empty answer."""
+    steps = _positive_int(
+        f"{where}.num_mcs", num_mcs,
+        "A non-positive step count ran zero Monte Carlo steps and returned a "
+        "single frame at t=0, reported as a completed simulation.")
+    if steps > MAX_MONTE_CARLO_STEPS:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"{where}.num_mcs={steps:,} exceeds the server limit of "
+                    f"{MAX_MONTE_CARLO_STEPS:,} Monte Carlo steps for one request."),
+        )
+    every = _positive_int(f"{where}.save_every", 10 if save_every is None else save_every)
+    return {"num_mcs": steps, "save_every": every}
 
 
 # --- Existing Endpoints ---
@@ -226,7 +553,7 @@ def compile_blueprint(req: CompileRequest):
                 latex_eqs[name] = f"\\frac{{\\partial {name}}}{{\\partial t}} = {D_coeff} \\nabla^2 {name} + {formula}"
             return {"equations": latex_eqs, "equations_verbose": latex_eqs}
 
-        model = ODEModel(req.blueprint)
+        model = _validated_ode_model(req.blueprint)
         latex_eqs = model.get_equations_latex()
         latex_eqs_verbose = model.get_equations_latex(verbose=True)
         return {
@@ -253,6 +580,10 @@ def simulate_blueprint(req: SimulateRequest):
         bp_type = bp.get("type", "ODE")
         
         if bp_type == "PDE":
+            # Validate the numerics BEFORE the solver sees them: t_max=-10 used to
+            # come back 200 with a single frame at t=0, dt=-0.1 the same, and a
+            # grid key the solver does not read fell back to 50x50 in silence.
+            _validated_pde_config(bp)
             # The same solve the target evaluator uses (agent.simulate_pde_blueprint):
             # identical initial conditions and seed, so the field shown here is the
             # field /api/evaluate grades. Two separate solve paths would let the
@@ -262,17 +593,25 @@ def simulate_blueprint(req: SimulateRequest):
             )
             return result
         else:
-            model = ODEModel(bp)
+            model = _validated_ode_model(bp)
             config = bp.get("simulation_config", {})
-            t_max = config.get("t_max", 50.0)
+            t_max = _validated_horizon(config, 50.0)
 
             # Resolution scales with the time horizon so fast dynamics (oscillations,
             # sharp fold-change transients) are captured, not aliased by a coarse 100-point grid.
             num_points = int(min(5000, max(300, t_max * 15)))
-            result = model.simulate(t_max, num_points=num_points, custom_params=req.custom_params)
+            # num_points was already capped, but the CAP IS NOT A BUDGET: LSODA's
+            # internal step count is driven by the equations, not by the output
+            # grid, so a stiff right-hand side runs unbounded between two output
+            # points. The deadline lives inside the integration for that reason.
+            with _ode_execution_budget(model, t_max):
+                result = model.simulate(t_max, num_points=num_points,
+                                        custom_params=req.custom_params)
             return result
     except HTTPException:
-        raise                       # keep the precise 400 above, don't mask it as a 500
+        raise                       # keep the precise 400/422 above, don't mask it as a 500
+    except ExecutionBudgetExceeded as e:
+        raise _budget_exceeded(e)
     except agent.SpatialTargetError as e:
         # An unusable spatial blueprint (no reactions, non-numeric horizon) is the
         # caller's input problem, not a server fault.
@@ -283,17 +622,45 @@ def simulate_blueprint(req: SimulateRequest):
 @app.post("/api/optimize")
 def optimize_parameters(req: OptimizeRequest):
     """Fits model parameters to target data curves."""
+    model = _validated_ode_model(req.blueprint)
+
+    # fit_parameters_to_target indexes params_dict[p] directly, so an unknown name
+    # surfaced as 500 {"detail": "'does_not_exist'"}. Name it, and say what the
+    # model does have -- the caller cannot guess the generated parameter names.
+    known = sorted(model.params_dict.keys())
+    unknown = [p for p in (req.params_to_fit or []) if p not in model.params_dict]
+    if unknown:
+        _reject(f"These parameters do not exist in this model: "
+                f"{', '.join(repr(p) for p in unknown)}. "
+                f"Available parameters: {', '.join(known) if known else '(none)'}.")
+    if not req.target_times:
+        _reject("target_times must contain at least one time point to fit against.")
+    for index, moment in enumerate(req.target_times):
+        _finite_number(f"target_times[{index}]", moment)
+    for species, curve in (req.target_data or {}).items():
+        if len(curve) != len(req.target_times):
+            _reject(f"target_data[{species!r}] has {len(curve)} points but "
+                    f"target_times has {len(req.target_times)}; they must match.")
+
     try:
-        model = ODEModel(req.blueprint)
-        fitted, loss = model.fit_parameters_to_target(
-            target_data=req.target_data,
-            target_times=req.target_times,
-            params_to_fit=req.params_to_fit
-        )
+        t_max = max(float(t) for t in req.target_times)
+        # The fit calls simulate once per least-squares evaluation, so the same
+        # in-integration deadline applies -- otherwise one bad model turns a fit
+        # into the unbounded request /api/simulate was just protected from.
+        with _ode_execution_budget(model, t_max):
+            fitted, loss = model.fit_parameters_to_target(
+                target_data=req.target_data,
+                target_times=req.target_times,
+                params_to_fit=req.params_to_fit
+            )
         return {
             "fitted_parameters": fitted,
             "loss": loss
         }
+    except HTTPException:
+        raise
+    except ExecutionBudgetExceeded as e:
+        raise _budget_exceeded(e)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -394,15 +761,34 @@ def get_abm_preset(name: str):
 @app.post("/api/abm/simulate")
 def simulate_abm(req: ABMSimulateRequest):
     """Run a Cellular Potts Model ABM simulation."""
+    # An empty body used to produce a 100x100 lattice over 500 Monte Carlo steps
+    # and 5,621,290 bytes of JSON. Nothing in that request said what to simulate,
+    # so there is nothing to report as a success -- and a 16-byte body that costs
+    # the process 14 seconds is an amplification vector on an unauthenticated route.
+    missing = _missing_lattice_fields(req.blueprint, "blueprint")
+    if missing:
+        _reject({
+            "message": "This request does not describe a simulation, so none was run.",
+            "missing": missing,
+        })
+    _validated_lattice(req.blueprint, "blueprint")
+    config = req.blueprint.get("simulation_config") or {}
+    bounds = _validated_monte_carlo(config.get("num_mcs", 500), config.get("save_every", 10),
+                                    "blueprint.simulation_config")
+
     try:
         from abm_engine import build_cpm_from_blueprint
         cpm = build_cpm_from_blueprint(req.blueprint)
-        config = req.blueprint.get("simulation_config", {})
         result = cpm.simulate(
-            num_mcs=config.get("num_mcs", 500),
-            save_every=config.get("save_every", 10)
+            num_mcs=bounds["num_mcs"],
+            save_every=bounds["save_every"]
         )
         return result
+    except HTTPException:
+        raise
+    except KeyError as e:
+        _reject(f"The ABM blueprint is missing {e.args[0]!r}, which building the "
+                f"Cellular Potts model requires.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -473,6 +859,23 @@ def maple_validate(req: MAPLEValidateRequest):
 @app.post("/api/multiscale/simulate")
 def simulate_multiscale(req: MultiscaleRequest):
     """Run coupled ODE-ABM-PDE multi-scale simulation."""
+    # Same defect as /api/abm/simulate: POST {"blueprint": {}} answered 200 with
+    # 1,212,558 bytes off a 100x100 default lattice. num_mcs is required here too,
+    # because on this route the step count is a REQUEST field, not part of the
+    # blueprint -- so an omitted num_mcs silently bought 100 Monte Carlo steps.
+    missing = _missing_lattice_fields(req.abm_blueprint, "abm_blueprint")
+    if req.num_mcs is None:
+        missing.append("num_mcs - how many Monte Carlo steps to run")
+    if missing:
+        _reject({
+            "message": "This request does not describe a simulation, so none was run.",
+            "missing": missing,
+        })
+    _validated_lattice(req.abm_blueprint, "abm_blueprint")
+    bounds = _validated_monte_carlo(req.num_mcs, req.save_every, "request")
+    if req.ode_blueprint:
+        _validated_ode_model(req.ode_blueprint, "ode_blueprint")
+
     try:
         from multiscale import MultiscaleSimulator
         sim = MultiscaleSimulator()
@@ -482,10 +885,15 @@ def simulate_multiscale(req: MultiscaleRequest):
             coupling_rules=req.coupling_rules
         )
         result = sim.simulate(
-            num_mcs=req.num_mcs or 100,
-            save_every=req.save_every or 10
+            num_mcs=bounds["num_mcs"],
+            save_every=bounds["save_every"]
         )
         return result
+    except HTTPException:
+        raise
+    except KeyError as e:
+        _reject(f"The multi-scale request is missing {e.args[0]!r}, which building "
+                f"the coupled model requires.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -521,7 +929,26 @@ def evaluate_targets(req: EvaluateRequest):
     Refused targets never count towards `met_count`.
     """
     try:
-        t_max = float(req.blueprint.get("simulation_config", {}).get("t_max", 50.0))
+        # An unknown SPECIES used to be graded, not refused: the result came back
+        # met=false with detail "No simulation data", which never names the species
+        # and reads like a transient failure rather than a typo. Name it here, so a
+        # refinement loop cannot mistake an unevaluated target for a failed one.
+        # (An unknown METRIC is already refused with met=false by
+        # agent.evaluate_targets_on_blueprint and never counted towards met_count.)
+        known = _blueprint_species(req.blueprint)
+        for index, target in enumerate(req.targets or []):
+            if not isinstance(target, dict):
+                _reject(f"targets[{index}] must be an object describing one target.")
+            species = target.get("species")
+            if species is None or str(species).strip() == "":
+                continue
+            if str(species) not in known:
+                _reject(f"targets[{index}] names the species {str(species)!r}, which "
+                        f"this model does not contain, so it cannot be evaluated. "
+                        f"This model's species: "
+                        f"{', '.join(known) if known else '(none)'}.")
+
+        t_max = _validated_horizon(req.blueprint.get("simulation_config", {}) or {}, 50.0)
         met_count, results = agent.evaluate_targets_on_blueprint(
             req.blueprint, req.targets, t_max=t_max, custom_params=req.custom_params
         )
@@ -536,6 +963,8 @@ def evaluate_targets(req: EvaluateRequest):
             "refused_count": sum(1 for r in results if r.get("refused")),
             "graded_on": ("the spatial PDE field" if is_pde else "the ODE trajectory"),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -569,16 +998,49 @@ def llm_status(model: str):
 @app.post("/api/sample")
 def sample_parameter_space(req: SampleRequest):
     """Sample the parameter space (Latin Hypercube by default) and summarise outputs."""
+    # Three silent rewrites lived here, each reported as a successful run:
+    # method "telepathy" fell through to Monte-Carlo while the response echoed
+    # "telepathy" as the method used; n_samples=-5 was clamped to 1 and reported as
+    # n_requested=1; and min=5.0 max=0.1 was swapped behind the caller's back. A
+    # sampling design the caller did not ask for invalidates everything downstream
+    # of it, so each is refused instead.
+    method = (req.method or "lhs").strip().lower()
+    if method not in SAMPLING_METHODS:
+        _reject(f"method {req.method!r} is not a sampling strategy this server "
+                f"implements, so no sampling was done. Accepted: "
+                f"{', '.join(SAMPLING_METHODS)}.")
+    n_samples = _positive_int(
+        "n_samples", 64 if req.n_samples is None else req.n_samples,
+        "A non-positive count was clamped to 1 and then reported back as "
+        "n_requested=1, so the response described a design nobody asked for.")
+    if n_samples > MAX_SAMPLES:
+        _reject(f"n_samples={n_samples} exceeds the server limit of {MAX_SAMPLES}; "
+                f"the request was refused rather than silently reduced.")
+    if not req.param_bounds:
+        _reject("param_bounds must name at least one parameter with a min and a max.")
+    for name, bound in req.param_bounds.items():
+        if not isinstance(bound, dict) or "min" not in bound or "max" not in bound:
+            _reject(f"param_bounds[{name!r}] needs both a 'min' and a 'max'.")
+        low = _finite_number(f"param_bounds[{name!r}].min", bound["min"])
+        high = _finite_number(f"param_bounds[{name!r}].max", bound["max"])
+        if low >= high:
+            _reject(f"param_bounds[{name!r}] has min={low:g} and max={high:g}. The "
+                    f"minimum must be below the maximum; the pair is not swapped for "
+                    f"you, because a reversed bound usually means the two values "
+                    f"were entered against the wrong fields.")
+
     try:
         result = explore_parameter_space(
             blueprint=req.blueprint,
             param_bounds=req.param_bounds,
-            n_samples=req.n_samples or 64,
-            method=req.method or "lhs",
+            n_samples=n_samples,
+            method=method,
             target_species=req.target_species,
             seed=req.seed or 0,
         )
         return result
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -590,14 +1052,46 @@ def sample_parameter_space(req: SampleRequest):
 @app.post("/api/sensitivity")
 def run_sensitivity(req: SensitivityRequest):
     """Run local sensitivity analysis for parameter importance ranking."""
+    # local_sensitivity_analysis returns 0.0 for anything it cannot compute: an
+    # unknown parameter, and an unknown target species (which makes EVERY entry
+    # 0.0). 0.0 is exactly what a genuinely insensitive parameter scores, so the
+    # answer was indistinguishable from a real one. /api/sample already refuses the
+    # unknown-parameter case with 400 and that message; this route now agrees.
+    model = _validated_ode_model(req.blueprint)
+    known_species = sorted(model.node_ids)
+    if req.target_species not in model.node_ids:
+        _reject(f"target_species {req.target_species!r} is not a species in this "
+                f"model, so no sensitivity could be computed for any parameter. "
+                f"This model's species: "
+                f"{', '.join(known_species) if known_species else '(none)'}.")
+    if not req.param_names:
+        _reject("param_names must name at least one parameter to analyse.")
+    unknown = [p for p in req.param_names if p not in model.params_dict]
+    if len(unknown) == len(req.param_names):
+        raise HTTPException(status_code=400,
+                            detail="None of the requested parameters exist in this model.")
+    if unknown:
+        _reject(f"These parameters do not exist in this model: "
+                f"{', '.join(repr(p) for p in unknown)}. They would each have been "
+                f"reported as a sensitivity of 0.0, which is what a genuinely "
+                f"insensitive parameter scores. Available parameters: "
+                f"{', '.join(sorted(model.params_dict))}.")
+
     try:
         from multiscale import local_sensitivity_analysis
-        result = local_sensitivity_analysis(
-            blueprint=req.blueprint,
-            target_species=req.target_species,
-            param_names=req.param_names
-        )
+        t_max = _validated_horizon(req.blueprint.get("simulation_config", {}) or {}, 50.0)
+        with _ode_execution_budget(model, t_max):
+            result = local_sensitivity_analysis(
+                blueprint=req.blueprint,
+                target_species=req.target_species,
+                param_names=req.param_names,
+                t_max=t_max
+            )
         return {"sensitivities": result}
+    except HTTPException:
+        raise
+    except ExecutionBudgetExceeded as e:
+        raise _budget_exceeded(e)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -765,17 +1259,42 @@ def validate_geometry(req: DomainRequest):
 
 
 # --- stage 2: topology -----------------------------------------------------
+def _validated_topology(req: "TopologyRequest") -> Dict[str, Any]:
+    """Refuse a malformed topology with 422 before any consumer walks it.
+
+    topology_module.validate_topology already reports exactly these problems --
+    `nodes_not_list`, `edges_not_list`, and members that are strings instead of
+    objects. /api/topology/cycles and /api/topology/export simply never called it,
+    so `{"nodes": "x", "edges": "y"}` reached adjacency() and nodes_to_csv() and
+    came out as an opaque 500 from the global handler.
+    """
+    issues = topology_module.validate_topology(req.topology, req.domain)
+    if not geometry_module.is_valid(issues):
+        _reject(_issue_payload(issues))
+    return _issue_payload(issues)
+
+
 @app.post("/api/topology/validate")
 def validate_topology(req: TopologyRequest):
     issues = topology_module.validate_topology(req.topology, req.domain)
     payload = _issue_payload(issues)
-    payload["stats"] = topology_module.topology_stats(req.topology)
+    try:
+        payload["stats"] = topology_module.topology_stats(req.topology)
+    except (AttributeError, TypeError, KeyError, ValueError):
+        # The issues above are the answer for a malformed topology, and this route
+        # exists to REPORT that rather than fail. Statistics over members that are
+        # not objects are not computable, so they are omitted and said to be
+        # omitted -- a crash here would hide the diagnosis the caller asked for.
+        payload["stats"] = None
+        payload["stats_unavailable"] = ("Statistics need nodes, edges and cells to be "
+                                       "lists of objects; see the issues above.")
     return payload
 
 
 @app.post("/api/topology/cycles")
 def find_topology_cycles(req: TopologyRequest):
     """Candidate loops the user can convert into cells. Bounded by design."""
+    _validated_topology(req)
     cycles = topology_module.find_cycles(req.topology)
     return {"cycles": cycles, "count": len(cycles),
             "max_length": topology_module.MAX_CYCLE_LENGTH,
@@ -784,6 +1303,7 @@ def find_topology_cycles(req: TopologyRequest):
 
 @app.post("/api/topology/export")
 def export_topology(req: TopologyRequest):
+    _validated_topology(req)
     return {"files": {
         "nodes.csv": topology_module.nodes_to_csv(req.topology),
         "edges.csv": topology_module.edges_to_csv(req.topology),
@@ -903,9 +1423,34 @@ def solve_pde_1d(req: Solve1DRequest):
         (dx * dx / (2.0 * diffusion)) if diffusion > 0 else float("inf"),
         (dx / abs(velocity)) if abs(velocity) > 0 else float("inf"),
     )
+    if req.dt is not None:
+        # dt=-1.0 used to return 200 with steps=0 and a single frame at t=0, while
+        # the summary in the same payload said "Solved from t=0 to t=10". Nothing
+        # was solved; the run is refused rather than described inaccurately.
+        _positive_number("dt", req.dt,
+                         "A non-positive time step takes no step at all, so the "
+                         "solver returns the initial condition and reports the "
+                         "whole horizon as solved.")
     dt = float(req.dt) if req.dt else (safe_dt if _np.isfinite(safe_dt) else 0.01)
+    # A reversed or empty window (t_end <= t_start) is already refused with a 400 by
+    # compile_field above, so `duration` here is always positive.
     duration = max(1e-9, compiled["t_end"] - compiled["t_start"])
-    save_every = max(1, int(round(compiled["output_interval"] / dt)))
+    interval = _positive_number("model.fields[].output_interval",
+                                compiled["output_interval"])
+
+    # solve_1d builds one Python list entry per step (`step_sizes = [dt] * n_full`),
+    # so the step count is a memory bound as well as a time bound: t_end=1e9 with
+    # output_interval=1e8 needs ~2e12 entries at the stability-limited dt and came
+    # back as an opaque 500 from a MemoryError. Refuse it, naming both values.
+    steps = math.floor(duration / dt)
+    if steps > MAX_PDE_STEPS:
+        _reject(f"Solving from t={compiled['t_start']:g} to t={compiled['t_end']:g} at "
+                f"dt={dt:g} needs {steps:,} explicit time steps, above the server "
+                f"limit of {MAX_PDE_STEPS:,}. Shorten the time window, raise dt, or "
+                f"coarsen the mesh (dt is limited to {safe_dt:.4g} by stability at "
+                f"the current spacing dx={dx:g}). The window is not truncated for "
+                f"you, because a shortened run reported as complete is worse.")
+    save_every = max(1, int(round(interval / dt)))
 
     def reaction(u, xs, t):
         return compiled["reaction"](u, xs, _np.zeros_like(xs), t)

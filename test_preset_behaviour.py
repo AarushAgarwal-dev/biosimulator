@@ -35,11 +35,10 @@ about numbers matching, not about a trend.
 
 STATUS as measured on 2026-09-13 (python 3.13, scipy LSODA, rtol=1e-8/atol=1e-10)
 ---------------------------------------------------------------------------------
-    FAIL EGF/EGFR    : ERK peak_time = 50.00 == t_max = 50.0. The readout is still
-                       rising when the run ends (it only turns over at t = 56.2),
-                       so final/peak = 1.000 -- no peak and no decay inside the
-                       shipped horizon, and the preset's own "ERK peaks at 5-15
-                       min" / "peak value 0.6-1.0" targets read 50.00 and 4.709.
+    PASS EGF/EGFR    : ERK peaks at t = 6.68 with value 0.6074 and falls to 46% of
+                       that peak by t_max = 50; EGFR decays to 0.66% of its peak.
+                       (This preset is why the frozen copies are gone: it was fixed
+                       in app.js while this file still measured the old model.)
     PASS Oscillator  : 11 peaks over t_max = 300, period 25.98 (std/mean 0.0013),
                        amplitude ratio final/second fifth = 1.000003
     PASS Bistable    : OFF 0.040005 / ON 1.896486, relative separation 0.9789 --
@@ -51,21 +50,38 @@ STATUS as measured on 2026-09-13 (python 3.13, scipy LSODA, rtol=1e-8/atol=1e-10
 
 HOW THE BLUEPRINTS GET HERE
 ---------------------------
-The preset definitions live in ``static/app.js``. They are FROZEN into this file
-as plain dicts so the tests never parse JavaScript at run time:
+They are LOADED, never copied. ``preset_loader`` reads the ``Presets`` and
+``PaperModels`` object literals out of ``static/app.js`` at import time -- a small
+tolerant reader, no JS engine, no ``eval``, standard library only -- and returns
+them as plain dicts:
 
   * egfr, oscillator, bistable, foldchange (Presets) and berridge, zhabotinsky,
-    lyashenko (PaperModels) ship an explicit ``blueprint`` object in app.js --
-    copied verbatim below.
+    lyashenko (PaperModels) ship an explicit ``blueprint`` object: used as loaded.
   * turing ships only ``text`` + ``targets``; the blueprint the user actually runs
     is what ``agent.rule_based_parse(text)`` returns (the deterministic, LLM-off
-    path behind ``POST /api/blueprint``). That output is frozen below.
+    path behind ``POST /api/blueprint``), so the loader compiles it through exactly
+    that function.
+  * each preset's readout species is taken from the preset's OWN target list rather
+    than named here, so a retargeted preset retargets its behavioural test with it.
 
-If a preset's shipped definition changes, REFRESH THE FROZEN COPY HERE, or these
-tests will keep measuring the old model. ``PresetDefinitionDriftTest`` exists to
-make that impossible to miss: it fails when a frozen preset text, a frozen ODE /
-flux expression, or a frozen parameter value no longer appears in app.js. (It only
-searches app.js for strings -- it never builds a blueprint out of JavaScript.)
+This replaced a frozen Python transcription of all eight presets, which drifted
+exactly as you would expect: the EGF/EGFR preset was fixed in app.js and this file
+went on asserting against the stale copy until the two were hand-synced. There is
+now no copy to sync -- retune a preset in app.js and it is measured in its retuned
+form, in the same commit.
+
+Three guards keep the loading honest:
+
+  * ``PresetLoaderTest`` -- the loader finds all eight presets, each with nodes and
+    edges, and MALFORMED INPUT RAISES. That last one is the important one: a loader
+    that answered ``{}`` when confused would make every behavioural test below pass
+    while measuring nothing, which is worse than the drift it replaces.
+  * ``ShippedDefinitionFidelityTest`` -- every text, equation and parameter value
+    that was actually measured still appears verbatim in app.js, so a reader bug
+    cannot masquerade as a green run. (It only searches app.js for strings; it never
+    builds a blueprint out of JavaScript.)
+  * ``PresetCoverageTest`` -- every preset app.js ships has a behavioural test
+    class, so a ninth preset cannot arrive untested.
 
 Run just this tier while iterating:
 
@@ -80,6 +96,7 @@ import numpy as np
 from scipy.signal import find_peaks
 
 import agent
+import preset_loader
 from simulation_engine import ODEModel, solve_pde
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -91,334 +108,122 @@ PDE_SEED = 20260913
 
 
 # ==========================================================================
-# FROZEN PRESET DEFINITIONS  (static/app.js, 2026-09-13)
+# THE SHIPPED PRESET DEFINITIONS -- LOADED FROM static/app.js, NOT COPIED
 # ==========================================================================
+# static/app.js is the only place a preset is defined, and preset_loader reads the
+# `Presets` and `PaperModels` object literals straight out of it at import time.
+# Nothing below is a transcription: retune a preset in app.js and these tests
+# measure the retuned model in the same commit, with no hand-sync step.
+#
+# That hand-sync step is what failed before. The EGF/EGFR preset was fixed in
+# app.js while this file kept a stale Python copy, so its test went on failing
+# against the old model -- a red test naming a preset that was already correct and,
+# in the other direction, a green test that proves nothing about what ships.
+#
+# preset_loader RAISES rather than returning anything partial (PresetLoaderTest
+# below pins that down): a silently empty preset table would make every assertion
+# in this module pass while measuring nothing at all.
 
-# --- Turing: the only text-only preset; blueprint below is what
-# --- agent.rule_based_parse() deterministically compiles the text to -----------
+PRESETS = preset_loader.load_presets()
 
-TURING_TEXT = """A reaction-diffusion system containing Activator U and Inhibitor V.
-U activates itself and activates V.
-V inhibits U.
-U starts at 1.0.
-V starts at 1.0.
-U diffuses slowly, V diffuses quickly."""
+# turing is the one preset that ships text + targets and NO blueprint -- what the
+# user runs is whatever agent.rule_based_parse (the deterministic, LLM-off path
+# behind POST /api/blueprint) makes of that text, so the loader compiles it with
+# exactly that function. Every other preset ships an explicit blueprint.
+BLUEPRINTS = preset_loader.load_blueprints(text_compiler=agent.rule_based_parse)
 
-_HILL_PDE = {"k": 1.0, "K_d": 1.0, "n": 2.0}
 
-TURING_BLUEPRINT = {
-    "type": "PDE",
-    "nodes": [
-        {"id": "U", "name": "Activator U", "initial_value": 1.0},
-        {"id": "V", "name": "Inhibitor V", "initial_value": 1.0},
-    ],
-    "edges": [
-        {"source": "U", "target": "U", "type": "activation", "parameters": dict(_HILL_PDE)},
-        {"source": "U", "target": "V", "type": "activation", "parameters": dict(_HILL_PDE)},
-        {"source": "V", "target": "U", "type": "inhibition", "parameters": dict(_HILL_PDE)},
-    ],
-    "spatial": {
-        "x_grid": 50, "y_grid": 50, "dx": 1.0, "dy": 1.0,
-        "diffusion": {"U": 0.05, "V": 1.0},
-        "reactions": {"U": "U**2 / V - U + 0.02", "V": "U**2 - V"},
-    },
-    "simulation_config": {"t_max": 200.0, "dt": 0.1},
-}
+def _target_species(preset, kind, field="species"):
+    """The species a preset's own `kind` target names.
+
+    The readout under test is never chosen by this file -- it is whatever species
+    the preset's own target refers to, so a retargeted preset retargets its
+    behavioural test with it. Raises if that target is gone, because silently
+    re-pointing a behavioural test at another species is how a test starts
+    measuring something nobody asked about.
+    """
+    for target in PRESETS[preset].get("targets") or []:
+        if target.get("type") == kind and target.get(field):
+            return target[field]
+    raise AssertionError(
+        "preset %r ships no %r target with a %r, so this module cannot tell which "
+        "species its behavioural test should measure. Its app.js targets are: %r"
+        % (preset, kind, field, PRESETS[preset].get("targets")))
+
+
+# --- Turing: the only text-only preset; the blueprint under test is what
+# --- agent.rule_based_parse() deterministically compiles the shipped text to ----
+
+TURING_TEXT = PRESETS["turing"]["text"]
+TURING_BLUEPRINT = BLUEPRINTS["turing"]
 
 # --- EGF/EGFR ----------------------------------------------------------------
 
-EGFR_TEXT = """EGF binds to EGFR and activates it.
-EGFR activates RAS.
-RAS activates RAF.
-RAF activates MEK.
-MEK activates ERK.
-ERK inhibits EGFR.
-EGF starts at 10.0.
-EGFR starts at 1.0.
-RAS starts at 1.0.
-RAF starts at 1.0."""
-
-EGFR_BLUEPRINT = {
-    "type": "ODE",
-    "nodes": [
-        {"id": "EGF", "initial_value": 10.0}, {"id": "EGFR", "initial_value": 1.0},
-        {"id": "RAS", "initial_value": 1.0}, {"id": "RAF", "initial_value": 1.0},
-        {"id": "MEK", "initial_value": 0.0}, {"id": "ERK", "initial_value": 0.0},
-    ],
-    "edges": [
-        {"source": "EGF", "target": "EGFR", "type": "activation"},
-        {"source": "EGFR", "target": "RAS", "type": "activation"},
-        {"source": "RAS", "target": "RAF", "type": "activation"},
-        {"source": "RAF", "target": "MEK", "type": "activation"},
-        {"source": "MEK", "target": "ERK", "type": "activation"},
-        {"source": "ERK", "target": "EGFR", "type": "inhibition"},
-    ],
-    # Explicit rate laws, mirroring app.js. Nodes and edges alone left this to the
-    # generic Hill compiler, under which ERK rose monotonically to 4.71 with its
-    # maximum AT t_max -- no peak, no adaptation, and 2 of the preset's own 3 targets
-    # failing on the preset that auto-loads on page open. Two things were missing:
-    # a dephosphorylation term on every stage (without one a species can only
-    # accumulate) and a transient stimulus (EGF was pinned at 10.0 for ever, so the
-    # receptor was continuously re-driven despite the ERK feedback edge).
-    "parameters": {
-        "kEGF": 0.8,
-        "kR": 1.8, "KmR": 5.0,
-        "KiR": 0.06, "nR": 3.0,
-        "dR": 0.25,
-        "k1": 0.9, "k2": 0.9, "k3": 0.9, "k4": 0.9,
-        "d1": 0.35, "d2": 0.35, "d3": 0.35, "d4": 0.35,
-    },
-    "odes": {
-        "EGF": "-kEGF*EGF*EGFR",
-        "EGFR": "kR*EGF/(KmR + EGF)*(1 - EGFR)/(1 + (ERK/KiR)**nR) - dR*EGFR",
-        "RAS": "k1*EGFR*(1 - RAS) - d1*RAS",
-        "RAF": "k2*RAS*(1 - RAF) - d2*RAF",
-        "MEK": "k3*RAF*(1 - MEK) - d3*MEK",
-        "ERK": "k4*MEK*(1 - ERK) - d4*ERK",
-    },
-    "simulation_config": {"t_max": 50.0},
-}
-# The preset's OWN targets, verbatim from app.js. The readout under test is the
-# species its peak_time target names, i.e. ERK.
-EGFR_TARGETS = [
-    {"species": "ERK", "type": "peak_time", "min": 5.0, "max": 15.0},
-    {"species": "ERK", "type": "peak_value", "min": 0.6, "max": 1.0},
-    {"species": "EGFR", "type": "decay_ratio", "max": 0.2},
-]
-EGFR_READOUT = "ERK"
+EGFR_BLUEPRINT = BLUEPRINTS["egfr"]
+EGFR_TEXT = PRESETS["egfr"]["text"]
+# The preset's OWN targets, as shipped. The readout under test is the species its
+# peak_time target names, i.e. ERK.
+EGFR_TARGETS = PRESETS["egfr"]["targets"]
+EGFR_READOUT = _target_species("egfr", "peak_time")
 
 # --- Oscillator: Goodwin (1965) three-stage negative feedback, Hill n = 16 ----
 
-OSCILLATOR_TEXT = """GENA activates GENB.
-GENB activates GENC.
-GENC inhibits GENA.
-GENA starts at 2.851.
-GENB starts at 1.495.
-GENC starts at 1.024."""
-
-OSCILLATOR_BLUEPRINT = {
-    "type": "ODE",
-    "name": "Goodwin three-stage negative-feedback oscillator",
-    "nodes": [
-        {"id": "GENA", "name": "Gene A product", "initial_value": 2.851},
-        {"id": "GENB", "name": "Gene B product", "initial_value": 1.495},
-        {"id": "GENC", "name": "Gene C product (repressor)", "initial_value": 1.024},
-    ],
-    "edges": [
-        {"id": "e1", "source": "GENA", "target": "GENB", "type": "activation"},
-        {"id": "e2", "source": "GENB", "target": "GENC", "type": "activation"},
-        {"id": "e3", "source": "GENC", "target": "GENA", "type": "inhibition"},
-    ],
-    "parameters": {
-        "v1": 1.0, "K1": 1.0, "n": 16.0,
-        "d1": 0.15, "k3": 0.15, "d2": 0.15, "k5": 0.15, "d3": 0.15,
-    },
-    "odes": {
-        "GENA": "v1*K1**n/(K1**n + GENC**n) - d1*GENA",
-        "GENB": "k3*GENA - d2*GENB",
-        "GENC": "k5*GENB - d3*GENC",
-    },
-    "plot_species": ["GENA", "GENB", "GENC"],
-    "simulation_config": {"t_max": 300.0},
-}
-OSCILLATOR_READOUT = "GENA"          # the species the preset's oscillation target names
+OSCILLATOR_BLUEPRINT = BLUEPRINTS["oscillator"]
+OSCILLATOR_TEXT = PRESETS["oscillator"]["text"]
+OSCILLATOR_READOUT = _target_species("oscillator", "oscillation")
 
 # --- Bistable: cooperative positive autofeedback + first-order removal --------
 
-BISTABLE_TEXT = """STIM activates CAMKII.
-CAMKII activates itself.
-STIM starts at 1.0.
-CAMKII starts at 0.1."""
-
-BISTABLE_BLUEPRINT = {
-    "type": "ODE",
-    "name": "Cooperative positive-feedback bistable switch",
-    "nodes": [
-        {"id": "STIM", "name": "Stimulus", "initial_value": 1.0},
-        {"id": "CAMKII", "name": "Active CaMKII", "initial_value": 0.1},
-    ],
-    "edges": [
-        {"id": "e1", "source": "STIM", "target": "CAMKII", "type": "activation"},
-        {"id": "e2", "source": "CAMKII", "target": "CAMKII", "type": "activation"},
-    ],
-    "parameters": {
-        "ks": 1.0, "Sset": 1.0, "kbas": 0.02,
-        "kfb": 1.0, "Kfb": 1.0, "n": 4.0, "kdeg": 0.5,
-    },
-    "odes": {
-        "STIM": "ks*(Sset - STIM)",
-        "CAMKII": "kbas*STIM + kfb*CAMKII**n/(Kfb**n + CAMKII**n) - kdeg*CAMKII",
-    },
-    "plot_species": ["STIM", "CAMKII"],
-    "simulation_config": {"t_max": 100.0},
-}
-BISTABLE_READOUT = "CAMKII"
+BISTABLE_BLUEPRINT = BLUEPRINTS["bistable"]
+BISTABLE_TEXT = PRESETS["bistable"]["text"]
+BISTABLE_READOUT = _target_species("bistable", "bistability")
 
 # --- Fold-change: incoherent feed-forward loop (Goentoro & Alon 2009) ---------
 
-FOLDCHANGE_TEXT = """EGF activates AKT.
-EGF activates BG.
-BG inhibits AKT.
-EGF starts at 1.0.
-BG starts at 500.0.
-AKT starts at 1.0."""
-
-FOLDCHANGE_BLUEPRINT = {
-    "type": "ODE",
-    "name": "Fold-change detection (incoherent feed-forward loop)",
-    "nodes": [
-        {"id": "EGF", "name": "Ambient EGF level", "initial_value": 1.0},
-        {"id": "BG", "name": "Adapted EGF background", "initial_value": 500.0},
-        {"id": "AKT", "name": "Relative AKT response", "initial_value": 1.0},
-    ],
-    "edges": [
-        {"id": "e1", "source": "EGF", "target": "BG", "type": "activation"},
-        {"id": "e2", "source": "EGF", "target": "AKT", "type": "activation"},
-        {"id": "e3", "source": "BG", "target": "AKT", "type": "inhibition"},
-    ],
-    "parameters": {"a": 0.2, "kf": 8.0, "fold": 3.0, "sr": 6.0, "t_on": 70.0},
-    "fluxes": {
-        "step": "1 + (fold-1)/(1+exp(-sr*(t-t_on)))",
-        "Lig": "EGF*step",
-    },
-    "odes": {
-        "EGF": "0",
-        "BG": "a*(Lig - BG)",
-        "AKT": "kf*(Lig/BG - AKT)",
-    },
-    "plot_species": ["EGF", "BG", "AKT"],
-    "simulation_config": {"t_max": 140.0},
-}
-FOLDCHANGE_INPUT, FOLDCHANGE_OUTPUT = "EGF", "AKT"
+FOLDCHANGE_BLUEPRINT = BLUEPRINTS["foldchange"]
+FOLDCHANGE_TEXT = PRESETS["foldchange"]["text"]
+# Which species is the input and which the response comes from the preset's own
+# fold_change target, not from a choice made in this file.
+FOLDCHANGE_INPUT = _target_species("foldchange", "fold_change", field="input")
+FOLDCHANGE_OUTPUT = _target_species("foldchange", "fold_change", field="output")
 
 # --- Berridge & Goldbeter (1990) ---------------------------------------------
 
-BERRIDGE_BLUEPRINT = {
-    "type": "ODE",
-    "name": "Berridge-Goldbeter Ca2+ oscillator",
-    "nodes": [
-        {"id": "Z", "name": "Cytosolic Ca2+", "initial_value": 0.1},
-        {"id": "Y", "name": "Internal-store Ca2+", "initial_value": 0.1},
-    ],
-    "edges": [
-        {"id": "e1", "source": "Z", "target": "Y", "type": "activation"},
-        {"id": "e2", "source": "Y", "target": "Z", "type": "activation"},
-    ],
-    "parameters": {
-        "v0": 1.0, "v1": 7.3, "beta": 0.5, "VM2": 65.0, "VM3": 500.0,
-        "K2": 1.0, "KR": 2.0, "KA": 0.9, "kf": 1.0, "k": 10.0,
-    },
-    "fluxes": {
-        "v2": "VM2*Z**2/(K2**2+Z**2)",
-        "v3": "VM3*(Y**2/(KR**2+Y**2))*(Z**4/(KA**4+Z**4))",
-    },
-    "odes": {
-        "Z": "v0 + v1*beta - v2 + v3 + kf*Y - k*Z",
-        "Y": "v2 - v3 - kf*Y",
-    },
-    "plot_species": ["Z", "Y"],
-    "simulation_config": {"t_max": 10.0},
-}
-BERRIDGE_READOUT = "Z"               # cytosolic Ca2+
+BERRIDGE_BLUEPRINT = BLUEPRINTS["berridge"]
+BERRIDGE_READOUT = _target_species("berridge", "oscillation")        # cytosolic Ca2+
 
 # --- Zhabotinsky (2000) ------------------------------------------------------
 
-ZHABOTINSKY_BLUEPRINT = {
-    "type": "ODE",
-    "name": "Zhabotinsky CaMKII bistable switch",
-    "nodes": (
-        [{"id": "Ca", "name": "Calcium stimulus", "initial_value": 2.0},
-         {"id": "P0", "name": "Unphosphorylated CaMKII", "initial_value": 2.0}]
-        + [{"id": "P%d" % i, "initial_value": 0.0} for i in range(1, 11)]
-        + [{"id": "A", "name": "Active CaMKII", "initial_value": 0.0}]
-    ),
-    "edges": [
-        {"id": "e1", "source": "Ca", "target": "A", "type": "activation"},
-        {"id": "e2", "source": "A", "target": "A", "type": "activation"},
-    ],
-    "parameters": {
-        "k1": 0.5, "k2": 2.0, "KH1": 4.0, "KM": 0.4, "ep": 0.05,
-        "kca": 5.0, "Cabase": 2.0, "amp": 1.0, "sr": 2.0,
-        "t_on": 20.0, "t_off": 60.0, "kobs": 50.0,
-    },
-    "fluxes": {
-        "v1": "10*k1*(Ca/KH1)**8*P0/(1 + (Ca/KH1)**4)**2",
-        "v2": "k1*(Ca/KH1)**4/(1 + (Ca/KH1)**4)",
-        "Ssum": "1*P1+2*P2+3*P3+4*P4+5*P5+6*P6+7*P7+8*P8+9*P9+10*P10",
-        "v3": "k2*ep/(KM + Ssum)",
-    },
-    "odes": {
-        "P0": "-v1 + v3*1*P1",
-        "P1": "v1 - v2*1.0*P1 - v3*1*P1 + v3*2*P2",
-        "P2": "v2*1.0*P1 - v2*1.8*P2 - v3*2*P2 + v3*3*P3",
-        "P3": "v2*1.8*P2 - v2*2.3*P3 - v3*3*P3 + v3*4*P4",
-        "P4": "v2*2.3*P3 - v2*2.7*P4 - v3*4*P4 + v3*5*P5",
-        "P5": "v2*2.7*P4 - v2*2.8*P5 - v3*5*P5 + v3*6*P6",
-        "P6": "v2*2.8*P5 - v2*2.7*P6 - v3*6*P6 + v3*7*P7",
-        "P7": "v2*2.7*P6 - v2*2.3*P7 - v3*7*P7 + v3*8*P8",
-        "P8": "v2*2.3*P7 - v2*1.8*P8 - v3*8*P8 + v3*9*P9",
-        "P9": "v2*1.8*P8 - v2*1.0*P9 - v3*9*P9 + v3*10*P10",
-        "P10": "v2*1.0*P9 - v3*10*P10",
-        "Ca": "kca*(Cabase + amp/(1+exp(-sr*(t-t_on))) - amp/(1+exp(-sr*(t-t_off))) - Ca)",
-        "A": "kobs*(Ssum - A)",
-    },
-    "plot_species": ["Ca", "A"],
-    "simulation_config": {"t_max": 350.0},
-}
-ZHABOTINSKY_READOUT = "A"            # active CaMKII
-ZHAB_PULSE_ON, ZHAB_PULSE_OFF = 20.0, 60.0
+ZHABOTINSKY_BLUEPRINT = BLUEPRINTS["zhabotinsky"]
+ZHABOTINSKY_READOUT = _target_species("zhabotinsky", "steady_state")  # active CaMKII
+# The pulse window is the model's own t_on/t_off, so retiming the Ca2+ pulse in
+# app.js retimes the before/after sampling here with it.
+ZHAB_PULSE_ON = float(ZHABOTINSKY_BLUEPRINT["parameters"]["t_on"])
+ZHAB_PULSE_OFF = float(ZHABOTINSKY_BLUEPRINT["parameters"]["t_off"])
 
 # --- Lyashenko et al. (2020) -------------------------------------------------
 
-LYASHENKO_BLUEPRINT = {
-    "type": "ODE",
-    "name": "Lyashenko fold-change detection",
-    "nodes": [
-        {"id": "L", "name": "Ligand", "initial_value": 1.0},
-        {"id": "R", "name": "Adapted background (receptor memory)", "initial_value": 1.0},
-        {"id": "S", "name": "Relative response", "initial_value": 1.0},
-    ],
-    "edges": [
-        {"id": "e1", "source": "L", "target": "R", "type": "activation"},
-        {"id": "e2", "source": "L", "target": "S", "type": "activation"},
-        {"id": "e3", "source": "R", "target": "S", "type": "inhibition"},
-    ],
-    "parameters": {
-        "a": 0.2, "kf": 20.0, "kl": 40.0, "sr": 8.0,
-        "L1": 1.0, "L2": 2.0, "L3": 4.0, "L4": 8.0, "L5": 16.0,
-        "t1": 20.0, "t2": 45.0, "t3": 70.0, "t4": 95.0,
-    },
-    "odes": {
-        "L": ("kl*(L1 + (L2-L1)/(1+exp(-sr*(t-t1))) + (L3-L2)/(1+exp(-sr*(t-t2)))"
-              " + (L4-L3)/(1+exp(-sr*(t-t3))) + (L5-L4)/(1+exp(-sr*(t-t4))) - L)"),
-        "R": "a*(L - R)",
-        "S": "kf*(L/R - S)",
-    },
-    "plot_species": ["L", "R", "S"],
-    "simulation_config": {"t_max": 125.0},
-}
-LYASHENKO_READOUT = "S"
-LYASHENKO_LEVELS = [1.0, 2.0, 4.0, 8.0, 16.0]     # the shipped 2x staircase
-LYASHENKO_BASELINE = 1.0                          # S re-adapts to L/R -> 1
+LYASHENKO_BLUEPRINT = BLUEPRINTS["lyashenko"]
+LYASHENKO_READOUT = _target_species("lyashenko", "steady_state")
+# The shipped ligand staircase, read off the model's own L1, L2, ... parameters
+# (currently a 2x ladder over a full decade), so adding a step to app.js adds it
+# to the assertions instead of leaving this list short.
+_LYASHENKO_LEVEL_PARAMS = sorted(
+    (int(pname[1:]), pvalue)
+    for pname, pvalue in LYASHENKO_BLUEPRINT["parameters"].items()
+    if re.fullmatch(r"L\d+", pname))
+LYASHENKO_LEVELS = [float(pvalue) for _index, pvalue in _LYASHENKO_LEVEL_PARAMS]
+if len(LYASHENKO_LEVELS) < 2:
+    raise AssertionError(
+        "the lyashenko preset ships %d ligand-level parameters (L1, L2, ...); "
+        "fold-change detection needs at least two steps to compare"
+        % len(LYASHENKO_LEVELS))
+LYASHENKO_BASELINE = 1.0          # S tracks the ratio L/R, so it re-adapts to 1
 
-# Every frozen blueprint, for the drift guard.
-FROZEN_BLUEPRINTS = {
-    "egfr": EGFR_BLUEPRINT,
-    "turing": TURING_BLUEPRINT,
-    "oscillator": OSCILLATOR_BLUEPRINT,
-    "bistable": BISTABLE_BLUEPRINT,
-    "foldchange": FOLDCHANGE_BLUEPRINT,
-    "berridge": BERRIDGE_BLUEPRINT,
-    "zhabotinsky": ZHABOTINSKY_BLUEPRINT,
-    "lyashenko": LYASHENKO_BLUEPRINT,
-}
-FROZEN_TEXTS = {
-    "egfr": EGFR_TEXT,
-    "turing": TURING_TEXT,
-    "oscillator": OSCILLATOR_TEXT,
-    "bistable": BISTABLE_TEXT,
-    "foldchange": FOLDCHANGE_TEXT,
-}
+# Every preset as loaded, for the fidelity guard and the coverage guard.
+LOADED_BLUEPRINTS = dict(BLUEPRINTS)
+LOADED_TEXTS = {name: record["text"] for name, record in PRESETS.items()
+                if (record.get("text") or "").strip()}
 
 
 # ==========================================================================
@@ -1174,22 +979,52 @@ class LyashenkoPresetBehaviourTest(unittest.TestCase):
 # DRIFT GUARDS  (are the frozen copies above still the shipped presets?)
 # ==========================================================================
 
-class PresetDefinitionDriftTest(unittest.TestCase):
-    """The definitions at the top of this file are frozen copies of what
-    static/app.js ships. These tests fail when the shipped definition moves, so a
-    behavioural result is never silently measured against a stale model.
+class ShippedDefinitionFidelityTest(unittest.TestCase):
+    """The definitions the behavioural tests above ran on were LOADED out of
+    static/app.js by preset_loader, not copied into this file. These tests check the
+    loading was FAITHFUL: every text, equation and parameter value that was measured
+    must still be findable verbatim in the app.js source. That is what catches a
+    reader bug -- a mangled expression, a mis-parsed number, an escape decoded
+    wrongly -- which would otherwise look like a perfectly green behavioural run
+    against a model nobody ships.
 
-    They never build a blueprint out of JavaScript: one searches app.js for the frozen
-    TEXT, one searches it for the frozen EQUATIONS and PARAMETER VALUES, and one
-    re-derives the text-only Turing preset through the same deterministic parser the
-    backend uses.
+    They never evaluate JavaScript: two of them search the raw app.js text for the
+    strings the loader produced, and one re-derives the text-only Turing preset
+    through the same deterministic parser the backend uses.
     """
 
-    # Turing is the only preset that still ships text only.
-    PARSED_PRESETS = {"turing": (TURING_TEXT, TURING_BLUEPRINT)}
+    # Presets that ship text only: their equations come from agent.rule_based_parse,
+    # so those are not in app.js to be found. Derived, so a preset that gains an
+    # explicit blueprint moves into the equation check on its own.
+    PARSED_PRESETS = tuple(sorted(name for name, record in PRESETS.items()
+                                  if "blueprint" not in record))
+
     @staticmethod
     def _normalise(text):
         return re.sub(r"\s+", " ", text).strip()
+
+    def _appears_quoted(self, expression):
+        """Is ``expression`` in app.js as a whole double-quoted string?
+
+        Bounded by the quotes app.js writes every rate law inside, because an
+        unbounded substring search cannot tell a faithful read from a TRUNCATED one:
+        a prefix of a shipped expression is still a substring of the file.
+        """
+        return '"%s"' % self._normalise(expression) in self.app_js
+
+    def _appears_as_parameter(self, pname, value):
+        """Is ``pname: value`` in app.js, with the delimiter that ends the value?
+
+        The delimiter matters for the same reason: without it `d1: 0.15` matches a
+        shipped `d1: 0.1500001`. Spellings are round-trip exact (`repr`, plus the
+        integer form for whole numbers) -- deliberately not `%g`, whose 6 significant
+        digits would round a mutated value back onto the shipped one.
+        """
+        spellings = {repr(value)}
+        if value.is_integer():
+            spellings.add(str(int(value)))
+        return any("%s: %s%s" % (pname, spelling, tail) in self.app_js
+                   for spelling in spellings for tail in (",", " ", "}"))
 
     @classmethod
     def setUpClass(cls):
@@ -1202,90 +1037,416 @@ class PresetDefinitionDriftTest(unittest.TestCase):
         if self.app_js is None:
             self.skipTest("static/app.js not found at %s" % APP_JS)
 
-    def test_frozen_preset_texts_are_still_the_shipped_texts(self):
+    def test_loaded_preset_texts_are_the_shipped_texts(self):
         self._require_app_js()
-        missing = [name for name, text in sorted(FROZEN_TEXTS.items())
+        self.assertTrue(LOADED_TEXTS,
+                        "no preset text was loaded at all -- preset_loader returned "
+                        "presets with no `text`, so the text-driven presets are being "
+                        "tested against nothing")
+        missing = [name for name, text in sorted(LOADED_TEXTS.items())
                    if self._normalise(text) not in self.app_js]
         self.assertEqual(
             [], missing,
-            "the preset text frozen in this file no longer appears in static/app.js for: %s. "
-            "The presets were edited; refresh the frozen text AND blueprint in "
-            "test_preset_behaviour.py so these behaviour tests measure the shipped model."
-            % ", ".join(missing))
+            "preset_loader produced text for %s that does not appear in static/app.js. "
+            "The loader mangled the template literal it read (escapes? line "
+            "continuations?), so these presets were parsed from something app.js does "
+            "not contain." % ", ".join(missing))
 
-    def test_frozen_equations_and_parameters_are_still_the_shipped_ones(self):
-        """Every ODE right-hand side, shared flux and parameter value frozen above must
-        still be present in app.js. This is what catches a retune that changes the
-        model without changing the preset's text."""
+    def test_loaded_equations_and_parameters_are_the_shipped_ones(self):
+        """Every ODE right-hand side, shared flux and parameter value the behavioural
+        tests integrated must still be present in app.js. This is the check that a
+        retune reaches the tests -- and that the reader reproduced it exactly."""
         self._require_app_js()
         problems = []
-        for name, blueprint in sorted(FROZEN_BLUEPRINTS.items()):
+        for name, blueprint in sorted(LOADED_BLUEPRINTS.items()):
             if name in self.PARSED_PRESETS:
-                # Its equations come from agent.rule_based_parse, not app.js;
-                # test_text_only_presets_still_compile_to_the_frozen_blueprints covers it.
+                # Compiled from text by agent.rule_based_parse, not shipped as
+                # equations; test_text_only_presets_compile_to_the_model_under_test
+                # covers it.
                 continue
             for kind in ("odes", "fluxes"):
                 for key, expression in (blueprint.get(kind) or {}).items():
-                    if self._normalise(expression) not in self.app_js:
+                    if not self._appears_quoted(expression):
                         problems.append("%s: %s[%s] = %r is not in app.js"
                                         % (name, kind, key, expression))
             for pname, pvalue in (blueprint.get("parameters") or {}).items():
-                value = float(pvalue)
-                candidates = {"%s: %r" % (pname, value), "%s: %g" % (pname, value)}
-                if value.is_integer():
-                    candidates.add("%s: %d" % (pname, int(value)))
-                if not any(candidate in self.app_js for candidate in candidates):
+                if isinstance(pvalue, bool) or not isinstance(pvalue, (int, float)):
+                    problems.append("%s: parameter %s = %r is not a number"
+                                    % (name, pname, pvalue))
+                    continue
+                if not self._appears_as_parameter(pname, float(pvalue)):
                     problems.append("%s: parameter %s = %r is not in app.js"
-                                    % (name, pname, value))
+                                    % (name, pname, float(pvalue)))
             spatial = blueprint.get("spatial") or {}
             for key, expression in (spatial.get("reactions") or {}).items():
-                if self._normalise(expression) not in self.app_js:
+                if not self._appears_quoted(expression):
                     problems.append("%s: reaction[%s] = %r is not in app.js"
                                     % (name, key, expression))
         self.assertEqual(
             [], problems,
-            "the frozen preset equations/parameters no longer match static/app.js:\n  "
-            + "\n  ".join(problems)
-            + "\nRefresh the frozen blueprints in test_preset_behaviour.py, then re-read the "
-              "behavioural results -- they were measured on the OLD model.")
+            "preset_loader produced equations/parameters that are not in static/app.js:"
+            "\n  " + "\n  ".join(problems)
+            + "\nThe behavioural results above were measured on a model app.js does "
+              "not define, which means the reader in preset_loader.py is wrong -- fix "
+              "it there, do not hand-write the value here.")
 
-    def test_text_only_presets_still_compile_to_the_frozen_blueprints(self):
+    def test_text_only_presets_compile_to_the_model_under_test(self):
+        """A text-only preset has no shipped equations, so what it is tested on is
+        whatever the deterministic parser makes of its text. Assert that parse is
+        stable and that it honours the species the text itself declares."""
         problems = []
-        for name, (text, frozen) in sorted(self.PARSED_PRESETS.items()):
-            parsed = agent.rule_based_parse(text)
-            if parsed.get("type") != frozen["type"]:
-                problems.append("%s: type %s != %s" % (name, parsed.get("type"), frozen["type"]))
-                continue
-            got_nodes = sorted((n["id"], float(n.get("initial_value", 0.0)))
-                               for n in parsed.get("nodes", []))
-            want_nodes = sorted((n["id"], float(n.get("initial_value", 0.0)))
-                                for n in frozen["nodes"])
-            if got_nodes != want_nodes:
-                problems.append("%s: nodes %s != %s" % (name, got_nodes, want_nodes))
-            got_edges = sorted((e["source"], e["target"], e.get("type", "activation"),
-                                tuple(sorted((e.get("parameters") or {}).items())))
-                               for e in parsed.get("edges", []))
-            want_edges = sorted((e["source"], e["target"], e.get("type", "activation"),
-                                 tuple(sorted((e.get("parameters") or {}).items())))
-                                for e in frozen["edges"])
-            if got_edges != want_edges:
-                problems.append("%s: edges %s != %s" % (name, got_edges, want_edges))
-            if frozen["type"] == "PDE":
-                got_spatial = parsed.get("spatial", {})
+        for name in self.PARSED_PRESETS:
+            text = PRESETS[name]["text"]
+            blueprint = LOADED_BLUEPRINTS[name]
+            if agent.rule_based_parse(text) != blueprint:
+                problems.append("%s: agent.rule_based_parse(text) is not stable -- two "
+                                "calls on the same shipped text disagree, so the "
+                                "behaviour tested is not reproducible" % name)
+            declared = {species: float(value) for species, value
+                        in re.findall(r"^(\w+) starts at ([0-9.]+)\.", text, re.M)}
+            got = {node["id"]: float(node.get("initial_value", 0.0))
+                   for node in blueprint.get("nodes") or []}
+            if not declared:
+                problems.append("%s: the shipped text declares no `X starts at V.` "
+                                "line, so nothing pins its initial state" % name)
+            elif got != declared:
+                problems.append("%s: compiled nodes %s do not match the initial values "
+                                "the shipped text declares, %s" % (name, got, declared))
+            if blueprint.get("type") == "PDE":
+                spatial = blueprint.get("spatial") or {}
                 for key in ("diffusion", "reactions"):
-                    if got_spatial.get(key) != frozen["spatial"][key]:
-                        problems.append("%s: spatial.%s %s != %s"
-                                        % (name, key, got_spatial.get(key),
-                                           frozen["spatial"][key]))
-                got_tmax = float(parsed.get("simulation_config", {}).get("t_max", 0.0))
-                frozen_tmax = float(frozen["simulation_config"]["t_max"])
-                if got_tmax != frozen_tmax:
-                    problems.append("%s: t_max %.3f != %.3f" % (name, got_tmax, frozen_tmax))
+                    absent = sorted(s for s in got if s not in (spatial.get(key) or {}))
+                    if absent:
+                        problems.append("%s: PDE blueprint has no spatial.%s for %s"
+                                        % (name, key, ", ".join(absent)))
+                t_max = float((blueprint.get("simulation_config") or {}).get("t_max", 0.0))
+                if t_max <= 0.0:
+                    problems.append("%s: PDE blueprint has t_max %.3f" % (name, t_max))
         self.assertEqual(
             [], problems,
-            "agent.rule_based_parse no longer produces the blueprint frozen in this file:\n  "
-            + "\n  ".join(problems)
-            + "\nRefresh the frozen blueprint so the behaviour tests measure the shipped model.")
+            "the text-only presets no longer compile to a model these tests can "
+            "measure:\n  " + "\n  ".join(problems))
+
+
+# ==========================================================================
+# THE LOADER ITSELF
+# ==========================================================================
+
+class PresetLoaderTest(unittest.TestCase):
+    """preset_loader is load-bearing for every assertion in this module, so it gets
+    its own tests.
+
+    The ones that matter most are the failure tests. A loader that answered ``{}``
+    when it could not find or parse a preset would make every behavioural test above
+    pass while measuring nothing at all -- strictly worse than the drift it replaces,
+    because a stale copy at least still asserts something. So malformed input must
+    RAISE, and these tests hold it to that.
+    """
+
+    #: Which table each shipped preset must be found in.
+    EXPECTED_TABLES = {
+        "egfr": "Presets", "turing": "Presets", "oscillator": "Presets",
+        "bistable": "Presets", "foldchange": "Presets",
+        "berridge": "PaperModels", "zhabotinsky": "PaperModels",
+        "lyashenko": "PaperModels",
+    }
+
+    # A stand-in for app.js exercising every bit of the dialect the reader must cope
+    # with: identifier keys, a template literal spanning lines, // and /* */ comments
+    # containing braces and quotes, trailing commas, both number kinds, an escape,
+    # true/false/null, and function values that must be skipped rather than refused.
+    SAMPLE = """
+// leading comment { with a brace } and a "quote"
+const Presets = {
+    alpha: {
+        text: `first line
+second line`,
+        targets: [
+            { species: "X", type: "peak_time", min: 5.0, max: 15.0 },   // trailing ->
+        ],
+        t_max: 140.0,
+        render: (v) => v * 2,
+        helper: function (a) { return { a: a }; },
+        blueprint: {
+            type: "ODE",
+            /* a block comment with a brace } a "quote" and a stray colon : */
+            nodes: [{ id: "A", initial_value: 1.0 }, { id: "B", initial_value: 0 }],
+            edges: [{ source: "A", target: "B", type: "activation" },],
+            parameters: { k: 0.5, n: 4, big: 1.5e3, neg: -2.5,
+                          on: true, off: false, gone: null },
+            odes: { A: "-k*A", B: "k*A - n*B" },
+            simulation_config: { t_max: 50.0 },
+        },
+    },
+};
+const PaperModels = {
+    beta: {
+        title: "Beta \\u00b5 model",
+        blueprint: {
+            nodes: [{ id: "Z" }],
+            edges: [{ source: "Z", target: "Z", type: "activation" }],
+        },
+        targets: [{ species: "Z", type: "oscillation", min: 0.2 }],
+    },
+};
+"""
+
+    #: Every one of these must raise, not return a partial or empty result.
+    MALFORMED_LITERALS = (
+        ("truncated object", "{ nodes: [ { id: 'A' } "),
+        ("unterminated double-quoted string", '{ text: "oops }'),
+        ("unterminated template literal", "{ text: `oops }"),
+        ("unterminated block comment", "{ /* never closed "),
+        ("key with no colon", "{ nodes [ ] }"),
+        ("colon with no value", "{ nodes: }"),
+        ("bare identifier as a value", "{ blueprint: SOME_OTHER_CONST }"),
+        ("expression as a value", "{ t_max: (1 + 2) }"),
+        ("array where an object belongs", "[1, 2, 3]"),
+        ("empty input", ""),
+    )
+
+    PAPER_MODEL_NAMES = ("berridge", "zhabotinsky", "lyashenko")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = preset_loader.read_app_js()
+
+    @classmethod
+    def _synthetic_source(cls, **overrides):
+        """A stand-in app.js defining every REQUIRED_PRESETS name, so a test can
+        make ONE preset defective and see that defect reported."""
+        default = ('{ blueprint: { nodes: [{ id: "A", initial_value: 1.0 }], '
+                   'edges: [{ source: "A", target: "A", type: "activation" }] }, '
+                   'targets: [] }')
+        presets, papers = [], []
+        for name in preset_loader.REQUIRED_PRESETS:
+            entry = "    %s: %s," % (name, overrides.get(name, default))
+            (papers if name in cls.PAPER_MODEL_NAMES else presets).append(entry)
+        return ("const Presets = {\n%s\n};\n\nconst PaperModels = {\n%s\n};\n"
+                % ("\n".join(presets), "\n".join(papers)))
+
+    # -- what it finds --------------------------------------------------------
+    def test_finds_all_eight_shipped_presets_by_name(self):
+        self.assertEqual(sorted(self.EXPECTED_TABLES),
+                         sorted(preset_loader.REQUIRED_PRESETS),
+                         "this test and preset_loader disagree about which presets ship")
+        for name, table in sorted(self.EXPECTED_TABLES.items()):
+            self.assertIn(name, PRESETS,
+                          "preset_loader did not find %r in static/app.js; it found %s"
+                          % (name, ", ".join(sorted(PRESETS))))
+            self.assertEqual(table, PRESETS[name]["table"],
+                             "preset %r came from %s, expected the %s table"
+                             % (name, PRESETS[name]["table"], table))
+        self.assertGreaterEqual(len(PRESETS), 8)
+
+    def test_every_preset_has_nodes_and_edges(self):
+        for name in sorted(PRESETS):
+            blueprint = BLUEPRINTS[name]
+            nodes, edges = blueprint.get("nodes"), blueprint.get("edges")
+            self.assertTrue(nodes, "preset %r loaded with no nodes" % name)
+            self.assertTrue(edges, "preset %r loaded with no edges" % name)
+            for node in nodes:
+                self.assertTrue(node.get("id"),
+                                "preset %r has a node with no id: %r" % (name, node))
+            for edge in edges:
+                self.assertTrue(edge.get("source") and edge.get("target"),
+                                "preset %r has an edge with no source/target: %r"
+                                % (name, edge))
+
+    def test_every_preset_carries_its_own_targets(self):
+        for name in sorted(PRESETS):
+            targets = PRESETS[name].get("targets")
+            self.assertTrue(targets, "preset %r loaded with no targets, so its "
+                                     "behavioural readout cannot be derived" % name)
+            for target in targets:
+                self.assertTrue(target.get("type"),
+                                "preset %r has a target with no type: %r" % (name, target))
+
+    def test_reads_the_javascript_dialect_app_js_actually_uses(self):
+        tables = preset_loader.load_tables(source=self.SAMPLE)
+        self.assertEqual(["Presets", "PaperModels"], list(tables))
+        alpha = tables["Presets"]["alpha"]
+        self.assertEqual("first line\nsecond line", alpha["text"],
+                         "a multi-line template literal was not read verbatim")
+        self.assertEqual([{"species": "X", "type": "peak_time",
+                           "min": 5.0, "max": 15.0}], alpha["targets"])
+        self.assertEqual(140.0, alpha["t_max"])
+        blueprint = alpha["blueprint"]
+        self.assertEqual([{"id": "A", "initial_value": 1.0},
+                          {"id": "B", "initial_value": 0}], blueprint["nodes"])
+        self.assertEqual([{"source": "A", "target": "B", "type": "activation"}],
+                         blueprint["edges"], "a trailing comma broke the array")
+        self.assertEqual({"k": 0.5, "n": 4, "big": 1500.0, "neg": -2.5,
+                          "on": True, "off": False, "gone": None},
+                         blueprint["parameters"])
+        self.assertEqual({"A": "-k*A", "B": "k*A - n*B"}, blueprint["odes"])
+        self.assertEqual({"t_max": 50.0}, blueprint["simulation_config"])
+        self.assertEqual("Beta \u00b5 model", tables["PaperModels"]["beta"]["title"],
+                         r"a \u escape was not decoded")
+
+    def test_skips_function_values_and_keeps_everything_else(self):
+        alpha = preset_loader.load_tables(source=self.SAMPLE)["Presets"]["alpha"]
+        self.assertNotIn("render", alpha, "an arrow function should be skipped, not kept")
+        self.assertNotIn("helper", alpha,
+                         "a function expression should be skipped, not kept")
+        self.assertEqual(["blueprint", "t_max", "targets", "text"], sorted(alpha),
+                         "skipping the function values dropped something else too")
+
+    def test_loaded_blueprints_are_independent_copies(self):
+        first = preset_loader.load_blueprints(text_compiler=agent.rule_based_parse)
+        first["egfr"]["parameters"]["kR"] = -999.0
+        second = preset_loader.load_blueprints(text_compiler=agent.rule_based_parse)
+        self.assertNotEqual(-999.0, second["egfr"]["parameters"]["kR"],
+                            "load_blueprints handed out a shared mutable dict, so one "
+                            "test's slider sweep could corrupt another's model")
+        self.assertIsNot(BLUEPRINTS["egfr"], PRESETS["egfr"]["blueprint"])
+
+    # -- what it refuses -----------------------------------------------------
+    def test_malformed_input_raises_instead_of_returning_empty(self):
+        for label, bad in self.MALFORMED_LITERALS:
+            with self.subTest(malformed=label):
+                with self.assertRaises(preset_loader.PresetLoadError) as caught:
+                    result = preset_loader.parse_object_literal(bad, origin="sample.js")
+                    self.fail("%s parsed to %r instead of raising -- a loader that "
+                              "silently returns something for malformed input makes "
+                              "every preset test vacuous" % (label, result))
+                self.assertTrue(str(caught.exception).strip(),
+                                "%s raised with an empty message" % label)
+
+    def test_a_parse_error_names_the_line_and_column(self):
+        with self.assertRaises(preset_loader.PresetLoadError) as caught:
+            preset_loader.parse_object_literal("{\n  ok: 1,\n  bad: WHAT\n}",
+                                               origin="sample.js")
+        self.assertRegex(str(caught.exception), r"sample\.js:3:\d+",
+                         "a parse failure must say where in the file it happened")
+
+    def test_a_missing_preset_table_raises(self):
+        broken = self.source.replace("const Presets = {", "const NotPresets = {", 1)
+        with self.assertRaises(preset_loader.PresetLoadError) as caught:
+            preset_loader.load_presets(source=broken)
+        self.assertIn("Presets", str(caught.exception))
+
+    def test_a_duplicated_preset_table_raises(self):
+        with self.assertRaises(preset_loader.PresetLoadError):
+            preset_loader.load_presets(source=self.source + "\nconst Presets = {};\n")
+
+    def test_an_empty_preset_table_raises(self):
+        with self.assertRaises(preset_loader.PresetLoadError) as caught:
+            preset_loader.load_presets(
+                source="const Presets = {};\nconst PaperModels = {};\n")
+        self.assertIn("EMPTY", str(caught.exception).upper())
+
+    def test_a_missing_shipped_preset_raises(self):
+        renamed = self.source.replace("    oscillator: {", "    oscillatorGONE: {", 1)
+        self.assertNotEqual(self.source, renamed, "app.js no longer declares oscillator "
+                                                 "the way this test renames it")
+        with self.assertRaises(preset_loader.PresetLoadError) as caught:
+            preset_loader.load_presets(source=renamed)
+        self.assertIn("oscillator", str(caught.exception))
+
+    def test_the_synthetic_stand_in_source_is_itself_loadable(self):
+        """Guards the negative tests below: they must fail for the defect they inject,
+        not because the stand-in source was never valid."""
+        loaded = preset_loader.load_presets(source=self._synthetic_source())
+        self.assertEqual(sorted(preset_loader.REQUIRED_PRESETS), sorted(loaded))
+
+    def test_a_blueprint_with_no_nodes_or_no_edges_raises(self):
+        cases = {
+            "no nodes": '{ blueprint: { nodes: [], edges: [{ source: "A", target: "A" }] } }',
+            "no edges": '{ blueprint: { nodes: [{ id: "A" }], edges: [] } }',
+            "node with no id": '{ blueprint: { nodes: [{ initial_value: 1.0 }], '
+                               'edges: [{ source: "A", target: "A" }] } }',
+            "edge with no target": '{ blueprint: { nodes: [{ id: "A" }], '
+                                   'edges: [{ source: "A" }] } }',
+        }
+        for label, body in sorted(cases.items()):
+            with self.subTest(defect=label):
+                with self.assertRaises(preset_loader.PresetLoadError) as caught:
+                    preset_loader.load_presets(source=self._synthetic_source(egfr=body))
+                self.assertIn("egfr", str(caught.exception))
+
+    def test_a_preset_with_neither_blueprint_nor_text_raises(self):
+        with self.assertRaises(preset_loader.PresetLoadError) as caught:
+            preset_loader.load_presets(source=self._synthetic_source(egfr="{ targets: [] }"))
+        self.assertIn("egfr", str(caught.exception))
+
+    def test_a_text_only_preset_without_a_compiler_raises(self):
+        source = self._synthetic_source(
+            egfr='{ text: `A activates B.\nA starts at 1.0.`, targets: [] }')
+        # It loads as a preset record...
+        self.assertIn("text", preset_loader.load_presets(source=source)["egfr"])
+        # ...but it cannot become a blueprint without the parser, and must say so
+        # rather than going quietly missing from the result.
+        with self.assertRaises(preset_loader.PresetLoadError) as caught:
+            preset_loader.load_blueprints(source=source)
+        self.assertIn("text_compiler", str(caught.exception))
+
+    def test_a_missing_app_js_raises(self):
+        with self.assertRaises(preset_loader.PresetLoadError) as caught:
+            preset_loader.load_presets(
+                path=os.path.join(REPO_DIR, "static", "no-such-app.js"))
+        self.assertIn("no-such-app.js", str(caught.exception))
+
+
+# ==========================================================================
+# COVERAGE: A NEW PRESET CANNOT SLIP THROUGH UNTESTED
+# ==========================================================================
+
+BEHAVIOUR_CLASS_SUFFIX = "PresetBehaviourTest"
+
+
+def behaviour_test_classes():
+    """{preset name: test class} for every behavioural class in this module.
+
+    Discovered by naming convention -- ``FoldChangePresetBehaviourTest`` covers
+    ``foldchange`` -- so adding a preset to app.js without adding its class is what
+    PresetCoverageTest sees.
+    """
+    found = {}
+    for name, obj in sorted(globals().items()):
+        if (isinstance(obj, type) and issubclass(obj, unittest.TestCase)
+                and name.endswith(BEHAVIOUR_CLASS_SUFFIX)
+                and name != BEHAVIOUR_CLASS_SUFFIX):
+            found[name[:-len(BEHAVIOUR_CLASS_SUFFIX)].lower()] = obj
+    return found
+
+
+class PresetCoverageTest(unittest.TestCase):
+    """Every preset app.js ships must have a behavioural test class here.
+
+    Without this, adding a ninth preset to app.js would silently add an untested
+    model: the loader would happily return it, no test would name it, and the suite
+    would stay green.
+    """
+
+    def test_every_shipped_preset_has_a_behavioural_test_class(self):
+        covered = behaviour_test_classes()
+        uncovered = sorted(set(PRESETS) - set(covered))
+        self.assertEqual(
+            [], uncovered,
+            "static/app.js ships %s with no behavioural test: add a class named "
+            "<Name>%s (e.g. %s%s) asserting what the preset's name promises. Loading "
+            "a preset is not testing it." % (
+                ", ".join(uncovered), BEHAVIOUR_CLASS_SUFFIX,
+                (uncovered[0].capitalize() if uncovered else "Xxx"),
+                BEHAVIOUR_CLASS_SUFFIX))
+
+    def test_no_behavioural_class_names_a_preset_app_js_no_longer_ships(self):
+        covered = behaviour_test_classes()
+        orphans = sorted(set(covered) - set(PRESETS))
+        self.assertEqual(
+            [], orphans,
+            "these behavioural classes name presets static/app.js does not define: %s. "
+            "Either the preset was renamed (rename the class with it) or it was "
+            "removed (remove the class)." % ", ".join(orphans))
+
+    def test_every_behavioural_class_actually_contains_tests(self):
+        empty = sorted(name for name, cls in behaviour_test_classes().items()
+                       if not [m for m in dir(cls) if m.startswith("test")])
+        self.assertEqual([], empty,
+                         "these behavioural classes contain no test methods, so the "
+                         "presets they name are covered in name only: %s"
+                         % ", ".join(empty))
 
 
 if __name__ == "__main__":

@@ -327,3 +327,188 @@ class TextParserDecimalTests(unittest.TestCase):
             self._initials("A activates B. A starts at 1.0.. B starts at 2.")
         except ValueError as exc:  # pragma: no cover - the point is that it does not
             self.fail(f"the parser raised on a malformed number: {exc}")
+
+
+
+class FreeTextSpeciesNameTests(unittest.TestCase):
+    """A biologist's own species names must survive the parser.
+
+    This is the path that matters: the presets are demos, but the product's value is a
+    researcher describing their own system and getting a model of it. The stopword list
+    used to contain PROTEIN, MOLECULE, RECEPTOR, ENZYME, FACTOR and COMPLEX -- every one
+    of them a name people actually write. "LIGAND activates RECEPTOR. RECEPTOR activates
+    KINASE. KINASE activates TARGET." lost RECEPTOR, which broke the chain, so KINASE and
+    TARGET simulated as FLAT LINES while only LIGAND moved. A four-step cascade -- the
+    most basic thing anyone types -- silently produced a model missing a step, and a flat
+    trace is indistinguishable from a real modelling result.
+    """
+
+    def _parse(self, text):
+        import agent
+        return agent.rule_based_parse(text)
+
+    def _ids(self, text):
+        return [node["id"] for node in self._parse(text).get("nodes", [])]
+
+    def test_receptor_is_a_species_not_a_stopword(self):
+        ids = self._ids("LIGAND activates RECEPTOR. RECEPTOR activates KINASE. "
+                        "LIGAND starts at 5.0.")
+        self.assertIn("RECEPTOR", ids,
+                      "RECEPTOR is a species name a biologist writes, not a stopword")
+
+    def test_other_biological_nouns_survive(self):
+        for name in ("PROTEIN", "ENZYME", "FACTOR", "COMPLEX", "MOLECULE"):
+            ids = self._ids(f"UPSTREAM activates {name}. {name} activates DOWNSTREAM. "
+                            f"UPSTREAM starts at 1.0.")
+            self.assertIn(name, ids, f"{name} must be usable as a species name")
+
+    def test_a_four_step_cascade_keeps_every_step(self):
+        text = ("LIGAND activates RECEPTOR. RECEPTOR activates KINASE. "
+                "KINASE activates TARGET. LIGAND starts at 5.0. TARGET starts at 0.0.")
+        blueprint = self._parse(text)
+        ids = {node["id"] for node in blueprint.get("nodes", [])}
+        self.assertEqual(ids, {"LIGAND", "RECEPTOR", "KINASE", "TARGET"})
+        self.assertGreaterEqual(len(blueprint.get("edges", [])), 3,
+                                "all three described relations must be present")
+
+    def test_the_cascade_actually_propagates(self):
+        """The real symptom: a dropped species leaves everything downstream flat."""
+        import numpy as np
+        import simulation_engine
+        blueprint = self._parse(
+            "LIGAND activates RECEPTOR. RECEPTOR activates KINASE. "
+            "KINASE activates TARGET. LIGAND starts at 5.0. TARGET starts at 0.0.")
+        result = simulation_engine.ODEModel(blueprint).simulate(t_max=40.0)
+        for species in ("RECEPTOR", "KINASE", "TARGET"):
+            values = np.asarray(result["species"][species], dtype=float)
+            self.assertGreater(
+                float(values.max() - values.min()), 1e-6,
+                f"{species} never changes, so the cascade is not propagating through it")
+
+    def test_english_function_words_are_still_rejected(self):
+        # The fix must not turn every word into a species.
+        ids = self._ids("The A activates B and it inhibits A. A starts at 1.0.")
+        for word in ("THE", "AND", "IT"):
+            self.assertNotIn(word, ids, f"{word!r} is English, not a species")
+
+    def test_a_dropped_relation_endpoint_is_reported(self):
+        """If a name IS rejected, the resulting hole must not be silent."""
+        blueprint = self._parse("A activates THE. THE activates B. A starts at 1.0.")
+        notice = str(blueprint.get("_llm_notice") or "")
+        if "THE" not in {n["id"] for n in blueprint.get("nodes", [])}:
+            self.assertTrue(notice,
+                            "a rejected relation endpoint must produce a notice, because "
+                            "the chain is broken and downstream species will be flat")
+
+
+
+class ProseDescriptionTests(unittest.TestCase):
+    """A researcher writes prose, not the parser's grammar.
+
+    The product's value is a biologist describing their OWN system, so the shape of the
+    sentence must not decide whether they get a model. Every case here failed before:
+    passive voice ("ERK is phosphorylated by MEK") produced NO species at all;
+    "GLUCOSE stimulates release of INSULIN" produced a fabricated species RELEASE and
+    silently dropped INSULIN; and a correctly-parsed cascade compiled to a model sitting
+    entirely at zero, because nothing seeded it and a Hill term of zero is zero.
+
+    The standard applied throughout: a description either produces a model that MOVES,
+    or it says what it could not do. A confident flat model is the one unacceptable
+    outcome, because a flat trace is indistinguishable from a real modelling result.
+    """
+
+    def _parse(self, text):
+        import agent
+        return agent.rule_based_parse(text)
+
+    def _ids(self, blueprint):
+        return {node["id"] for node in blueprint.get("nodes", [])}
+
+    def _simulate(self, blueprint, t_max=40.0):
+        import numpy as np
+        import simulation_engine
+        result = simulation_engine.ODEModel(blueprint).simulate(t_max=t_max)
+        return {sid: np.asarray(vals, dtype=float)
+                for sid, vals in result["species"].items()}
+
+    def _assert_moves(self, blueprint, species):
+        traces = self._simulate(blueprint)
+        for sid in species:
+            values = traces[sid]
+            self.assertGreater(
+                float(values.max() - values.min()), 1e-9,
+                f"{sid} is a flat line, which is indistinguishable from a real result")
+
+    def test_passive_voice_builds_the_cascade(self):
+        blueprint = self._parse(
+            "ERK is phosphorylated by MEK. MEK is activated by RAF. "
+            "RAF is turned on by RAS.")
+        self.assertEqual(self._ids(blueprint), {"ERK", "MEK", "RAF", "RAS"})
+        self._assert_moves(blueprint, ["RAF", "MEK", "ERK"])
+
+    def test_passive_voice_direction_is_not_inverted(self):
+        """"ERK is phosphorylated by MEK" is MEK -> ERK, never the reverse."""
+        blueprint = self._parse("ERK is phosphorylated by MEK. MEK starts at 1.0.")
+        edges = [(e["source"], e["target"]) for e in blueprint["edges"]]
+        self.assertIn(("MEK", "ERK"), edges)
+        self.assertNotIn(("ERK", "MEK"), edges)
+
+    def test_a_nominalisation_is_not_a_species(self):
+        """"release of INSULIN" names a process; the species is INSULIN."""
+        blueprint = self._parse(
+            "GLUCOSE stimulates release of INSULIN. GLUCOSE starts at 2.0.")
+        ids = self._ids(blueprint)
+        self.assertIn("INSULIN", ids)
+        self.assertNotIn("RELEASE", ids, "a process was fabricated as a species")
+
+    def test_interjections_do_not_take_the_subject_slot(self):
+        for text, stray in (
+            ("INSULIN in turn lowers GLUCOSE. GLUCOSE starts at 2.0.", "TURN"),
+            ("P53 also drives production of MDM2. P53 starts at 1.0.", "ALSO"),
+        ):
+            ids = self._ids(self._parse(text))
+            self.assertNotIn(stray, ids, f"{stray!r} was read as a species in {text!r}")
+
+    def test_a_closed_feedback_loop_is_not_inert(self):
+        """Every species has an incoming edge, so nothing was ever seeded."""
+        blueprint = self._parse(
+            "GLUCOSE stimulates INSULIN. INSULIN lowers GLUCOSE.")
+        self.assertEqual(self._ids(blueprint), {"GLUCOSE", "INSULIN"})
+        self._assert_moves(blueprint, ["GLUCOSE", "INSULIN"])
+
+    def test_an_only_inhibited_species_can_still_fall(self):
+        """Inhibition alone cannot lift a species off zero, so it must start non-zero."""
+        blueprint = self._parse("MDM2 degrades P53. MDM2 starts at 1.0.")
+        p53 = next(n for n in blueprint["nodes"] if n["id"] == "P53")
+        self.assertGreater(float(p53["initial_value"]), 0.0,
+                           "a species that is only ever inhibited cannot start at zero")
+        self._assert_moves(blueprint, ["P53"])
+
+    def test_a_stated_initial_value_is_never_overwritten(self):
+        """Seeding must not touch a number the researcher gave, including zero."""
+        blueprint = self._parse(
+            "LIGAND activates RECEPTOR. LIGAND starts at 5.0. RECEPTOR starts at 0.0.")
+        values = {n["id"]: float(n["initial_value"]) for n in blueprint["nodes"]}
+        self.assertEqual(values["LIGAND"], 5.0)
+        self.assertEqual(values["RECEPTOR"], 0.0,
+                         "an explicit 0.0 was overwritten by the seeding default")
+
+    def test_seeding_is_disclosed(self):
+        """A value the product chose must be visible, not hidden in the model."""
+        blueprint = self._parse("RAS activates RAF.")
+        self.assertTrue(str(blueprint.get("_llm_notice") or ""),
+                        "the model silently invented a starting amount")
+
+    def test_arrow_notation(self):
+        blueprint = self._parse("A -> B. B -> C. A starts at 1.0.")
+        self.assertEqual(self._ids(blueprint), {"A", "B", "C"})
+        self._assert_moves(blueprint, ["B", "C"])
+
+    def test_unparseable_text_is_still_refused(self):
+        """Widening the grammar must not make it credulous."""
+        blueprint = self._parse(
+            "The system behaves in an interesting way under stress and then relaxes.")
+        self.assertFalse(blueprint.get("nodes"),
+                         "a description naming no species produced a model anyway")
+        self.assertTrue(str(blueprint.get("_llm_notice") or ""),
+                        "the refusal was silent")

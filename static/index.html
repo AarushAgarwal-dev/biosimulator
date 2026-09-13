@@ -23,6 +23,61 @@
 
     <!-- Custom Style Sheet -->
     <link rel="stylesheet" href="style.css">
+
+    <!--
+        Entry point to the simulation workflow, styled as a peer of the .tab-btn
+        row it sits in. It lives here rather than in style.css only because these
+        rules belong to this one nav element; every value is taken from the same
+        custom properties and the same .tab-btn geometry (padding 16px 20px,
+        14px/500, 2px bottom border) so it lines up with the real tabs exactly.
+    -->
+    <style>
+        .workflow-tab-link {
+            /* Pushed to the trailing edge: it opens another page, so it reads as a
+               peer of the tabs without pretending to be one of the six panels. */
+            margin-left: auto;
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 16px 20px;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            color: var(--accent-teal);
+            border-bottom: 2px solid transparent;
+            transition: all 0.3s;
+        }
+
+        .workflow-tab-link:hover,
+        .workflow-tab-link:focus-visible {
+            border-bottom-color: var(--accent-teal);
+            background: rgba(0, 242, 254, 0.06);
+        }
+
+        .workflow-tab-link__badge {
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            padding: 2px 6px;
+            border-radius: 999px;
+            background: rgba(0, 242, 254, 0.16);
+            border: 1px solid rgba(0, 242, 254, 0.4);
+        }
+
+        /* The tab row is a flex row with no wrap; below ~900px the six tabs plus
+           this link stop fitting, so the label collapses to the icon and badge. */
+        @media (max-width: 900px) {
+            .workflow-tab-link {
+                padding: 16px 12px;
+            }
+
+            .workflow-tab-link>span:nth-child(2) {
+                display: none;
+            }
+        }
+    </style>
 </head>
 
 <body>
@@ -158,6 +213,24 @@
                     <button class="tab-btn" data-tab="feedback">Feedback</button>
                     <button class="tab-btn" data-tab="abm">Agent-Based</button>
                     <button class="tab-btn" data-tab="maple">MAPLE</button>
+                    <!--
+                        Entry point to the PDE simulation workflow (workflow.html).
+                        It sits in the tab row because that is where a user looks for
+                        the app's top-level sections; the one link in the header read
+                        as a description, not a place to go.
+
+                        Deliberately NOT class="tab-btn": app.js binds a click handler
+                        to every .tab-btn and does getElementById("tab-" + data-tab),
+                        so a tab-classed link with no in-page panel would throw and
+                        deactivate every real tab. .workflow-tab-link duplicates the
+                        .tab-btn geometry instead — see the style block in the head.
+                    -->
+                    <a href="workflow.html" class="workflow-tab-link"
+                        title="Full PDE pipeline: CAD domain, mesh, boundary conditions, and a choice of ABM, CompuCell3D or MPC">
+                        <span aria-hidden="true">⚙️</span>
+                        <span>Simulation Workflow</span>
+                        <span class="workflow-tab-link__badge">New</span>
+                    </a>
                 </nav>
 
                 <div class="tab-content-container">

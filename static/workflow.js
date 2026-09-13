@@ -39,6 +39,9 @@ const state = {
     playing: false,
     playTimer: null,
     chart: null,
+    // Signature of the rows currently in the results cell table. Playback calls
+    // renderCellList 25x a second; this lets an unchanged frame skip the rebuild.
+    cellListKey: null,
     // Canvas transform: world (domain units) -> screen (pixels).
     camera: { scale: 1, offsetX: 0, offsetY: 0, dragging: false, lastX: 0, lastY: 0 },
 };
@@ -82,6 +85,33 @@ function fmt(value, digits = 3) {
         return number.toExponential(2);
     }
     return String(Number(number.toFixed(digits)));
+}
+
+/**
+ * Min/max over one or more numeric series in a SINGLE linear pass.
+ *
+ * Math.min(...array) / Math.max(...array) spread every element onto the call
+ * stack and throw RangeError past roughly 65k arguments. Both call sites were
+ * inside a draw or a readout with no catch, so a fine mesh or a long run did not
+ * report an error -- the plot simply went blank. This also avoids the temporary
+ * array that `output.concat(target)` allocated just to be scanned once.
+ *
+ * `count` is the number of FINITE values seen, so callers can tell "the range is
+ * 0…0" apart from "there was nothing to measure" instead of drawing at NaN.
+ */
+function extent(...series) {
+    let low = Infinity, high = -Infinity, count = 0;
+    for (let s = 0; s < series.length; s += 1) {
+        const values = series[s] || [];
+        for (let i = 0; i < values.length; i += 1) {
+            const value = Number(values[i]);
+            if (!Number.isFinite(value)) continue;
+            if (value < low) low = value;
+            if (value > high) high = value;
+            count += 1;
+        }
+    }
+    return count ? { low, high, count } : { low: 0, high: 0, count: 0 };
 }
 
 function toast(message, kind = "info", ms = 5000) {
@@ -316,8 +346,12 @@ function domainBounds() {
     if (kind === "polygon") {
         const points = (domain.polygon && domain.polygon.points) || [];
         if (!points.length) return [0, 0, 1, 1];
-        const xs = points.map((p) => Number(p[0])), ys = points.map((p) => Number(p[1]));
-        return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+        // Single pass, no spread: a traced outline can carry tens of thousands of
+        // points, and Math.min(...xs) throws RangeError once it does.
+        const xs = extent(points.map((p) => Number(p[0])));
+        const ys = extent(points.map((p) => Number(p[1])));
+        if (!xs.count || !ys.count) return [0, 0, 1, 1];
+        return [xs.low, ys.low, xs.high, ys.high];
     }
     return [0, 0, 1, 1];
 }
@@ -818,7 +852,10 @@ function handleCanvasMouseDown(point, event) {
         } else {
             state.selection.nodes = [node.id];
         }
-        refreshTopologyViews();
+        // connectNodes() repaints via validateTopology() when an edge was actually
+        // added; this only has to show the new node highlight, which is a class
+        // toggle rather than a rebuild of ~1800 rows.
+        paintSelection();
         return;
     }
 
@@ -833,19 +870,19 @@ function handleCanvasMouseDown(point, event) {
             state.selection.edges = [];
             state.selection.cells = [];
         }
-        refreshTopologyViews();
+        paintSelection();
         return;
     }
     const cell = cellAt(point.world);
     if (cell) {
         state.selection.cells = [cell.id];
         state.selection.nodes = [];
-        refreshTopologyViews();
+        paintSelection();
         return;
     }
     if (!event.shiftKey) {
         state.selection = { nodes: [], edges: [], cells: [] };
-        refreshTopologyViews();
+        paintSelection();
     }
 }
 
@@ -1076,10 +1113,98 @@ function addRegion() {
  * consistent. Selection is shared by the canvas and all three tables, so
  * highlighting an entity anywhere highlights it everywhere.
  * ----------------------------------------------------------------------- */
+/**
+ * Normalised key for an undirected node pair, so `a-b` and `b-a` are one entry.
+ * NUL is the separator because it cannot occur in a node id, whereas "-" can.
+ */
+function edgeKey(a, b) {
+    const x = String(a), y = String(b);
+    return x < y ? `${x}\u0000${y}` : `${y}\u0000${x}`;
+}
+
+/**
+ * Pair -> edge index for the current topology, built once and then reused.
+ *
+ * Every closure and duplicate test used to be a linear `.find()` / `.some()` over
+ * topology.edges: proving a 1000-node ring closed against 800 edges scanned the
+ * edge list 1000 times to check closure and 1000 times again to collect the ids,
+ * about 1.6M comparisons each. The index makes both O(1) per ring edge.
+ *
+ * The cache is keyed on the ARRAY IDENTITY plus its length, which covers every
+ * mutation this file performs: deleteSelected/clearTopology/importProject replace
+ * the array (identity changes) and connectNodes pushes (length changes). Nothing
+ * rewrites an existing edge's source or target in place.
+ */
+let edgeIndexCache = { edges: null, size: -1, map: null };
+
+function edgeIndex(topology) {
+    const edges = (topology && topology.edges) || [];
+    if (edgeIndexCache.edges === edges && edgeIndexCache.size === edges.length) {
+        return edgeIndexCache.map;
+    }
+    const map = new Map();
+    for (let i = 0; i < edges.length; i += 1) {
+        map.set(edgeKey(edges[i].source, edges[i].target), edges[i]);
+    }
+    edgeIndexCache = { edges, size: edges.length, map };
+    return map;
+}
+
+/**
+ * Monotonic id counter, kept per prefix on the project document (`next_ids`, which
+ * the document already carries).
+ *
+ * The previous implementation built a Set of every existing id on EVERY insert, so
+ * placing n nodes cost O(n^2) -- about 500k id comparisons for the 1000-node
+ * target, on the click path. The counter is O(1). It is seeded once from the
+ * highest numeric suffix actually present, so an imported project cannot collide,
+ * and it is verified against the live collection before being handed out, so a
+ * stale counter still cannot mint a duplicate.
+ */
+const ID_FIELDS = { n: "node", e: "edge", c: "cell" };
+
+/**
+ * Seeding is per DOCUMENT, not per insert -- scanning the collection on every call
+ * would put the O(n) back and leave placing n nodes at O(n^2). A replaced topology
+ * (new project, import, clear) changes object identity and is reseeded; a filtered
+ * array is not, and must not be: the counter only ever moves forward, so deleting
+ * n5 never lets a later node take the id a stale cell might still reference.
+ */
+let idCounterState = { topology: null, seeded: {} };
+
 function nextId(collection, prefix) {
-    let n = collection.length + 1;
-    const used = new Set(collection.map((item) => item.id));
-    while (used.has(`${prefix}${n}`)) n += 1;
+    const topology = (state.project && state.project.topology) || null;
+    const field = ID_FIELDS[prefix];
+    if (!topology || !field) {
+        // No document to hold the counter: fall back to a scan of this collection.
+        const used = new Set(collection.map((item) => item.id));
+        let fallback = collection.length + 1;
+        while (used.has(`${prefix}${fallback}`)) fallback += 1;
+        return `${prefix}${fallback}`;
+    }
+    if (!topology.next_ids || typeof topology.next_ids !== "object") {
+        topology.next_ids = { node: 1, edge: 1, cell: 1 };
+    }
+    if (idCounterState.topology !== topology) {
+        idCounterState = { topology, seeded: {} };
+    }
+    const counters = topology.next_ids;
+    let n = Number(counters[field]);
+    if (!Number.isFinite(n) || n < 1) n = 1;
+    if (!idCounterState.seeded[field]) {
+        // One scan for this prefix, once, so an imported project whose counter is
+        // behind its own ids still cannot mint a duplicate.
+        const pattern = new RegExp(`^${prefix}(\\d+)$`);
+        for (let i = 0; i < collection.length; i += 1) {
+            const match = pattern.exec(String(collection[i].id));
+            if (match) {
+                const value = Number(match[1]);
+                if (value >= n) n = value + 1;
+            }
+        }
+        idCounterState.seeded[field] = true;
+    }
+    counters[field] = n + 1;
     return `${prefix}${n}`;
 }
 
@@ -1094,7 +1219,9 @@ function addNode(world) {
     };
     topology.nodes.push(node);
     state.selection.nodes = [node.id];
-    refreshTopologyViews();
+    // validateTopology() rebuilds the tables and redraws the canvas on BOTH its
+    // paths, so calling refreshTopologyViews() here as well rebuilt all three
+    // tables and redrew the canvas twice for every single node placed.
     validateTopology();
 }
 
@@ -1104,17 +1231,22 @@ function connectNodes(sourceId, targetId) {
         toast("An edge cannot start and end at the same node.", "warn");
         return;
     }
-    const exists = topology.edges.some((edge) =>
-        (edge.source === sourceId && edge.target === targetId) ||
-        (edge.source === targetId && edge.target === sourceId));
-    if (exists) {
+    // O(1) index lookup instead of edges.some() scanning the whole edge list on
+    // every insert, which made connecting n edges O(n * E).
+    const index = edgeIndex(topology);
+    if (index.has(edgeKey(sourceId, targetId))) {
         toast("Those nodes are already connected.", "warn");
         return;
     }
-    topology.edges.push({
+    const edge = {
         id: nextId(topology.edges, "e"),
         source: sourceId, target: targetId, directed: false, boundary: "",
-    });
+    };
+    topology.edges.push(edge);
+    // Keep the index live across the push rather than throwing it away, so a run of
+    // inserts stays O(1) each instead of rebuilding the map every time.
+    index.set(edgeKey(sourceId, targetId), edge);
+    edgeIndexCache.size = topology.edges.length;
     validateTopology();
 }
 
@@ -1125,21 +1257,21 @@ async function makeCellFromSelection() {
         return;
     }
     const topology = state.project.topology;
-    // Verify the loop closes before creating anything, so the error names the gap.
+    // ONE indexed pass: prove the loop closes AND collect the edge ids together.
+    // Previously each ring edge ran a linear .find() over topology.edges to test
+    // closure and a second identical .find() to read the id back -- for a 1000-node
+    // ring against 800 edges that is ~1.6M comparisons, done twice.
+    const index = edgeIndex(topology);
+    const edges = [];
     for (let i = 0; i < ring.length; i += 1) {
         const a = ring[i], b = ring[(i + 1) % ring.length];
-        const found = topology.edges.find((edge) =>
-            (edge.source === a && edge.target === b) || (edge.source === b && edge.target === a));
+        const found = index.get(edgeKey(a, b));
         if (!found) {
             toast(`The loop is open: no edge connects ${a} and ${b}.`, "error", 7000);
             return;
         }
+        edges.push(found.id);
     }
-    const edges = ring.map((a, index) => {
-        const b = ring[(index + 1) % ring.length];
-        return topology.edges.find((edge) =>
-            (edge.source === a && edge.target === b) || (edge.source === b && edge.target === a)).id;
-    });
     topology.cells.push({
         id: nextId(topology.cells, "c"),
         nodes: ring, edges, type: "generic", region: "",
@@ -1165,7 +1297,9 @@ async function makeCellFromSelection() {
         return;
     }
     state.selection.nodes = [];
-    refreshTopologyViews();
+    // validateTopology() above already rebuilt the tables with the new cell in them;
+    // clearing the ring selection is a class change, not a structural one.
+    paintSelection();
 }
 
 async function findLoops() {
@@ -1179,7 +1313,8 @@ async function findLoops() {
         toast(`Found ${payload.count} loop(s)${payload.capped ? " (capped)" : ""}: ${preview}`,
               "info", 9000);
         state.selection.nodes = payload.cycles[0].slice();
-        refreshTopologyViews();
+        // Only the selection changed, so a full three-table rebuild was wasted work.
+        paintSelection();
     } catch (error) {
         toast(`Loop detection failed: ${error.message}`, "error");
     }
@@ -1210,14 +1345,14 @@ function deleteSelected() {
             !(cell.edges || []).some((id) => deadEdges.has(id)));
     }
     state.selection = { nodes: [], edges: [], cells: [] };
-    refreshTopologyViews();
+    // validateTopology() repaints on both its paths; the extra call here rebuilt
+    // all three tables and redrew the canvas a second time for one delete.
     validateTopology();
 }
 
 function clearTopology() {
     state.project.topology = { nodes: [], edges: [], cells: [], next_ids: { node: 1, edge: 1, cell: 1 } };
     state.selection = { nodes: [], edges: [], cells: [] };
-    refreshTopologyViews();
     validateTopology();
 }
 
@@ -1234,6 +1369,11 @@ async function validateTopology() {
         paintStageBadges(state.validation);
         return payload;
     } catch (error) {
+        // The local mutation has already happened, so the tables must still be
+        // rebuilt from it when the request fails -- otherwise dropping the callers'
+        // eager refreshTopologyViews() would leave deleted rows on screen. This is
+        // now the ONE place a topology mutation repaints, on both paths.
+        refreshTopologyViews();
         toast(`Topology validation failed: ${error.message}`, "error");
         return null;
     }
@@ -1288,34 +1428,117 @@ function refreshTopologyViews() {
     drawCanvas();
 }
 
-/** Shared table builder. Rows carry their own click behaviour. */
+/**
+ * Shared table builder.
+ *
+ * Two things used to make this the hot spot of the whole stage. It cleared the
+ * table with `innerHTML = ""` and then inserted every row into a tbody that was
+ * already in the document, so the browser had a chance to reflow on each append;
+ * and it attached a fresh click listener to every row. At the stated target of
+ * 1000 nodes / 800 edges that is ~1800 rows and ~1800 listeners recreated on every
+ * interaction, selection included.
+ *
+ * Now the tbody is built DETACHED and swapped in with a single replaceWith(), so
+ * the document is touched once per refresh, and there is exactly ONE delegated
+ * click listener per table, installed on first use and keyed off `tr[data-key]`.
+ * Row behaviour lives in a Map beside the table instead of in N closures.
+ */
+const tableHandlers = new WeakMap();
+
 function buildTable(table, headers, rows, emptyMessage) {
-    table.innerHTML = "";
-    const head = table.createTHead().insertRow();
-    headers.forEach((header) => {
-        const cell = document.createElement("th");
-        cell.textContent = header;
-        head.appendChild(cell);
-    });
-    const body = table.createTBody();
+    if (!table) return;
+
+    // The header is static per table: rebuild it only when the columns change.
+    const signature = headers.join("\u0000");
+    if (!table.tHead || table.dataset.headSig !== signature) {
+        if (table.tHead) table.tHead.remove();
+        const head = table.createTHead().insertRow();
+        headers.forEach((header) => {
+            const cell = document.createElement("th");
+            cell.textContent = header;
+            head.appendChild(cell);
+        });
+        table.dataset.headSig = signature;
+    }
+
+    // One listener for the table's whole lifetime. It resolves the row at click
+    // time, so swapping the tbody never leaves a dangling or duplicated binding.
+    let handlers = tableHandlers.get(table);
+    if (!handlers) {
+        handlers = new Map();
+        tableHandlers.set(table, handlers);
+        table.addEventListener("click", (event) => {
+            const row = event.target && event.target.closest
+                ? event.target.closest("tr[data-key]")
+                : null;
+            if (!row || !table.contains(row)) return;
+            const handler = handlers.get(row.dataset.key);
+            if (handler) handler(event.shiftKey);
+        });
+    }
+    handlers.clear();
+
+    const body = document.createElement("tbody");
     if (!rows.length) {
         const row = body.insertRow();
         const cell = row.insertCell();
         cell.colSpan = headers.length;
         cell.className = "wf-empty";
         cell.textContent = emptyMessage;
-        return;
-    }
-    rows.forEach((spec) => {
-        const row = body.insertRow();
-        if (spec.selected) row.classList.add("selected");
-        spec.cells.forEach((value, index) => {
-            const cell = row.insertCell();
-            cell.textContent = value;
-            if (index === 0) cell.classList.add("mono");
+    } else {
+        rows.forEach((spec, index) => {
+            const row = body.insertRow();
+            // Delegation keys off data-key, so a missing or duplicated key would
+            // silently wire two rows to one handler. Fall back to the position, and
+            // disambiguate a genuine collision rather than let a click fire the
+            // wrong row's action. Unique ids (node/edge/cell/run/condition) are
+            // untouched, which is what paintSelection matches against.
+            let key = spec.key === undefined || spec.key === null
+                ? `#${index}` : String(spec.key);
+            if (handlers.has(key)) key = `${key}#${index}`;
+            row.dataset.key = key;
+            if (spec.selected) row.classList.add("selected");
+            spec.cells.forEach((value, column) => {
+                const cell = row.insertCell();
+                cell.textContent = value;
+                if (column === 0) cell.classList.add("mono");
+            });
+            if (spec.onClick) handlers.set(key, spec.onClick);
         });
-        row.addEventListener("click", (event) => spec.onClick(event.shiftKey));
+    }
+
+    const existing = table.tBodies[0];
+    if (existing) existing.replaceWith(body);
+    else table.appendChild(body);
+}
+
+/**
+ * Selection-only repaint: the rows on screen are already correct, so only their
+ * `selected` class and the canvas need to change.
+ *
+ * Clicking a node used to run refreshTopologyViews(), which rebuilt all three
+ * tables from scratch -- ~1800 rows at the target -- to change a highlight. This
+ * touches one class per existing row and redraws the canvas, and allocates nothing.
+ */
+function paintSelection() {
+    const tables = [
+        ["node-table", state.selection.nodes],
+        ["edge-table", state.selection.edges],
+        ["cell-table", state.selection.cells],
+    ];
+    tables.forEach(([id, ids]) => {
+        const table = $(id);
+        const body = table && table.tBodies[0];
+        if (!body) return;
+        const chosen = new Set((ids || []).map(String));
+        const rows = body.rows;
+        for (let i = 0; i < rows.length; i += 1) {
+            const key = rows[i].dataset.key;
+            if (key === undefined) continue;
+            rows[i].classList.toggle("selected", chosen.has(key));
+        }
     });
+    drawCanvas();
 }
 
 function selectEntity(kind, id, additive) {
@@ -1324,7 +1547,7 @@ function selectEntity(kind, id, additive) {
     const at = list.indexOf(id);
     if (at >= 0) list.splice(at, 1);
     else list.push(id);
-    refreshTopologyViews();
+    paintSelection();
 }
 
 async function exportTopology() {
@@ -1709,7 +1932,13 @@ async function solve1DNow() {
             mesh_settings: state.project.mesh_settings || { element_count: 40 },
         });
         const stability = payload.stability || {};
-        const last = payload.u[payload.u.length - 1];
+        const last = (payload.u && payload.u[payload.u.length - 1]) || [];
+        // Single pass instead of Math.min(...last): the final profile has one entry
+        // per mesh node, so a fine 1D mesh spread past the ~65k argument limit and
+        // threw RangeError here -- which blanked the whole readout, including the
+        // stability numbers that were already computed correctly.
+        const range = extent(last);
+        const mass = payload.mass || [];
         const time = escapeHtml(timeUnits());
         $("model-solve-readout").innerHTML = [
             `field <b>${escapeHtml(payload.field)}</b> ${payload.units ? `(${escapeHtml(payload.units)})` : ""}`,
@@ -1719,8 +1948,12 @@ async function solve1DNow() {
             (stability.courant_number ? `  Courant <b>${fmt(stability.courant_number)}</b>` : ""),
             stability.numerical_diffusion
                 ? `numerical diffusion from upwinding <b>${fmt(stability.numerical_diffusion)}</b>` : "",
-            `final range <b>${fmt(Math.min(...last))}</b> … <b>${fmt(Math.max(...last))}</b>`,
-            `mass first <b>${fmt(payload.mass[0])}</b> last <b>${fmt(payload.mass[payload.mass.length - 1])}</b>`,
+            range.count
+                ? `final range <b>${fmt(range.low)}</b> … <b>${fmt(range.high)}</b>`
+                : `final range <b>—</b> (the solver returned no finite values for the last frame)`,
+            mass.length
+                ? `mass first <b>${fmt(mass[0])}</b> last <b>${fmt(mass[mass.length - 1])}</b>`
+                : `mass <b>—</b> (not reported)`,
             stability.diverged_at ? `<span style="color:#ff007f">diverged at t=${fmt(stability.diverged_at)}</span>` : "",
         ].filter(Boolean).join("<br>");
         setStatus("Ready", "green");
@@ -2913,13 +3146,29 @@ function drawTrajectory(ctx, canvas, results) {
     const times = results.t || [];
     const output = results.series.output || [];
     const target = results.series.target || [];
-    if (!times.length) return;
+    // A silent `return` left the panel looking like a rendering failure. Say why
+    // there is no plot instead.
+    if (!times.length) {
+        label(ctx, canvas.width / 2, canvas.height / 2,
+              "This run reported no time points, so there is no trajectory to plot.",
+              "#6b7280", "center");
+        return;
+    }
 
     const padding = { left: 52, right: 14, top: 16, bottom: 30 };
     const width = canvas.width - padding.left - padding.right;
     const height = canvas.height - padding.top - padding.bottom;
-    const all = output.concat(target).filter(Number.isFinite);
-    let low = Math.min(...all), high = Math.max(...all);
+    // ONE pass over both series. Math.min(...output.concat(target)) allocated a
+    // joined copy and then spread it onto the call stack, which threw RangeError
+    // past ~65k samples -- uncaught, inside a draw, so the plot silently blanked.
+    const range = extent(output, target);
+    if (!range.count) {
+        label(ctx, canvas.width / 2, canvas.height / 2,
+              "The output and target series contain no finite values to plot.",
+              "#6b7280", "center");
+        return;
+    }
+    let low = range.low, high = range.high;
     if (low === high) { low -= 1; high += 1; }
     const span = high - low;
 
@@ -2984,29 +3233,84 @@ function renderResultsLegend() {
     }
 }
 
+const CELL_COLUMNS = ["id", "type", "state", "x", "y", "vol"];
+
+/** The six rendered values for one cell row, in column order. */
+function cellRowValues(row) {
+    return [row.id, row.type, row.state, fmt(row.x, 1), fmt(row.y, 1),
+            row.volume === undefined ? "—" : fmt(row.volume, 0)];
+}
+
+/**
+ * Row click. The cell is resolved from the CURRENT frame by id rather than captured
+ * when the table was built, so the detail panel cannot describe a cell as it was in
+ * whichever frame the table last happened to be rebuilt in. It also means the
+ * delegated handler stays valid while playback advances.
+ */
+function selectResultsCell(id) {
+    state.selectedCellId = state.selectedCellId === id ? null : id;
+    const frames = (state.results && state.results.cells) || [];
+    const rows = frames[Math.min(state.frame, frames.length - 1)] || [];
+    const row = rows.find((entry) => entry.id === id) || null;
+    renderCellList();
+    renderCellDetail(row);
+    drawResults();
+}
+
 function renderCellList() {
     const results = state.results;
     const frames = (results && results.cells) || [];
     const rows = frames[Math.min(state.frame, frames.length - 1)] || [];
-    const filter = $("results-filter").value.trim().toLowerCase();
+    const filterInput = $("results-filter");
+    const filter = filterInput ? filterInput.value.trim().toLowerCase() : "";
     const visible = rows.filter((row) => !filter ||
         String(row.id).includes(filter) ||
         String(row.type || "").toLowerCase().includes(filter) ||
         String(row.state || "").toLowerCase().includes(filter));
 
+    // The TRUE count of matching cells, written on every path and independently of
+    // how many rows the table below ends up showing, so any row cap stays honest.
     $("results-cell-count").textContent = visible.length;
-    buildTable($("results-cell-table"), ["id", "type", "state", "x", "y", "vol"],
+
+    const table = $("results-cell-table");
+    if (!table) return;
+    const body = table.tBodies[0];
+    // Structural signature: which cells, in which order, plus whether we are in the
+    // "no results at all" state, whose empty message differs from "no cells here".
+    const key = `${results ? "r" : "-"}:${visible.length}:` +
+                `${visible.map((row) => row.id).join(",")}`;
+
+    if (body && key === state.cellListKey) {
+        // Playback fast path. setFrame() calls this once per frame -- 25 times a
+        // second at 40ms -- and the cell POPULATION rarely differs between
+        // neighbouring frames even though x, y and volume do. So the existing rows
+        // are reused and only their text is written: no element creation, no
+        // listener churn, no tbody swap.
+        //
+        // Returning early on an unchanged id set alone would be wrong: positions and
+        // volumes advance every frame while the ids do not, so the table would sit
+        // frozen on stale numbers while the lattice moved beneath it.
+        for (let i = 0; i < visible.length && i < body.rows.length; i += 1) {
+            const tr = body.rows[i];
+            const values = cellRowValues(visible[i]);
+            for (let c = 0; c < values.length && c < tr.cells.length; c += 1) {
+                const text = String(values[c]);
+                if (tr.cells[c].textContent !== text) tr.cells[c].textContent = text;
+            }
+            tr.classList.toggle("selected", state.selectedCellId === visible[i].id);
+        }
+        // The delegated handlers are keyed by cell id and resolve the row live, so
+        // an unchanged id set needs no listener work at all.
+        return;
+    }
+
+    state.cellListKey = key;
+    buildTable(table, CELL_COLUMNS,
         visible.map((row) => ({
             key: row.id,
             selected: state.selectedCellId === row.id,
-            cells: [row.id, row.type, row.state, fmt(row.x, 1), fmt(row.y, 1),
-                    row.volume === undefined ? "—" : fmt(row.volume, 0)],
-            onClick: () => {
-                state.selectedCellId = state.selectedCellId === row.id ? null : row.id;
-                renderCellList();
-                renderCellDetail(row);
-                drawResults();
-            },
+            cells: cellRowValues(row),
+            onClick: () => selectResultsCell(row.id),
         })), results ? "No cells in this frame." : "Run a simulation first.");
 }
 
