@@ -1911,6 +1911,35 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
                 f"initial value: {', '.join(orphans)}."
             )
 
+    # SAY THAT NOTHING WAS FITTED. Every generated edge gets k=0.5, K_d=1.0, n=2.0 and
+    # every species deg=0.1, and none of that came from the description or from data. Two
+    # consequences a researcher should not have to discover by reading the source:
+    #
+    #   - n = 2 is COOPERATIVE. A Hill function's 10-90% response spans an 81^(1/n)-fold
+    #     change in the regulator: 81x at n=1, 9x at n=2. So every edge is about nine
+    #     times more switch-like than mass action, and it compounds down a cascade.
+    #     Ligand-receptor binding, a monomeric transcription factor and a
+    #     Michaelis-Menten step are all n = 1.
+    #   - K_d = 1.0 alongside starting values near 1.0 puts every regulator AT its
+    #     half-saturation point, which for n > 1 is the point of maximum logarithmic
+    #     gain. The default parameterisation is the maximum-sensitivity parameterisation.
+    #
+    # The numbers are a reasonable starting sketch. Presenting them silently, as though
+    # they had been measured, is the problem.
+    if nodes and edges:
+        _defaults_note = (
+            "Rate constants were NOT fitted to anything: every interaction was given "
+            "k=0.5, K_d=1.0, n=2.0, and every species a decay of 0.1. Two things follow. "
+            "n=2 is cooperative -- it makes each step roughly nine times more switch-like "
+            "than simple mass action -- so use n=1 unless you mean a dimer or a genuinely "
+            "cooperative step. And with K_d=1.0 alongside starting values near 1.0, each "
+            "regulator sits at its half-saturation point, where the response is most "
+            "sensitive. Treat this as a sketch of your topology, not a prediction, and "
+            "set the parameters you know."
+        )
+        existing = blueprint.get("_llm_notice", "")
+        blueprint["_llm_notice"] = (existing + " " if existing else "") + _defaults_note
+
     return blueprint
 
 def get_default_egfr_blueprint() -> Dict[str, Any]:
@@ -2613,7 +2642,7 @@ def _final_stable(y: np.ndarray) -> bool:
 
 def bistability_states(model: "ODEModel", species: str, t_max: float,
                        cp: Optional[Dict[str, float]] = None,
-                       high_level: float = 10.0,
+                       high_level: Optional[float] = None,
                        confirm_factor: float = 10.0):
     """Settle from a LOW (0) and a HIGH start; return (low_final, high_final, both_stable).
 
@@ -2622,10 +2651,69 @@ def bistability_states(model: "ODEModel", species: str, t_max: float,
     finished relaxing, and a preset whose horizon is shorter than its relaxation time
     therefore reported bistability it does not have. ``confirm_factor`` re-runs the
     high branch for 10x longer and requires the separation to SURVIVE.
+
+    ``high_level`` defaults to the MODEL'S OWN SCALE rather than a fixed number. It used
+    to be 10.0 absolute, which is unrelated to any particular model:
+
+      - measured on the bistable preset (ON state 1.896), a start of 0.5 misses the
+        second attractor entirely (separation 0.0) while 1.0 and above find it -- so the
+        probe's answer depended on a constant chosen for one model;
+      - for a model whose ON state sits at 100, a start of 10 is on the LOW side of the
+        separatrix and bistability is missed;
+      - for the EGFR preset, whose species are activated FRACTIONS in [0, 1], a start of
+        10 is 1000% activation. The rate laws are k*S*(1 - X), so (1 - X) goes strongly
+        negative and the probe explores a region the model cannot occupy.
+
+    The scale is taken from how far the unstimulated run actually travels, then pushed
+    well above it, so the high start is above the separatrix for a model of any
+    magnitude and never unphysical for a bounded one.
     """
     lo = model.simulate(t_max, num_points=150, custom_params=cp, custom_initial={species: 0.0})
-    hi = model.simulate(t_max, num_points=150, custom_params=cp, custom_initial={species: high_level})
-    ylo, yhi = lo["species"].get(species, []), hi["species"].get(species, [])
+    ylo_probe = lo["species"].get(species, [])
+
+    if high_level is None:
+        # SWEEP, rather than trust one constant. A single high start has to sit above the
+        # separatrix, and no fixed number does that for every model. Scaling to the model
+        # helps but does not settle it either: 5x the low branch's reach is 3.16 for ERK,
+        # still above a fraction's ceiling of 1. So try several starts spanning "just
+        # above where the low branch got to" up to a large multiple, and keep whichever
+        # reveals the widest separation. The multipliers are a SEARCH RANGE, not a claim
+        # about any particular model, and the smallest of them stays inside the physical
+        # range of a bounded one.
+        try:
+            reach = float(np.nanmax(np.abs(np.asarray(ylo_probe, dtype=float))))
+        except Exception:
+            reach = 0.0
+        initial = 0.0
+        for node in (model.blueprint.get("nodes") or []):
+            if str(node.get("id")) == str(species):
+                try:
+                    initial = abs(float(node.get("initial_value") or 0.0))
+                except (TypeError, ValueError):
+                    initial = 0.0
+                break
+        base = max(reach, initial, 0.2)
+        candidates = [base * f for f in (1.2, 2.0, 5.0, 20.0)]
+    else:
+        candidates = [float(high_level)]
+
+    lo_final = float(ylo_probe[-1]) if ylo_probe else 0.0
+    best_y, best_gap, best_level = None, -1.0, candidates[0]
+    for level in candidates:
+        try:
+            trial = model.simulate(t_max, num_points=150, custom_params=cp,
+                                   custom_initial={species: level})
+        except Exception:
+            continue
+        y_trial = trial["species"].get(species, [])
+        if not y_trial:
+            continue
+        gap = abs(float(y_trial[-1]) - lo_final)
+        if gap > best_gap:
+            best_y, best_gap, best_level = y_trial, gap, level
+
+    high_level = best_level
+    ylo, yhi = ylo_probe, (best_y or [])
     if not ylo or not yhi:
         return 0.0, 0.0, False
     stable = _final_stable(np.array(ylo)) and _final_stable(np.array(yhi))
