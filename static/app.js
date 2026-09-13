@@ -1077,6 +1077,9 @@ async function compileBlueprint() {
         });
         state.equations = data.equations;
         state.equationsVerbose = data.equations_verbose || data.equations;
+        // The interaction graph derived from these equations. Null for a generic-Hill
+        // model, where the blueprint's own edges are the compiled topology.
+        state.derivedEdges = Array.isArray(data.derived_edges) ? data.derived_edges : null;
 
         // Render Equations via KaTeX
         renderEquations();
@@ -1994,9 +1997,22 @@ function renderCytoscape() {
         });
     });
 
-    // Explicit edges take precedence. Equation-driven ODE and PDE models carry
-    // their wiring inside expressions, so derive display-only edges when needed.
-    let edgesToDraw = (state.blueprint.edges || []).filter(
+    // THE EQUATION-DERIVED GRAPH WINS when the backend supplied one.
+    //
+    // Previously the hand-drawn `edges` took precedence and a derived fallback was used
+    // only when there were none at all. That is backwards for an explicit-equation model:
+    // the compiler integrates the rate laws and NEVER reads `edges`, so the author's
+    // arrows are decoration that can contradict the mathematics. Zhabotinsky displayed 13
+    // coupled equations as 2 arrows; Berridge drew Z->Y and Y->Z activation and omitted
+    // the Z-gated pump entirely, which the derivation recovers as a Z self-inhibition.
+    //
+    // `derived_edges` comes from /api/compile, built from the Jacobian of each equation's
+    // PRODUCTION terms, so an arrow means "this species appears in that one's rate of
+    // change, with this sign". It is null for a generic-Hill model, where the edges are
+    // the compiled topology and are already true.
+    const derived = (state.derivedEdges || []).filter(
+        e => nodeIds.has(e.source) && nodeIds.has(e.target));
+    let edgesToDraw = derived.length ? derived : (state.blueprint.edges || []).filter(
         e => nodeIds.has(e.source) && nodeIds.has(e.target));
     const hasImplicitEdges = state.blueprint.odes ||
         (state.blueprint.spatial && state.blueprint.spatial.reactions);
@@ -2034,13 +2050,38 @@ function renderCytoscape() {
     // honest label until then.
     const badge = document.getElementById("graph-schematic-badge");
     if (badge) {
+        // Report WHICH graph this is, rather than warning that it is decoration. When the
+        // backend derived the graph from the equations, the arrows ARE the mathematics: an
+        // arrow means the source appears in the target's rate of change, and its direction
+        // is the sign of the partial derivative. The old wording described the hand-drawn
+        // case, which now survives only as a fallback when derivation was not possible.
         const explicit = !!(state.blueprint && state.blueprint.odes);
+        const isDerived = Array.isArray(state.derivedEdges) && state.derivedEdges.length > 0;
+        let omitted = 0;
+        if (isDerived) {
+            state.derivedEdges.forEach(function (e) {
+                omitted = Math.max(omitted, Number(e.minor_influences_omitted) || 0);
+            });
+        }
         badge.hidden = !explicit;
-        badge.textContent = explicit
-            ? "Schematic — this model's equations are written explicitly, so the arrows "
-              + "below are illustrative and are NOT what is being solved. Read the "
-              + "Equations tab for the actual rate laws."
-            : "";
+        if (!explicit) {
+            badge.textContent = "";
+        } else if (isDerived) {
+            badge.textContent =
+                "Derived from the equations: an arrow means that species appears in the "
+                + "other's rate of change, and its direction is the sign of the partial "
+                + "derivative. A self-arrow is autoregulation, not turnover."
+                + (omitted
+                    ? " Up to " + omitted + " weak influences per species are folded away"
+                      + " to keep this readable; the Equations tab is complete."
+                    : "");
+        } else {
+            badge.textContent =
+                "Schematic - this model's equations are written explicitly and a graph "
+                + "could not be derived from them, so the arrows below are illustrative "
+                + "and are NOT what is being solved. Read the Equations tab for the "
+                + "actual rate laws.";
+        }
     }
 
     cyInstance = cytoscape({

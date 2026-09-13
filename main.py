@@ -22,7 +22,8 @@ from typing import Dict, Any, List, NoReturn, Optional
 
 import sympy
 import db_interface
-from simulation_engine import ODEModel, solve_pde, explore_parameter_space
+from simulation_engine import (ODEModel, solve_pde, explore_parameter_space,
+                               derive_edges_from_odes)
 import agent
 import llm_provider
 
@@ -556,10 +557,22 @@ def compile_blueprint(req: CompileRequest):
         model = _validated_ode_model(req.blueprint)
         latex_eqs = model.get_equations_latex()
         latex_eqs_verbose = model.get_equations_latex(verbose=True)
+        # The interaction graph, DERIVED FROM THE EQUATIONS rather than hand-drawn.
+        # When a blueprint carries explicit `odes` the compiler integrates those rate laws
+        # and never reads the `edges` array, so the arrows on screen were whatever the
+        # author drew -- zhabotinsky displayed 13 coupled equations as 2 arrows. This is
+        # None for a generic-Hill model, where the edges ARE the compiled topology and are
+        # already true.
+        derived_edges = None
+        try:
+            derived_edges = derive_edges_from_odes(req.blueprint)
+        except Exception:
+            derived_edges = None
         return {
             "equations": latex_eqs,
             "equations_verbose": latex_eqs_verbose,
             "parameters": model.params_dict,
+            "derived_edges": derived_edges,
         }
     except HTTPException:
         raise
