@@ -279,32 +279,31 @@ class MAPLEExtractor:
         Returns:
             (blueprint_dict, logs)
         """
-        import requests
         logs = []
 
         try:
-            # BioModels API endpoint
-            url = f"https://www.ebi.ac.uk/biomodels/{model_id}/download"
+            import db_interface
+
             logs.append(f"Fetching SBML from BioModels: {model_id}")
-
-            response = requests.get(url, timeout=15, params={"filename": f"{model_id}_url.xml"})
-            if response.status_code != 200:
-                # Try alternative URL format
-                url = f"https://www.ebi.ac.uk/biomodels/model/download/{model_id}"
-                response = requests.get(url, timeout=15)
-
-            if response.status_code == 200:
-                sbml_content = response.text
-                logs.append(f"Downloaded SBML ({len(sbml_content)} chars)")
-
-                blueprint = parse_sbml_to_blueprint(sbml_content)
-                logs.append(f"Parsed {len(blueprint['nodes'])} species, {len(blueprint['edges'])} reactions")
-                return blueprint, logs
-            else:
-                logs.append(f"BioModels API returned {response.status_code}")
+            # Delegated so the content checks live in one place: the '/{id}/download'
+            # form answers 200 with an HTML landing page and the no-filename form
+            # answers 200 with a ZIP, either of which used to be parsed as SBML.
+            sbml_content = db_interface.fetch_biomodel_sbml(model_id)
+            if not sbml_content:
+                logs.append("BioModels returned no SBML document for that id.")
                 return None, logs
+
+            logs.append(f"Downloaded SBML ({len(sbml_content)} chars)")
+            blueprint = parse_sbml_to_blueprint(sbml_content)
+            if not isinstance(blueprint, dict) or not blueprint.get("nodes"):
+                logs.append("The SBML parsed but contained no species, so there is no model to build.")
+                return None, logs
+
+            logs.append(f"Parsed {len(blueprint['nodes'])} species, "
+                        f"{len(blueprint.get('edges') or [])} reactions")
+            return blueprint, logs
         except Exception as e:
-            logs.append(f"SBML import failed: {e}")
+            logs.append(f"SBML import failed: {type(e).__name__}: {e}")
             return None, logs
 
     # ============================================================

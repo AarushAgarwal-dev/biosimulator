@@ -1,0 +1,120 @@
+version: 0.2
+
+# Builds the CompuCell3D worker image INSIDE AWS and pushes it to ECR.
+#
+# Why this exists rather than a local `docker build`: the image is 3-4 GB because
+# CompuCell3D pulls VTK, and pushing that from a workstation crosses a residential
+# uplink -- the slowest and most failure-prone step in the whole setup. CodeBuild
+# builds and pushes within AWS, so the bytes never leave the region. A build project
+# costs nothing at rest and is billed per build-minute.
+#
+# Requires privilegedMode=true on the project: `docker build` needs a Docker daemon.
+
+env:
+  variables:
+    IMAGE_TAG: "latest"
+
+phases:
+  pre_build:
+    commands:
+      - echo "Region=$AWS_DEFAULT_REGION Registry=$ECR_REGISTRY Repo=$IMAGE_REPO_NAME Tag=$IMAGE_TAG"
+      - echo "Authenticating to ECR..."
+      - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+      - docker --version
+
+  build:
+    commands:
+      # The conda solve for compucell3d + VTK is the slow part; expect 10-30 min.
+      - echo "Building image (conda solve for CompuCell3D is slow)..."
+      - docker build -t "$IMAGE_REPO_NAME:$IMAGE_TAG" .
+      - docker tag "$IMAGE_REPO_NAME:$IMAGE_TAG" "$ECR_REGISTRY/$IMAGE_REPO_NAME:$IMAGE_TAG"
+      # Prove the engine is importable in the image we are about to ship. The
+      # Dockerfile already asserts this at build time; repeating it here means a
+      # broken image fails the BUILD rather than the first simulation someone waits
+      # twenty minutes for.
+      - echo "Verifying CompuCell3D imports inside the image..."
+      # --entrypoint is required: the image's ENTRYPOINT is the job runner, so a
+      # bare `docker run image python -c ...` would append these as ARGUMENTS to the
+      # runner instead of executing them.
+      - docker run --rm --entrypoint python "$IMAGE_REPO_NAME:$IMAGE_TAG" -c "import cc3d; print('cc3d', getattr(cc3d, '__version__', 'unknown'))"
+      # Stronger than an import check: actually RUN a few Monte Carlo steps through
+      # the same API the job runner uses, headless, and require real cells out of it.
+      # A submitted job previously failed at runtime with "runScript was not found in
+      # this image" while `import cc3d` passed, so importability alone proves nothing
+      # about whether a simulation can execute.
+      - echo "Smoke-testing a real simulation through the Python API..."
+      - |
+        cat > /tmp/smoke.py <<'PY'
+        from cc3d.core.PyCoreSpecs import (PottsCore, CellTypePlugin, VolumePlugin,
+                                           BlobInitializer)
+        import cc3d.core.PyCoreSpecs as specs_mod
+        from cc3d.core.PySteppables import SteppableBasePy
+        from cc3d.CompuCellSetup.CC3DCaller import CC3DSimService
+        import sys
+
+        potts = PottsCore(dim_x=30, dim_y=30, dim_z=1, steps=10, neighbor_order=2,
+                          fluctuation_amplitude=10)
+        types = CellTypePlugin("CellA")
+        volume = VolumePlugin()
+        volume.param_new("CellA", target_volume=25, lambda_volume=2)
+        blob = BlobInitializer()
+        blob.region_new(width=5, radius=8, center=(15, 15, 0), cell_types=("CellA",))
+
+        specs = [potts, types, volume, blob]
+        # Assert the plugin names the job runner relies on actually exist in THIS
+        # build of cc3d, and that they make positions real. A previous run returned
+        # 450 rows of correct volumes with every x/y at the origin because these were
+        # never registered -- that is wrong data, not a missing feature, so it fails
+        # the build now rather than a researcher's analysis later.
+        missing = [n for n in ("CenterOfMassPlugin", "SurfacePlugin")
+                   if getattr(specs_mod, n, None) is None]
+        if missing:
+            print("SMOKE FAILED: PyCoreSpecs lacks", missing, file=sys.stderr)
+            sys.exit(1)
+        specs.append(specs_mod.CenterOfMassPlugin())
+        specs.append(specs_mod.SurfacePlugin())
+
+        sim = CC3DSimService()
+        sim.register_specs(specs)
+        probe = SteppableBasePy()
+        sim.register_steppable(steppable=probe)
+        sim.run(); sim.init(); sim.start()
+        for _ in range(5):
+            sim.step()
+        cells = list(probe.cell_list)
+        sample = [(c.id, c.volume, c.surface, c.xCOM, c.yCOM) for c in cells[:3]]
+        sim.finish()
+        print("smoke: cells after 5 steps =", len(cells))
+        print("smoke: (id, volume, surface, xCOM, yCOM) =", sample)
+        if not cells:
+            print("SMOKE FAILED: the lattice contained no cells", file=sys.stderr)
+            sys.exit(1)
+        if not any(x for (_i, _v, _s, x, _y) in sample):
+            print("SMOKE FAILED: every xCOM is zero -- CenterOfMass is not active",
+                  file=sys.stderr)
+            sys.exit(1)
+        if not any(s for (_i, _v, s, _x, _y) in sample):
+            print("SMOKE FAILED: every surface is zero -- Surface is not active",
+                  file=sys.stderr)
+            sys.exit(1)
+        print("SMOKE OK")
+        PY
+        docker run --rm --entrypoint python -v /tmp/smoke.py:/tmp/smoke.py "$IMAGE_REPO_NAME:$IMAGE_TAG" /tmp/smoke.py
+
+  post_build:
+    commands:
+      - echo "Pushing to ECR..."
+      - docker push "$ECR_REGISTRY/$IMAGE_REPO_NAME:$IMAGE_TAG"
+      # Also push an IMMUTABLE tag. The Batch job definition points at :latest, so a
+      # rebuild silently changes the image under queued and retried jobs, with no way
+      # to say which image produced a given result and nothing to roll back to. The
+      # build id is unique per build, so this tag is a permanent handle on exactly
+      # this image -- reference it from the job definition when you need a run to be
+      # reproducible months later.
+      - BUILD_TAG="build-${CODEBUILD_BUILD_NUMBER:-0}-$(echo "${CODEBUILD_RESOLVED_SOURCE_VERSION:-nosrc}" | cut -c1-12)"
+      - echo "Immutable tag: $BUILD_TAG"
+      - docker tag "$IMAGE_REPO_NAME:$IMAGE_TAG" "$ECR_REGISTRY/$IMAGE_REPO_NAME:$BUILD_TAG"
+      - docker push "$ECR_REGISTRY/$IMAGE_REPO_NAME:$BUILD_TAG"
+      - echo "Pushed $ECR_REGISTRY/$IMAGE_REPO_NAME:$IMAGE_TAG and :$BUILD_TAG"
+      # Record the digest, which is the only identifier that cannot be reassigned.
+      - docker inspect --format='{{index .RepoDigests 0}}' "$ECR_REGISTRY/$IMAGE_REPO_NAME:$IMAGE_TAG" || true

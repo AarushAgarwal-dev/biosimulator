@@ -13,8 +13,31 @@ requests>=2.31.0
 
 # LLM engine (cloud): AWS Bedrock via the Converse API, authenticated with a Bedrock
 # API key (AWS_BEARER_TOKEN_BEDROCK) or standard AWS credentials. Pure Python, no build.
+# boto3 also carries the AWS Batch + S3 calls that dispatch remote CompuCell3D runs.
 boto3>=1.34.0
 python-dotenv>=1.0.0
+
+# ---------------------------------------------------------------------------
+# Simulation approach engines.
+#
+# Pinned to exact versions: these carry native code and a silent minor bump can
+# change numerical results. All three publish manylinux2014_x86_64 wheels, verified
+# with `pip download --platform manylinux2014_x86_64`, so Render installs them
+# without compiling and cannot repeat the llama-cpp-python out-of-memory failure.
+#
+# casadi is ~57 MB and is the only native dependency here.
+casadi==3.8.0
+do-mpc==5.1.2
+mesa==3.5.1
+
+# NOT LISTED, deliberately: CompuCell3D.
+# It is distributed only through its own Conda channel (anaconda.org/compucell3d),
+# is absent from PyPI entirely, and needs VTK plus native rendering libraries for a
+# ~2-3 GB install. Render builds from this file with pip on a 512 MB instance, so the
+# engine cannot live here. It runs instead as an on-demand AWS Batch job -- see
+# deploy/cc3d/Dockerfile and cc3d_remote.py -- and the approach reports itself
+# honestly unavailable when neither a local install nor AWS is configured.
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # OPTIONAL: local in-process LLM inference (CPU GGUF) and/or AWS SSO/login auth.

@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulation Workflow — BioSimulateAI</title>
+    <meta name="description"
+        content="CAD domain setup, node/edge/cell topology, meshing, PDE definition, boundary conditions, and a choice of ABM, CompuCell3D or MPC execution.">
+
+    <link rel="icon" type="image/png" href="favicon.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+    <!-- The existing design system, then workflow-specific additions built on its tokens. -->
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="workflow.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <div class="header-logo">
+                <span class="logo-icon">🧬</span>
+                <div class="logo-text">
+                    <h1>Simulation Workflow</h1>
+                    <p>Domain → topology → mesh → model → conditions → ABM / CompuCell3D / MPC</p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <a href="index.html" class="btn btn-secondary btn-sm wf-header-link">← Model Compiler</a>
+                <button class="btn btn-secondary btn-sm" id="wf-import" title="Import a project JSON file">📂 Import</button>
+                <button class="btn btn-secondary btn-sm" id="wf-export" title="Download this project as JSON">💾 Export</button>
+                <input type="file" id="wf-import-file" accept=".json,application/json" hidden>
+                <div class="status-badge" id="wf-status">
+                    <span class="status-dot green" id="wf-status-dot"></span>
+                    <span id="wf-status-text">Ready</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="wf-body">
+            <!-- STAGE RAIL: every stage shows its own validation status -->
+            <nav class="wf-rail" aria-label="Workflow stages">
+                <ol class="wf-stage-list" id="wf-stage-list"></ol>
+                <div class="wf-rail-footer">
+                    <div class="wf-legend-title">Stage status</div>
+                    <div class="wf-legend"><span class="wf-badge valid">✓</span> valid</div>
+                    <div class="wf-legend"><span class="wf-badge invalid">!</span> has errors</div>
+                    <div class="wf-legend"><span class="wf-badge skipped">–</span> not done yet</div>
+                </div>
+            </nav>
+
+            <main class="wf-main">
+                <!-- ============ STAGE 1: CAD DOMAIN ============ -->
+                <section class="wf-stage card" data-stage="domain">
+                    <div class="wf-stage-head">
+                        <h2 class="section-title">1. Domain (CAD)</h2>
+                        <p class="wf-hint" id="domain-summary">Set the spatial extent every later stage is measured against.</p>
+                    </div>
+                    <div class="wf-two-col">
+                        <div class="wf-controls">
+                            <label class="wf-field">
+                                <span>Shape</span>
+                                <select id="domain-kind">
+                                    <option value="interval">1D interval</option>
+                                    <option value="rectangle" selected>2D rectangle</option>
+                                    <option value="circle">2D circle</option>
+                                    <option value="polygon">2D polygon</option>
+                                </select>
+                            </label>
+                            <label class="wf-field">
+                                <span>Length unit</span>
+                                <select id="domain-units">
+                                    <option value="m">m</option>
+                                    <option value="mm">mm</option>
+                                    <option value="um" selected>µm</option>
+                                    <option value="nm">nm</option>
+                                </select>
+                            </label>
+                            <!-- The TIME unit is global for exactly the reason the length
+                                 unit is. Stage 1 used to carry the only explicit unit in
+                                 the app; after it, every number -- the time window, the
+                                 output interval, diffusion, advection, one Monte Carlo
+                                 step -- was entered in a system the researcher had to
+                                 guess, and the results panel read those guesses back as
+                                 if they were measurements. There was no time unit
+                                 anywhere in the app at all. -->
+                            <label class="wf-field">
+                                <span>Time unit</span>
+                                <select id="domain-time-units">
+                                    <option value="s" selected>s</option>
+                                    <option value="min">min</option>
+                                    <option value="h">h</option>
+                                </select>
+                            </label>
+                            <div id="domain-params" class="wf-param-grid"></div>
+                            <div id="domain-polygon-editor" hidden>
+                                <label class="wf-field">
+                                    <span>Vertices (one "x, y" per line)</span>
+                                    <textarea id="domain-polygon-points" rows="6"
+                                        spellcheck="false">0, 0
+10, 0
+10, 6
+0, 6</textarea>
+                                </label>
+                            </div>
+                            <div class="wf-row">
+                                <button class="btn btn-primary btn-sm" id="domain-apply">Apply domain</button>
+                                <button class="btn btn-secondary btn-sm" id="canvas-fit" title="Fit the view to the domain">Fit view</button>
+                            </div>
+                            <div class="wf-subhead">Named boundaries</div>
+                            <ul class="wf-chip-list" id="domain-boundaries"></ul>
+                            <div class="wf-subhead">Named regions</div>
+                            <div class="wf-row">
+                                <input type="text" id="region-name" placeholder="Region name" class="wf-inline-input">
+                                <button class="btn btn-secondary btn-sm" id="region-add">Add region</button>
+                            </div>
+                            <ul class="wf-chip-list" id="domain-regions"></ul>
+                        </div>
+                        <!-- The canvas is a SINGLE shared node moved in here by
+                             showStage(). It used to live inside this section, which
+                             made it display:none on stages 2 and 3 -- the exact
+                             stages built around clicking it. -->
+                        <div class="wf-canvas-slot" data-slot="domain"></div>
+                    </div>
+                    <div class="wf-issues" id="domain-issues"></div>
+                </section>
+
+                <!-- ============ STAGE 2: TOPOLOGY ============ -->
+                <section class="wf-stage card" data-stage="topology" hidden>
+                    <div class="wf-stage-head">
+                        <h2 class="section-title">2. Nodes, edges &amp; cells</h2>
+                        <p class="wf-hint">Click the canvas to place nodes. Select two nodes to connect them; select a
+                            closed loop to make a cell.</p>
+                    </div>
+                    <div class="wf-canvas-slot" data-slot="topology"></div>
+                    <div class="wf-two-col">
+                        <div class="wf-controls">
+                            <div class="wf-row wf-tool-row">
+                                <button class="btn btn-secondary btn-sm wf-tool active" data-tool="select">Select</button>
+                                <button class="btn btn-secondary btn-sm wf-tool" data-tool="node">Add node</button>
+                                <button class="btn btn-secondary btn-sm wf-tool" data-tool="edge">Connect</button>
+                                <button class="btn btn-secondary btn-sm wf-tool" data-tool="move">Move</button>
+                            </div>
+                            <div class="wf-row">
+                                <button class="btn btn-secondary btn-sm" id="topo-make-cell">Make cell from selection</button>
+                                <button class="btn btn-secondary btn-sm" id="topo-find-loops">Find loops</button>
+                            </div>
+                            <div class="wf-row">
+                                <button class="btn btn-secondary btn-sm" id="topo-delete">Delete selected</button>
+                                <button class="btn btn-secondary btn-sm" id="topo-clear">Clear all</button>
+                                <button class="btn btn-secondary btn-sm" id="topo-export">Export CSV</button>
+                            </div>
+                            <div class="wf-subhead">View mode</div>
+                            <div class="wf-row wf-tool-row">
+                                <button class="btn btn-secondary btn-sm wf-view active" data-view="graph">Node/edge</button>
+                                <button class="btn btn-secondary btn-sm wf-view" data-view="mesh">Mesh</button>
+                                <button class="btn btn-secondary btn-sm wf-view" data-view="tissue">Tissue</button>
+                                <button class="btn btn-secondary btn-sm wf-view" data-view="vertex">Vertex</button>
+                                <button class="btn btn-secondary btn-sm wf-view" data-view="clustered">Clustered</button>
+                            </div>
+                            <div class="wf-stats" id="topo-stats"></div>
+                        </div>
+                        <div class="wf-tables">
+                            <div class="wf-table-block">
+                                <div class="wf-subhead">Nodes <span class="wf-count" id="node-count">0</span></div>
+                                <div class="wf-table-scroll"><table class="wf-table" id="node-table"></table></div>
+                            </div>
+                            <div class="wf-table-block">
+                                <div class="wf-subhead">Edges <span class="wf-count" id="edge-count">0</span></div>
+                                <div class="wf-table-scroll"><table class="wf-table" id="edge-table"></table></div>
+                            </div>
+                            <div class="wf-table-block">
+                                <div class="wf-subhead">Cells <span class="wf-count" id="cell-count">0</span></div>
+                                <div class="wf-table-scroll"><table class="wf-table" id="cell-table"></table></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="wf-issues" id="topology-issues"></div>
+                </section>
+
+                <!-- ============ STAGE 3: MESH ============ -->
+                <section class="wf-stage card" data-stage="mesh" hidden>
+                    <div class="wf-stage-head">
+                        <h2 class="section-title">3. Mesh &amp; discretisation</h2>
+                        <p class="wf-hint">Preview before applying. Named boundaries are re-derived geometrically, so a
+                            condition attached to a name survives remeshing.</p>
+                    </div>
+                    <div class="wf-two-col">
+                        <div class="wf-controls">
+                            <div id="mesh-1d-controls">
+                                <label class="wf-field"><span>Element count</span>
+                                    <input type="number" id="mesh-elements" value="40" min="1" step="1"></label>
+                            </div>
+                            <div id="mesh-2d-controls">
+                                <label class="wf-field"><span>Mesh type</span>
+                                    <select id="mesh-kind">
+                                        <option value="structured">Structured grid</option>
+                                        <option value="unstructured">Unstructured (Delaunay)</option>
+                                    </select></label>
+                                <div class="wf-param-grid">
+                                    <label class="wf-field"><span>Rows</span>
+                                        <input type="number" id="mesh-rows" value="12" min="1" step="1"></label>
+                                    <label class="wf-field"><span>Columns</span>
+                                        <input type="number" id="mesh-cols" value="20" min="1" step="1"></label>
+                                </div>
+                                <label class="wf-field"><span id="mesh-spacing-label">Target spacing (optional)</span>
+                                    <input type="number" id="mesh-spacing" step="0.1" placeholder="overrides rows/cols"></label>
+                            </div>
+                            <div class="wf-row">
+                                <button class="btn btn-primary btn-sm" id="mesh-generate">Generate mesh</button>
+                                <button class="btn btn-secondary btn-sm" id="mesh-clear">Clear mesh</button>
+                            </div>
+                            <div class="wf-stats" id="mesh-stats"></div>
+                        </div>
+                        <div class="wf-canvas-slot" data-slot="mesh">
+                            <div id="mesh-boundary-list" class="wf-chip-list"></div>
+                        </div>
+                    </div>
+                    <div class="wf-issues" id="mesh-issues"></div>
+                </section>
+
+                <!-- ============ STAGE 4: MODEL ============ -->
+                <section class="wf-stage card" data-stage="model" hidden>
+                    <div class="wf-stage-head">
+                        <h2 class="section-title">4. PDE / model definition</h2>
+                        <p class="wf-hint">∂u/∂t = ∇·(D∇u) − v·∇u + R(u,x,t) + S(x,t). Expressions are parsed
+                            symbolically — never evaluated as code.</p>
+                    </div>
+                    <div class="wf-two-col">
+                        <div class="wf-controls">
+                            <label class="wf-field"><span>Preset</span>
+                                <select id="model-preset"><option value="">— choose a preset —</option></select></label>
+                            <div class="wf-subhead">Parameters</div>
+                            <div id="model-parameters" class="wf-param-grid"></div>
+                            <div class="wf-row">
+                                <input type="text" id="param-name" placeholder="name" class="wf-inline-input">
+                                <input type="number" id="param-value" placeholder="value" step="any" class="wf-inline-input">
+                                <button class="btn btn-secondary btn-sm" id="param-add">Add</button>
+                            </div>
+                            <div class="wf-subhead">Fields</div>
+                            <div id="model-fields"></div>
+                            <button class="btn btn-secondary btn-sm" id="field-add">Add field</button>
+                        </div>
+                        <div class="wf-viewport wf-viewport-note">
+                            <div class="wf-subhead">Equation</div>
+                            <div id="model-latex" class="wf-latex"></div>
+                            <div class="wf-subhead">In plain language</div>
+                            <div id="model-plain" class="wf-plain"></div>
+                            <div class="wf-row">
+                                <button class="btn btn-primary btn-sm" id="model-solve1d">Solve 1D now</button>
+                            </div>
+                            <div id="model-solve-readout" class="wf-stats"></div>
+                        </div>
+                    </div>
+                    <div class="wf-issues" id="model-issues"></div>
+                </section>
+
+                <!-- ============ STAGE 5: CONDITIONS ============ -->
+                <section class="wf-stage card" data-stage="conditions" hidden>
+                    <div class="wf-stage-head">
+                        <h2 class="section-title">5. Boundary &amp; initial conditions</h2>
+                        <p class="wf-hint">Assign to a NAMED boundary. Anything unassigned is treated as no-flux, and
+                            that assumption is stated below.</p>
+                    </div>
+                    <div class="wf-two-col">
+                        <div class="wf-controls">
+                            <div class="wf-param-grid">
+                                <label class="wf-field"><span>Field</span><select id="bc-field"></select></label>
+                                <label class="wf-field"><span>Boundary</span><select id="bc-boundary"></select></label>
+                                <label class="wf-field"><span>Type</span>
+                                    <select id="bc-type">
+                                        <option value="dirichlet">Dirichlet (fixed value)</option>
+                                        <option value="neumann">Neumann (flux)</option>
+                                        <option value="no_flux">No flux (sealed)</option>
+                                        <option value="robin">Robin (mixed)</option>
+                                        <option value="periodic">Periodic (pair)</option>
+                                    </select></label>
+                                <div id="bc-params" class="wf-param-grid"></div>
+                            </div>
+                            <button class="btn btn-primary btn-sm" id="bc-add">Assign condition</button>
+                            <div class="wf-subhead">Assigned</div>
+                            <p class="wf-hint" id="bc-row-hint">Click a row to enable or disable it ·
+                                shift-click to remove it.</p>
+                            <div class="wf-table-scroll"><table class="wf-table" id="bc-table"></table></div>
+                            <div class="wf-bc-legend">
+                                <span><i class="wf-swatch bc-dirichlet"></i> Dirichlet</span>
+                                <span><i class="wf-swatch bc-neumann"></i> Neumann</span>
+                                <span><i class="wf-swatch bc-no_flux"></i> No flux</span>
+                                <span><i class="wf-swatch bc-robin"></i> Robin</span>
+                                <span><i class="wf-swatch bc-periodic"></i> Periodic</span>
+                            </div>
+                        </div>
+                        <div class="wf-viewport wf-viewport-note">
+                            <div class="wf-subhead">Initial conditions</div>
+                            <!-- This stage is titled "Boundary AND initial conditions" but
+                                 previously carried no initial-condition control at all --
+                                 they were only reachable on stage 4. These inputs edit the
+                                 same field data, so a researcher can set and preview the
+                                 initial state where the stage says they can. -->
+                            <div id="ic-list" class="wf-param-grid"></div>
+                            <p class="wf-hint">Each field's state at t = 0. A number is uniform;
+                                an expression in x (and y in 2D) varies over space.</p>
+                            <div class="wf-subhead">What this means</div>
+                            <ul id="bc-description" class="wf-desc-list"></ul>
+                        </div>
+                    </div>
+                    <div class="wf-issues" id="conditions-issues"></div>
+                </section>
+
+                <!-- ============ STAGE 6/7: APPROACH ============ -->
+                <section class="wf-stage card" data-stage="approach" hidden>
+                    <div class="wf-stage-head">
+                        <h2 class="section-title">6. Select an approach</h2>
+                        <p class="wf-hint">Pick ONE. Each keeps its own configuration, so switching never discards the
+                            others — and an unavailable approach says exactly what is missing.</p>
+                    </div>
+                    <div class="wf-approach-grid" id="approach-cards"></div>
+                    <div class="wf-approach-config">
+                        <div class="wf-subhead">7. Configure <span id="approach-config-name">—</span></div>
+                        <div id="approach-config" class="wf-param-grid"></div>
+                        <div class="wf-row">
+                            <button class="btn btn-secondary btn-sm" id="approach-export">Export this configuration</button>
+                            <!-- The runnable CompuCell3D project. This is what makes the
+                                 unavailable state useful rather than a dead end: the
+                                 researcher exports a project that opens in a real local
+                                 CompuCell3D install. The endpoint existed with no button. -->
+                            <button class="btn btn-secondary btn-sm" id="approach-export-cc3d" hidden>
+                                Download runnable CompuCell3D project</button>
+                        </div>
+                    </div>
+                    <div class="wf-issues" id="approach-issues"></div>
+                </section>
+
+                <!-- ============ STAGE 8/9: VALIDATE & RUN ============ -->
+                <section class="wf-stage card" data-stage="run" hidden>
+                    <div class="wf-stage-head">
+                        <h2 class="section-title">8–9. Validate, compile &amp; run</h2>
+                        <p class="wf-hint">Validation runs before compilation. A failed compilation never shows
+                            “Ready”, and a failed run never shows “Completed”.</p>
+                    </div>
+                    <div class="wf-row">
+                        <button class="btn btn-secondary btn-sm" id="run-validate">Validate everything</button>
+                        <button class="btn btn-primary btn-sm" id="run-start">Compile &amp; run</button>
+                        <button class="btn btn-secondary btn-sm" id="run-pause" disabled>Pause</button>
+                        <button class="btn btn-secondary btn-sm" id="run-resume" disabled>Resume</button>
+                        <button class="btn btn-secondary btn-sm" id="run-cancel" disabled>Cancel</button>
+                        <label class="wf-field wf-inline-field"><span>Seed</span>
+                            <input type="number" id="run-seed" value="1" step="1"></label>
+                    </div>
+                    <div class="wf-run-state">
+                        <span class="wf-run-badge" id="run-state-badge">draft</span>
+                        <div class="wf-progress"><div class="wf-progress-bar" id="run-progress"></div></div>
+                        <span id="run-message" class="wf-hint"></span>
+                    </div>
+                    <div class="wf-subhead">Run log</div>
+                    <div class="wf-log" id="run-log"></div>
+                    <div class="wf-subhead">Run history</div>
+                    <div class="wf-table-scroll"><table class="wf-table" id="run-table"></table></div>
+                    <div class="wf-issues" id="run-issues"></div>
+                </section>
+
+                <!-- ============ STAGE 10: RESULTS ============ -->
+                <section class="wf-stage card" data-stage="results" hidden>
+                    <div class="wf-stage-head">
+                        <h2 class="section-title">10. Results</h2>
+                        <p class="wf-hint">Everything shown here comes from actual simulation output.</p>
+                    </div>
+                    <div class="wf-results">
+                        <!-- LEFT: entity list -->
+                        <aside class="wf-results-left">
+                            <div class="wf-subhead">Cell # <span class="wf-count" id="results-cell-count">0</span></div>
+                            <input type="search" id="results-filter" placeholder="Filter by id, type or state"
+                                class="wf-inline-input wf-full">
+                            <div class="wf-table-scroll wf-tall"><table class="wf-table" id="results-cell-table"></table></div>
+                            <div class="wf-subhead">Selected cell</div>
+                            <div id="results-cell-detail" class="wf-stats">No cell selected.</div>
+                        </aside>
+
+                        <!-- CENTRE: view + playback -->
+                        <div class="wf-results-centre">
+                            <div class="wf-canvas-toolbar">
+                                <span id="results-view-label">—</span>
+                                <span class="wf-canvas-hint" id="results-time-label">t = —</span>
+                            </div>
+                            <canvas id="results-canvas" width="620" height="420"
+                                aria-label="Simulation output view"></canvas>
+                            <div class="wf-playback">
+                                <button class="btn btn-secondary btn-sm" id="pb-first" title="First frame">⏮</button>
+                                <button class="btn btn-secondary btn-sm" id="pb-prev" title="Step back">◀</button>
+                                <button class="btn btn-primary btn-sm" id="pb-play" title="Play or pause">▶</button>
+                                <button class="btn btn-secondary btn-sm" id="pb-next" title="Step forward">▶|</button>
+                                <button class="btn btn-secondary btn-sm" id="pb-last" title="Last frame">⏭</button>
+                                <input type="range" id="pb-scrub" min="0" max="0" value="0" class="wf-scrub"
+                                    aria-label="Timeline">
+                                <label class="wf-field wf-inline-field"><span>Speed</span>
+                                    <select id="pb-speed">
+                                        <option value="500">0.5×</option>
+                                        <option value="250" selected>1×</option>
+                                        <option value="100">2.5×</option>
+                                        <option value="40">6×</option>
+                                    </select></label>
+                            </div>
+                            <div class="wf-row wf-overlay-row">
+                                <label class="wf-check"><input type="checkbox" id="ov-grid"> Grid</label>
+                                <label class="wf-check"><input type="checkbox" id="ov-ids"> Cell ids</label>
+                                <label class="wf-check"><input type="checkbox" id="ov-centroids" checked> Centroids</label>
+                                <button class="btn btn-secondary btn-sm" id="results-snapshot">Download frame</button>
+                            </div>
+                            <div id="results-legend" class="wf-bc-legend"></div>
+                        </div>
+
+                        <!-- RIGHT: plots and statistics -->
+                        <aside class="wf-results-right">
+                            <div class="wf-subhead">Plot</div>
+                            <label class="wf-field"><span>Variable</span><select id="results-variable"></select></label>
+                            <canvas id="results-chart" height="180" aria-label="Selected variable over time"></canvas>
+                            <div class="wf-subhead">Aggregate statistics</div>
+                            <div id="results-summary" class="wf-stats"></div>
+                            <div class="wf-subhead">Export</div>
+                            <div class="wf-row">
+                                <button class="btn btn-secondary btn-sm" id="results-export-cells">Cells CSV</button>
+                                <button class="btn btn-secondary btn-sm" id="results-export-series">Series CSV</button>
+                                <button class="btn btn-secondary btn-sm" id="results-export-meta">Run metadata</button>
+                            </div>
+                            <div class="wf-subhead">Warnings</div>
+                            <div id="results-warnings" class="wf-stats">None.</div>
+                        </aside>
+                    </div>
+                </section>
+
+                <!-- ONE shared canvas for stages 1-3. It lives here, outside every
+                     stage section, and showStage() moves it into the active stage's
+                     .wf-canvas-slot. Keeping it inside a section is what previously
+                     made it display:none on the two stages built around clicking it. -->
+                <div class="wf-viewport" id="wf-viewport" hidden>
+                    <div class="wf-canvas-toolbar">
+                        <span id="canvas-mode-label">Domain</span>
+                        <span class="wf-canvas-hint">drag to pan · wheel to zoom · click an entity to select</span>
+                    </div>
+                    <canvas id="wf-canvas" width="820" height="520" tabindex="0"
+                        aria-label="Domain, topology and mesh view"></canvas>
+                    <div class="wf-canvas-status" id="canvas-readout">—</div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <div class="wf-toast-host" id="wf-toasts" aria-live="polite"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+    <script src="workflow.js?v=2"></script>
+</body>
+
+</html>

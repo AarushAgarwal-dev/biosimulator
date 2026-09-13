@@ -51,6 +51,10 @@ class Cell:
     internal_state: Dict[str, float] = field(default_factory=dict)
     age: int = 0  # MCS since creation
     alive: bool = True
+    # Lineage. A daughter records the cell it divided from, so a run can be
+    # traced back through division events instead of only showing live cells.
+    parent_id: Optional[int] = None
+    generation: int = 0
 
 
 # ============================================================
@@ -535,6 +539,10 @@ class CellularPottsModel:
 
         # Create daughter cell
         daughter = self.create_cell(parent.cell_type.type_id)
+        # Lineage: record where this daughter came from before any pixels move,
+        # so the record is correct even if the split below bails out.
+        daughter.parent_id = parent.cell_id
+        daughter.generation = int(parent.generation) + 1
 
         # Find all pixels of the parent
         mask = self.lattice == cell_id

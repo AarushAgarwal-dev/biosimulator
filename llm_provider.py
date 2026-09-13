@@ -354,18 +354,17 @@ class RemoteLLM:
             for p in tiers:
                 r = _post(p)
                 if r.status_code != 400:
-                    break  # 200 (or a non-param error we should surface) -> stop
+                    break  # 200 (or a non-parameter error we should surface) -> stop
         except requests.RequestException as e:
-            raise LLMError(f"Remote LLM request failed: {e}")
+            raise LLMError(f"Remote LLM request failed ({type(e).__name__}).") from None
 
-        # Surface the endpoint's actual complaint instead of a generic message.
+        # Never surface a provider response body: gateways can include account,
+        # endpoint, or credential diagnostics in error text.
         if r is None or r.status_code >= 400:
-            detail = ""
-            try:
-                detail = (r.text or "")[:400]
-            except Exception:
-                pass
-            raise LLMError(f"Remote LLM HTTP {getattr(r, 'status_code', '?')}: {detail}")
+            status = getattr(r, "status_code", "unknown")
+            raise LLMError(
+                f"Remote LLM returned HTTP {status}. Check the endpoint, model, and access configuration."
+            )
 
         try:
             data = r.json()
@@ -376,24 +375,23 @@ class RemoteLLM:
             if not content.strip() and msg.get("reasoning_content"):
                 content = msg["reasoning_content"]
 
-            # Definitive truncation diagnostic: whenever the model was cut off by a
-            # length limit, report it with the actual token count so we can tell
-            # whether max_completion_tokens is being honored.
             finish = (choice.get("finish_reason") or "").lower()
             usage = data.get("usage", {}) or {}
             if finish == "length":
-                ct = usage.get("completion_tokens", "?")
+                try:
+                    completion_tokens = int(usage.get("completion_tokens"))
+                except (TypeError, ValueError):
+                    completion_tokens = "unknown"
                 raise LLMError(
-                    f"Remote model output was TRUNCATED at {ct} completion tokens "
-                    f"(finish_reason=length) even though max_completion_tokens={max_tokens} "
-                    f"was requested — the endpoint is capping the completion. "
-                    f"Try model gpt-oss-120b, a non-reasoning instruct model, or the local model."
+                    f"Remote model output was truncated at {completion_tokens} completion tokens "
+                    f"even though max_completion_tokens={max_tokens} was requested. "
+                    "Choose a model or endpoint with a larger output allowance."
                 )
             return content
         except LLMError:
             raise
         except Exception as e:
-            raise LLMError(f"Unexpected remote LLM response: {e}")
+            raise LLMError(f"Unexpected remote LLM response ({type(e).__name__}).") from None
 
 
 # =============================================================================
@@ -431,7 +429,7 @@ def bedrock_env_ready() -> bool:
 class BedrockLLM:
     def __init__(self, model: str, region: str = "", access_key: Optional[str] = None,
                  secret_key: Optional[str] = None, session_token: Optional[str] = None,
-                 bearer_token: Optional[str] = None, timeout: int = 180):
+                 bearer_token: Optional[str] = None, timeout: int = 75):
         self.model = model or BEDROCK_DEFAULT_MODEL
         self.region = region or BEDROCK_DEFAULT_REGION
         self.timeout = timeout
@@ -451,8 +449,8 @@ class BedrockLLM:
 
         client_kwargs: Dict[str, Any] = {
             "region_name": self.region,
-            "config": Config(read_timeout=timeout, connect_timeout=20,
-                             retries={"max_attempts": 2, "mode": "standard"}),
+            "config": Config(read_timeout=timeout, connect_timeout=15,
+                             retries={"max_attempts": 1, "mode": "standard"}),
         }
         # Explicit keys (entered in the UI) take precedence; otherwise fall back to the
         # standard AWS credential chain (env vars, ~/.aws, SSO/login cache, IAM role).
@@ -476,16 +474,71 @@ class BedrockLLM:
             raise LLMError(f"Could not create the AWS Bedrock client for region "
                            f"'{self.region}' ({type(e).__name__}).")
 
+    _AUTH_ERROR_CODES = frozenset({
+        "ExpiredToken", "ExpiredTokenException", "InvalidClientTokenId",
+        "InvalidSignatureException", "NoCredentialsError", "PartialCredentialsError",
+        "CredentialRetrievalError", "TokenRetrievalError", "UnrecognizedClientException",
+        "UnauthorizedException",
+    })
+    _TRANSPORT_ERROR_CODES = frozenset({
+        "ConnectTimeoutError", "ConnectionClosedError", "EndpointConnectionError",
+        "NoRegionError", "ProxyConnectionError", "ReadTimeoutError",
+    })
+
     @staticmethod
-    def _error_detail(e: Exception) -> str:
-        # botocore ClientError carries the useful message under .response["Error"]["Message"];
-        # NoCredentials / expired-SSO / endpoint errors are plain strings.
-        resp = getattr(e, "response", None)
-        if isinstance(resp, dict):
-            msg = resp.get("Error", {}).get("Message")
-            if msg:
-                return msg
-        return str(e)
+    def _error_code(e: Exception) -> str:
+        """Return a bounded provider error code/type, never its potentially sensitive text."""
+        response = getattr(e, "response", None)
+        code = None
+        if isinstance(response, dict):
+            error = response.get("Error")
+            if isinstance(error, dict):
+                code = error.get("Code")
+        raw = str(code or type(e).__name__)
+        return re.sub(r"[^A-Za-z0-9_.-]", "", raw)[:80] or "UnknownError"
+
+    @classmethod
+    def _is_global_failure(cls, e: Exception) -> bool:
+        """Failures no model fallback can fix (credentials, region, or transport)."""
+        code = cls._error_code(e)
+        return code in cls._AUTH_ERROR_CODES or code in cls._TRANSPORT_ERROR_CODES
+
+    @classmethod
+    def _safe_error_detail(cls, e: Optional[Exception]) -> str:
+        """Map a Bedrock exception to an actionable message without provider payload text."""
+        if e is None:
+            return "AWS Bedrock returned no usable response."
+        code = cls._error_code(e)
+        if code in cls._AUTH_ERROR_CODES:
+            return (f"AWS Bedrock authentication failed ({code}). Refresh or replace the "
+                    "configured Bedrock credential.")
+        if code in cls._TRANSPORT_ERROR_CODES:
+            return (f"AWS Bedrock could not be reached ({code}). Check the configured region "
+                    "and network connectivity.")
+        lowered = code.lower()
+        if "accessdenied" in lowered or "forbidden" in lowered:
+            return (f"AWS Bedrock denied model access ({code}). Verify bedrock:InvokeModel "
+                    "permission for an available model.")
+        if "throttl" in lowered or "quota" in lowered:
+            return f"AWS Bedrock is rate-limiting requests ({code}). Try again shortly."
+        if "validation" in lowered or "resourcenotfound" in lowered:
+            return f"The configured Bedrock model is unavailable in this region ({code})."
+        if "timeout" in lowered:
+            return f"The Bedrock model timed out ({code}). Try again or choose another model."
+        if code == "LLMError":
+            return "AWS Bedrock returned no usable model output."
+        return f"AWS Bedrock request failed ({code})."
+
+    # Open-source text models to fall back to if the configured model is
+    # unavailable (throttled, model access denied, or wrong id). Tried in order
+    # AFTER the configured model. Credential/transport failures stop immediately.
+    # All candidates are open weights; the "us." inference-profile prefix is
+    # required for on-demand use in us-east-2.
+    TEXT_FALLBACK_MODELS = [
+        "us.meta.llama3-3-70b-instruct-v1:0",     # strong open model, good JSON
+        "us.mistral.pixtral-large-2502-v1:0",     # Mistral (also text-capable)
+        "us.meta.llama3-1-70b-instruct-v1:0",
+    ]
 
     def chat(self, messages: List[Dict[str, str]], temperature: float = 0.2,
              max_tokens: int = 16384, json_mode: bool = False) -> str:
@@ -507,31 +560,83 @@ class BedrockLLM:
 
         # Bedrock caps output tokens per model; keep a safe ceiling well under model limits.
         max_out = max(256, min(int(max_tokens), 8192))
-        kwargs: Dict[str, Any] = {
-            "modelId": self.model,
-            "messages": conversation,
-            "inferenceConfig": {"maxTokens": max_out, "temperature": float(temperature)},
-        }
-        if system_blocks:
-            kwargs["system"] = system_blocks
 
-        try:
-            resp = self._client.converse(**kwargs)
-        except Exception as e:
-            raise LLMError(f"AWS Bedrock request failed (model '{self.model}', region '{self.region}'): "
-                           f"{self._error_detail(e)}")
+        # Try model-specific fallbacks, but never repeat a request that failed because
+        # the shared credential, region, or network is unusable.
+        candidates = [self.model] + [m for m in self.TEXT_FALLBACK_MODELS if m != self.model]
+        last_err: Optional[Exception] = None
+        for mid in candidates:
+            kwargs: Dict[str, Any] = {
+                "modelId": mid,
+                "messages": conversation,
+                "inferenceConfig": {"maxTokens": max_out, "temperature": float(temperature)},
+            }
+            if system_blocks:
+                kwargs["system"] = system_blocks
+            try:
+                resp = self._client.converse(**kwargs)
+                blocks = resp["output"]["message"]["content"]
+                text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict))
+                stop = (resp.get("stopReason") or "").lower()
+                if stop == "max_tokens" and not text.strip():
+                    raise LLMError("Bedrock returned no usable output before its token limit.")
+                if text.strip() or stop == "end_turn":
+                    if mid != self.model:
+                        self.active_model = mid   # note which model actually answered
+                    return text
+            except Exception as e:
+                if self._is_global_failure(e):
+                    raise LLMError(self._safe_error_detail(e)) from None
+                last_err = e
+                continue
+        raise LLMError(
+            "AWS Bedrock request failed for the configured model and all open-source "
+            f"fallbacks (region '{self.region}'). {self._safe_error_detail(last_err)}"
+        )
 
-        try:
-            blocks = resp["output"]["message"]["content"]
-            text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict))
-            stop = (resp.get("stopReason") or "").lower()
-            if stop == "max_tokens" and not text.strip():
-                raise LLMError(f"Bedrock output was truncated at maxTokens={max_out} with no usable text.")
-            return text
-        except LLMError:
-            raise
-        except Exception as e:
-            raise LLMError(f"Unexpected AWS Bedrock response shape: {e}")
+    # Open-source vision models to try, in order, for image transcription. This
+    # project runs on open models only, so no proprietary API model (Claude/GPT)
+    # is used. The SAME Bedrock client and credential are reused for every model.
+    VISION_MODELS = [
+        "us.mistral.pixtral-large-2502-v1:0",           # Mistral Pixtral Large (open weights)
+        "us.meta.llama4-maverick-17b-instruct-v1:0",    # Llama 4 Maverick (multimodal, open weights)
+        "us.meta.llama4-scout-17b-instruct-v1:0",       # Llama 4 Scout (multimodal, open weights)
+    ]
+
+    def transcribe_image(self, image_bytes: bytes, fmt: str, prompt: str,
+                         max_tokens: int = 4096) -> str:
+        """Send an image through an open-weight Bedrock vision model."""
+        fmt = (fmt or "png").lower()
+        if fmt in ("jpg", "jpe"):
+            fmt = "jpeg"
+        if fmt not in ("png", "jpeg", "gif", "webp"):
+            fmt = "png"
+        content = [
+            {"image": {"format": fmt, "source": {"bytes": image_bytes}}},
+            {"text": prompt},
+        ]
+        max_out = max(512, min(int(max_tokens), 8192))
+        errors: List[str] = []
+        for mid in self.VISION_MODELS:
+            try:
+                resp = self._client.converse(
+                    modelId=mid,
+                    messages=[{"role": "user", "content": content}],
+                    inferenceConfig={"maxTokens": max_out, "temperature": 0.0},
+                )
+                blocks = resp["output"]["message"]["content"]
+                text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict))
+                if text.strip():
+                    return text
+                errors.append(f"{mid.split('.')[-1]}: EmptyResponse")
+            except Exception as e:
+                if self._is_global_failure(e):
+                    raise LLMError(self._safe_error_detail(e)) from None
+                errors.append(f"{mid.split('.')[-1]}: {self._error_code(e)}")
+        # Error codes are enough to diagnose model availability while provider
+        # messages (which can contain account or credential details) stay private.
+        suffix = " | ".join(errors) if errors else "no usable response"
+        raise LLMError("Could not read the image with any open-source vision model. " + suffix)
 
 
 # =============================================================================

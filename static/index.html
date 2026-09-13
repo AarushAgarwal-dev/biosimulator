@@ -37,6 +37,9 @@
                 </div>
             </div>
             <div class="header-actions">
+                <a href="workflow.html" class="btn btn-primary btn-sm"
+                    style="margin-right: 15px; text-decoration: none;"
+                    title="CAD domain, mesh, boundary conditions, and a choice of ABM, CompuCell3D or MPC">⚙️ Simulation Workflow</a>
                 <a href="paper.html" target="_blank" class="btn btn-secondary btn-sm"
                     style="margin-right: 15px; text-decoration: none;">📄 Read Paper</a>
                 <button class="btn btn-secondary btn-sm" id="btn-ai-settings" style="margin-right: 15px;"
@@ -73,9 +76,45 @@
                         <button class="btn btn-secondary btn-sm" id="load-lyashenko-btn"
                             title="Lyashenko et al. 2020 — receptor fold-change detection">Fold-change (Lyashenko)</button>
                     </div>
-                    <textarea id="bio-input"
-                        placeholder="Type a biological description here... e.g. EGF binds and activates EGFR. EGFR activates RAS. RAS activates RAF. RAF activates MEK. MEK activates ERK. ERK inhibits EGFR."></textarea>
-                    <button class="btn btn-primary" id="btn-parse-text">Compile Blueprint</button>
+                    <!-- Input mode selector -->
+                    <div class="input-mode-tabs" id="input-mode-tabs">
+                        <button class="imode-btn active" data-imode="describe" title="Describe the biology in plain words; the AI writes the equations">✏️ Describe</button>
+                        <button class="imode-btn" data-imode="equations" title="Write your own differential equations directly">∑ Write equations</button>
+                        <button class="imode-btn" data-imode="photo" title="Upload a photo of hand-written equations">📷 Photo</button>
+                    </div>
+
+                    <!-- MODE: describe -->
+                    <div class="imode-panel active" data-imode-panel="describe">
+                        <textarea id="bio-input"
+                            placeholder="Type a biological description here... e.g. EGF binds and activates EGFR. EGFR activates RAS. RAS activates RAF. RAF activates MEK. MEK activates ERK. ERK inhibits EGFR."></textarea>
+                        <button class="btn btn-primary btn-block" id="btn-parse-text">Compile Blueprint</button>
+                    </div>
+
+                    <!-- MODE: write equations -->
+                    <div class="imode-panel" data-imode-panel="equations">
+                        <div class="eq-editor-hint">Write one ODE per line. Use <code>^</code> for powers. Add parameters and initial values below the equations.</div>
+                        <textarea id="eq-input" class="eq-editor" spellcheck="false"
+                            placeholder="dZ/dt = v0 + v1*beta - v2 + v3 + kf*Y - k*Z&#10;dY/dt = v2 - v3 - kf*Y&#10;v2 = VM2*Z^2/(K2^2 + Z^2)&#10;v3 = VM3*(Y^2/(KR^2+Y^2))*(Z^4/(KA^4+Z^4))&#10;v0=1, v1=7.3, beta=0.5, VM2=65, VM3=500&#10;K2=1, KR=2, KA=0.9, kf=1, k=10&#10;Z starts at 0.1&#10;Y starts at 0.1"></textarea>
+                        <div class="eq-editor-actions">
+                            <button class="btn btn-secondary btn-sm" id="btn-eq-example" type="button">Load example</button>
+                            <button class="btn btn-primary" id="btn-build-eq">Build Model</button>
+                        </div>
+                        <div class="eq-preview-label">Live preview</div>
+                        <div id="eq-preview" class="eq-preview"><span class="placeholder-text">Your equations render here as you type.</span></div>
+                        <div id="eq-build-status" class="eq-image-status"></div>
+                    </div>
+
+                    <!-- MODE: photo -->
+                    <div class="imode-panel" data-imode-panel="photo">
+                        <input type="file" id="eq-image-input" accept="image/*" hidden>
+                        <div id="eq-dropzone" class="eq-dropzone" tabindex="0" role="button"
+                            title="Click to choose a photo, or drag one here">
+                            <div class="eq-dropzone-icon">📷</div>
+                            <div class="eq-dropzone-main">Click to upload a photo of your equations</div>
+                            <div class="eq-dropzone-sub">or drag &amp; drop an image here — the AI reads the equations</div>
+                        </div>
+                        <div id="eq-image-status" class="eq-image-status"></div>
+                    </div>
                 </div>
 
                 <!-- DB SEARCH SECTION -->
@@ -150,6 +189,18 @@
                             <div id="equations-container" class="math-display">
                                 <p class="placeholder-text">Mathematical equations will render here after blueprint
                                     compilation.</p>
+                            </div>
+                        </div>
+
+                        <!-- Editable model summary: variables, parameters, equations -->
+                        <div class="card model-summary-card">
+                            <div class="equation-head">
+                                <h3 class="card-title">Model Summary</h3>
+                                <span class="model-summary-hint">Edit initial values, parameters &amp; equations, or add a species — then Apply.</span>
+                            </div>
+                            <div id="model-summary-container" class="model-summary">
+                                <p class="placeholder-text">Compile a model to see and edit its variables and
+                                    parameters here.</p>
                             </div>
                         </div>
                     </div>

@@ -145,3 +145,12 @@ cython_debug/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+
+# Session scratch: server logs and throwaway probe scripts. These are transient
+# diagnostics, never part of the project.
+_srv*.log
+_srv*.err
+_wf_probe*.log
+_wf_probe*.err
+_probe_*.py

@@ -41,7 +41,63 @@ RAF starts at 1.0.`,
             { species: "ERK", type: "peak_time", min: 5.0, max: 15.0 },
             { species: "ERK", type: "peak_value", min: 0.6, max: 1.0 },
             { species: "EGFR", type: "decay_ratio", max: 0.2 } // EGFR should decay to less than 20% of its peak
-        ]
+        ],
+        // Deterministic blueprint loaded directly (no LLM), so ERK/EGFR are the exact
+        // species the targets reference.
+        //
+        // These rate laws are EXPLICIT because the generic Hill compiler could not
+        // produce the behaviour the preset is named for. With nodes and edges alone,
+        // ERK rose monotonically to 4.71 and its maximum WAS the final sample
+        // (peak_time == t_max == 50), so the preset that auto-loads on page open failed
+        // 2 of its own 3 targets and the target ring read 33% on first sight.
+        //
+        // Two ingredients were missing, and neither is a tuning knob:
+        //   1. Every stage needs a dephosphorylation term. Without one a species can
+        //      only accumulate, so no amount of upstream feedback makes it come down.
+        //   2. The stimulus has to be transient. `ERK inhibits EGFR` was present, but
+        //      EGF was held at 10.0 for ever, so the receptor was continuously
+        //      re-driven and the cascade settled at a plateau instead of adapting.
+        //      EGF is now consumed on binding (-kEGF*EGF*EGFR).
+        // Species are fractional activations in [0, 1], which is what bounds the peak.
+        //
+        // Measured with these values: ERK peaks at t = 6.57 with value 0.607 and falls
+        // to 46% of peak by t = 50; EGFR decays to 0.7% of its peak. An earlier
+        // parameter set met all three shipped targets with only a 4% ERK overshoot
+        // followed by a plateau -- rejected, because the targets as written do not
+        // require ERK to come back down but adaptation does.
+        blueprint: {
+            type: "ODE",
+            nodes: [
+                { id: "EGF", initial_value: 10.0 }, { id: "EGFR", initial_value: 1.0 },
+                { id: "RAS", initial_value: 1.0 }, { id: "RAF", initial_value: 1.0 },
+                { id: "MEK", initial_value: 0.0 }, { id: "ERK", initial_value: 0.0 }
+            ],
+            edges: [
+                { source: "EGF", target: "EGFR", type: "activation" },
+                { source: "EGFR", target: "RAS", type: "activation" },
+                { source: "RAS", target: "RAF", type: "activation" },
+                { source: "RAF", target: "MEK", type: "activation" },
+                { source: "MEK", target: "ERK", type: "activation" },
+                { source: "ERK", target: "EGFR", type: "inhibition" }
+            ],
+            parameters: {
+                kEGF: 0.8,                       // ligand consumed on binding
+                kR: 1.8, KmR: 5.0,               // receptor activation by ligand
+                KiR: 0.06, nR: 3.0,              // ERK negative feedback on the receptor
+                dR: 0.25,                        // receptor turnover
+                k1: 0.9, k2: 0.9, k3: 0.9, k4: 0.9,
+                d1: 0.35, d2: 0.35, d3: 0.35, d4: 0.35   // dephosphorylation per stage
+            },
+            odes: {
+                EGF: "-kEGF*EGF*EGFR",
+                EGFR: "kR*EGF/(KmR + EGF)*(1 - EGFR)/(1 + (ERK/KiR)**nR) - dR*EGFR",
+                RAS: "k1*EGFR*(1 - RAS) - d1*RAS",
+                RAF: "k2*RAS*(1 - RAF) - d2*RAF",
+                MEK: "k3*RAF*(1 - MEK) - d3*MEK",
+                ERK: "k4*MEK*(1 - ERK) - d4*ERK"
+            },
+            simulation_config: { t_max: 50.0 }
+        }
     },
     turing: {
         text: `A reaction-diffusion system containing Activator U and Inhibitor V.
@@ -56,41 +112,144 @@ U diffuses slowly, V diffuses quickly.`,
         ]
     },
     oscillator: {
-        // Three-gene negative-feedback loop (Goodwin/repressilator-style).
-        // Compiles to a delayed negative-feedback loop that the closed-loop
-        // optimizer can drive into a sustained limit cycle via an oscillation target.
+        // Goodwin (1965) three-stage negative-feedback loop: GENA -> GENB -> GENC -| GENA.
+        // The three stages ARE the delay that a negative-feedback oscillator needs.
+        // Griffith (1968) proved this loop has a limit cycle only for Hill n > 8 when
+        // removal is first-order, so n is a structural requirement here, not a fitted
+        // knob: n = 16 sits well past the Hopf bifurcation (measured at n ~ 10), giving
+        // an amplitude constant to 1 part in 10^4 over 115 cycles. Initial values are a
+        // point ON the limit cycle, so the very first cycle already looks like the rest.
+        // Shipped tuned, so ONE "Run Simulation" oscillates with no refine round.
         text: `GENA activates GENB.
 GENB activates GENC.
 GENC inhibits GENA.
-GENA starts at 1.0.
-GENB starts at 0.5.
-GENC starts at 0.2.`,
+GENA starts at 2.851.
+GENB starts at 1.495.
+GENC starts at 1.024.`,
         targets: [
             { species: "GENA", type: "oscillation", min: 0.3 }
         ],
-        t_max: 200.0
+        t_max: 300.0,
+        blueprint: {
+            type: "ODE",
+            name: "Goodwin three-stage negative-feedback oscillator",
+            nodes: [
+                { id: "GENA", name: "Gene A product", initial_value: 2.851 },
+                { id: "GENB", name: "Gene B product", initial_value: 1.495 },
+                { id: "GENC", name: "Gene C product (repressor)", initial_value: 1.024 }
+            ],
+            edges: [
+                { id: "e1", source: "GENA", target: "GENB", type: "activation" },
+                { id: "e2", source: "GENB", target: "GENC", type: "activation" },
+                { id: "e3", source: "GENC", target: "GENA", type: "inhibition" }
+            ],
+            parameters: {
+                v1: 1.0, K1: 1.0, n: 16.0,
+                d1: 0.15, k3: 0.15, d2: 0.15, k5: 0.15, d3: 0.15
+            },
+            odes: {
+                // GENC represses GENA's synthesis; each downstream step adds phase lag.
+                GENA: "v1*K1**n/(K1**n + GENC**n) - d1*GENA",
+                GENB: "k3*GENA - d2*GENB",
+                GENC: "k5*GENB - d3*GENC"
+            },
+            plot_species: ["GENA", "GENB", "GENC"],
+            simulation_config: { t_max: 300.0 }
+        }
     },
     bistable: {
-        // A stimulus drives a switch species; the optimizer adds self-activation
-        // (positive feedback) and tunes it into a two-state bistable switch.
+        // Cooperative positive autofeedback + first-order removal = a true two-attractor
+        // switch (Griffith 1968 / Ferrell's ultrasensitive-feedback switch). CaMKII
+        // autophosphorylation is a 12-subunit holoenzyme process, so Hill n = 4 is a
+        // conservative cooperativity. The nullclines cross THREE times, so the OFF
+        // (0.040) and ON (1.896) states are genuine fixed points: the gap is identical
+        // at t = 100, 1000 and 10000, not a slow transient. STIM is a real knob, not
+        // decoration - the OFF state is annihilated in a saddle-node at STIM ~ 9.75,
+        // so STIM = 1.0 sits inside the bistable window where the switch remembers.
         text: `STIM activates CAMKII.
+CAMKII activates itself.
 STIM starts at 1.0.
 CAMKII starts at 0.1.`,
         targets: [
             { species: "CAMKII", type: "bistability", min: 0.5 }
         ],
-        t_max: 100.0
+        t_max: 100.0,
+        blueprint: {
+            type: "ODE",
+            name: "Cooperative positive-feedback bistable switch",
+            nodes: [
+                { id: "STIM", name: "Stimulus", initial_value: 1.0 },
+                { id: "CAMKII", name: "Active CaMKII", initial_value: 0.1 }
+            ],
+            edges: [
+                { id: "e1", source: "STIM", target: "CAMKII", type: "activation" },
+                { id: "e2", source: "CAMKII", target: "CAMKII", type: "activation" }
+            ],
+            parameters: {
+                ks: 1.0, Sset: 1.0, kbas: 0.02,
+                kfb: 1.0, Kfb: 1.0, n: 4.0, kdeg: 0.5
+            },
+            odes: {
+                // Stimulus is clamped at Sset (the experimenter's input level).
+                STIM: "ks*(Sset - STIM)",
+                // basal drive + cooperative autophosphorylation - dephosphorylation
+                CAMKII: "kbas*STIM + kfb*CAMKII**n/(Kfb**n + CAMKII**n) - kdeg*CAMKII"
+            },
+            plot_species: ["STIM", "CAMKII"],
+            simulation_config: { t_max: 100.0 }
+        }
     },
     foldchange: {
-        // EGF -> Akt fold-change detection. The optimizer wires an incoherent
-        // feedforward loop so the response tracks the input's fold-change, not its level.
+        // Incoherent feed-forward loop (Goentoro & Alon 2009): EGF drives AKT directly
+        // AND drives an adapted background BG that divides it, so AKT tracks the RATIO
+        // EGF/BG - the input's fold-change - and not its absolute level. BG adapts at a
+        // level-INDEPENDENT rate (Weber's law), which is what makes the peak invariant.
+        // A saturating Hill cascade cannot do this: its response asymptotes, so equal
+        // fold-changes give ever-smaller peaks as the level rises. Same structure as the
+        // Lyashenko (2020) paper model below; here the fold-change step is applied by
+        // the model at t_on while EGF sets the ambient level, so a level sweep measures
+        // level-invariance. BG starts high (desensitised) and re-adapts to the ambient
+        // level before the step, so no start-up transient contaminates the peak.
         text: `EGF activates AKT.
+EGF activates BG.
+BG inhibits AKT.
 EGF starts at 1.0.
-AKT starts at 0.1.`,
+BG starts at 500.0.
+AKT starts at 1.0.`,
         targets: [
             { species: "AKT", type: "fold_change", input: "EGF", output: "AKT", max: 0.15 }
         ],
-        t_max: 60.0
+        t_max: 140.0,
+        blueprint: {
+            type: "ODE",
+            name: "Fold-change detection (incoherent feed-forward loop)",
+            nodes: [
+                { id: "EGF", name: "Ambient EGF level", initial_value: 1.0 },
+                { id: "BG", name: "Adapted EGF background", initial_value: 500.0 },
+                { id: "AKT", name: "Relative AKT response", initial_value: 1.0 }
+            ],
+            edges: [
+                { id: "e1", source: "EGF", target: "BG", type: "activation" },
+                { id: "e2", source: "EGF", target: "AKT", type: "activation" },
+                { id: "e3", source: "BG", target: "AKT", type: "inhibition" }
+            ],
+            parameters: {
+                a: 0.2, kf: 8.0, fold: 3.0, sr: 6.0, t_on: 70.0
+            },
+            fluxes: {
+                // A clean `fold`-fold step applied to whatever the ambient EGF level is.
+                step: "1 + (fold-1)/(1+exp(-sr*(t-t_on)))",
+                Lig: "EGF*step"
+            },
+            odes: {
+                // EGF is the clamped ambient bath level - the knob a level sweep varies.
+                EGF: "0",
+                BG: "a*(Lig - BG)",
+                AKT: "kf*(Lig/BG - AKT)"
+            },
+            plot_species: ["EGF", "BG", "AKT"],
+            simulation_config: { t_max: 140.0 }
+        }
     }
 };
 
@@ -360,7 +519,7 @@ async function loadPaperModel(name) {
     updateStatus("Ready", "green");
 }
 
-function loadPreset(name) {
+async function loadPreset(name) {
     const preset = Presets[name];
     document.getElementById("bio-input").value = preset.text;
 
@@ -380,6 +539,18 @@ function loadPreset(name) {
         const b = document.getElementById(id);
         if (b) b.classList.toggle("active", name === key);
     });
+
+    // If the preset ships a ready blueprint, load it directly (no LLM). This keeps the
+    // species exactly matching the targets, so the closed-loop optimizer works reliably.
+    if (preset.blueprint) {
+        state.blueprint = JSON.parse(JSON.stringify(preset.blueprint));
+        document.getElementById("blueprint-json-viewer").textContent = JSON.stringify(state.blueprint, null, 2);
+        renderCytoscape();
+        renderTargets();
+        await compileBlueprint();
+        document.querySelector("[data-tab='blueprint']").click();
+        updateStatus("Ready", "green");
+    }
 }
 
 // ==========================================================================
@@ -482,9 +653,58 @@ document.getElementById("add-target-btn").addEventListener("click", () => {
 function updateStatus(text, type = "green") {
     const dot = document.querySelector(".status-dot");
     const textLabel = document.querySelector("#system-status span:last-child");
-    
-    dot.className = `status-dot ${type}`;
-    textLabel.textContent = text;
+    if (dot) dot.className = `status-dot ${type}`;
+    if (textLabel) textLabel.textContent = text;
+}
+
+// Every generated/imported model must have a usable simulation horizon. LLM and
+// database payloads can legally omit this optional object, so normalize it once
+// instead of letting individual workflows crash on `.simulation_config.t_max`.
+function ensureSimulationConfig(blueprint) {
+    if (!blueprint || typeof blueprint !== "object") return null;
+    if (!blueprint.simulation_config || typeof blueprint.simulation_config !== "object") {
+        blueprint.simulation_config = {};
+    }
+    let tMax = Number(blueprint.simulation_config.t_max);
+    if (!Number.isFinite(tMax) || tMax <= 0) tMax = blueprint.type === "PDE" ? 100 : 50;
+    blueprint.simulation_config.t_max = tMax;
+    return blueprint.simulation_config;
+}
+
+// Parse JSON exactly once and surface FastAPI's useful `detail`/`error` message.
+// This also turns true network failures into a clear connection error instead of
+// secondary messages such as "results.map is not a function".
+async function apiJson(url, options = {}) {
+    let response;
+    try {
+        response = await fetch(url, options);
+    } catch (error) {
+        throw new Error(`Could not connect to the BioSimulateAI server: ${error.message || error}`);
+    }
+
+    const raw = await response.text();
+    let data = null;
+    if (raw) {
+        try { data = JSON.parse(raw); }
+        catch {
+            if (response.ok) throw new Error("The server returned an invalid JSON response.");
+        }
+    }
+    if (!response.ok) {
+        const detail = data && (data.detail || data.error);
+        const fallback = raw && !raw.trim().startsWith("<") ? raw.slice(0, 500) : "";
+        throw new Error(String(detail || fallback || `Request failed with HTTP ${response.status}`));
+    }
+    if (data === null) throw new Error("The server returned an empty response.");
+    return data;
+}
+
+// External database fields are untrusted. Escape values before interpolating them
+// into the few rich result templates that cannot use textContent directly.
+function escapeHtml(value) {
+    return String(value == null ? "" : value).replace(/[&<>'"]/g, char => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"
+    })[char]);
 }
 
 // Resolve the current AI-engine configuration sent with LLM-backed requests.
@@ -508,101 +728,265 @@ function getLlmConfig() {
     return { engine: 'off' };
 }
 
+// Shared: take a freshly parsed/extracted blueprint and load it into the whole UI.
+async function loadBlueprintIntoUI(parsedData, { switchTab = true } = {}) {
+    if (!parsedData || typeof parsedData !== "object") {
+        updateStatus("Invalid server response", "red");
+        throw new Error("The server did not return a blueprint object.");
+    }
+
+    // Surface any LLM fallback / transcription notice without storing transport
+    // metadata in the model itself.
+    if (parsedData._llm_notice) {
+        showToast(String(parsedData._llm_notice), 'warn', 5000);
+        delete parsedData._llm_notice;
+    }
+    if (parsedData._transcription) {
+        const box = document.getElementById("bio-input");
+        if (box && !box.value.trim()) box.value = String(parsedData._transcription).replace(/```/g, "").trim();
+        delete parsedData._transcription;
+    }
+
+    const validationErrors = Array.isArray(parsedData.validation_errors)
+        ? parsedData.validation_errors.filter(Boolean).map(String)
+        : [];
+    const hasNodes = Array.isArray(parsedData.nodes) && parsedData.nodes.length > 0;
+    if (!hasNodes) {
+        if (validationErrors.length) showToast("Model needs more detail: " + validationErrors.join(" "), "warn", 7000);
+        updateStatus("Needs more detail", "yellow");
+        return false;
+    }
+    if (validationErrors.length) {
+        // Keep these errors on the blueprint. The backend simulation guard uses
+        // them to prevent integrating a model known to be invalid.
+        showToast("Model needs review: " + validationErrors.join(" "), "warn", 7000);
+    }
+
+    state.blueprint = parsedData;
+    ensureSimulationConfig(state.blueprint);
+    document.getElementById("blueprint-json-viewer").textContent = JSON.stringify(state.blueprint, null, 2);
+    renderCytoscape();
+    renderTargets();
+    const compiled = await compileBlueprint();
+    if (switchTab) document.querySelector("[data-tab='blueprint']").click();
+    if (!compiled) return false;
+
+    if (validationErrors.length) updateStatus("Needs review", "yellow");
+    else updateStatus("Ready", "green");
+    return true;
+}
+
 // 1. Text Parsing & Compilation
 document.getElementById("btn-parse-text").addEventListener("click", async () => {
     const text = document.getElementById("bio-input").value.trim();
     if (!text) return alert("Please type a biological process description first!");
-    
+
     updateStatus("Parsing text...", "yellow");
-    
+
     try {
-        const response = await fetch("/api/blueprint", {
+        const data = await apiJson("/api/blueprint", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                text: text,
-                llm: getLlmConfig()
-            })
+            body: JSON.stringify({ text: text, llm: getLlmConfig() })
         });
-
-        if (!response.ok) throw new Error(await response.text());
-
-        const parsedData = await response.json();
-
-        // Surface any LLM fallback notice without blocking, then strip it.
-        if (parsedData._llm_notice) {
-            showToast(parsedData._llm_notice, 'warn', 5000);
-            delete parsedData._llm_notice;
-        }
-        
-        if (parsedData.validation_errors && parsedData.validation_errors.length > 0) {
-            alert("⚠️ Model Compiler Validation Failed:\n\n" + parsedData.validation_errors.join("\n\n"));
-            updateStatus("Validation Failed", "red");
-            return;
-        }
-        
-        state.blueprint = parsedData;
-        
-        // Update Blueprint JSON representation
-        document.getElementById("blueprint-json-viewer").textContent = JSON.stringify(state.blueprint, null, 2);
-        
-        // Render network graph
-        renderCytoscape();
-        
-        // Re-render targets dropdown species
-        renderTargets();
-        
-        // Run compiler to get equations & sliders
-        await compileBlueprint();
-        
-        // Switch to Blueprint Tab
-        document.querySelector("[data-tab='blueprint']").click();
-        
-        updateStatus("Ready", "green");
+        return await loadBlueprintIntoUI(data);
     } catch (e) {
-        console.error(e);
+        console.error("Blueprint parsing failed", e);
         updateStatus("Parsing failed", "red");
-        alert("Compilation failed: " + e.message);
+        if (typeof showToast === "function") showToast("Could not build blueprint: " + e.message, "error", 8000);
+        return false;
     }
 });
 
-async function compileBlueprint() {
-    if (!state.blueprint) return;
-    
+// 1b. Photo -> equations (click the drop-zone or drag an image onto it)
+async function handleEquationImageFile(file) {
+    const statusEl = document.getElementById("eq-image-status");
+    if (!file) return;
+    if (!/^image\//.test(file.type)) { statusEl.textContent = "Please choose an image file."; return; }
+    const llm = getLlmConfig();
+    if (llm.engine !== 'bedrock') {
+        statusEl.textContent = "Photo reading needs the AWS Bedrock engine (set it in the model config).";
+        return;
+    }
+    if (file.size > 12 * 1024 * 1024) { statusEl.textContent = "That image is too large (max 12 MB)."; return; }
+    statusEl.textContent = "📷 " + file.name + " — reading equations…";
+    updateStatus("Reading equations from image…", "yellow");
     try {
-        const response = await fetch("/api/compile", {
+        const dataUrl = await new Promise((res, rej) => {
+            const fr = new FileReader();
+            fr.onload = () => res(fr.result);
+            fr.onerror = () => rej(new Error("Could not read the file."));
+            fr.readAsDataURL(file);
+        });
+        const data = await apiJson("/api/extract-equations", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ image: dataUrl, llm: llm })
+        });
+        const loaded = await loadBlueprintIntoUI(data);
+        if (!loaded) {
+            statusEl.textContent = "Equations were read, but the resulting model needs correction before it can run.";
+            return false;
+        }
+        statusEl.textContent = "✓ Read equations from " + file.name + " — review & edit in the Model Summary.";
+        return true;
+    } catch (e) {
+        console.error(e);
+        statusEl.textContent = "Could not read equations: " + e.message;
+        updateStatus("Image read failed", "red");
+    }
+}
+(function wireDropzone() {
+    const dz = document.getElementById("eq-dropzone");
+    const input = document.getElementById("eq-image-input");
+    if (!dz || !input) return;
+    dz.addEventListener("click", () => input.click());
+    dz.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } });
+    input.addEventListener("change", (ev) => {
+        const f = ev.target.files && ev.target.files[0];
+        ev.target.value = "";
+        handleEquationImageFile(f);
+    });
+    ["dragenter", "dragover"].forEach(ev => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("dragover"); }));
+    ["dragleave", "drop"].forEach(ev => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("dragover"); }));
+    dz.addEventListener("drop", (e) => {
+        const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        handleEquationImageFile(f);
+    });
+})();
+
+// 1c. Input-mode tabs (Describe / Write equations / Photo)
+(function wireInputModes() {
+    const tabs = document.getElementById("input-mode-tabs");
+    if (!tabs) return;
+    tabs.querySelectorAll(".imode-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const mode = btn.getAttribute("data-imode");
+            tabs.querySelectorAll(".imode-btn").forEach(b => b.classList.toggle("active", b === btn));
+            document.querySelectorAll(".imode-panel").forEach(p =>
+                p.classList.toggle("active", p.getAttribute("data-imode-panel") === mode));
+        });
+    });
+})();
+
+// 1d. Write-your-own-equations editor: live preview + build (deterministic, no LLM)
+const EQ_EXAMPLE =
+`dZ/dt = v0 + v1*beta - v2 + v3 + kf*Y - k*Z
+dY/dt = v2 - v3 - kf*Y
+v2 = VM2*Z^2/(K2^2 + Z^2)
+v3 = VM3*(Y^2/(KR^2+Y^2))*(Z^4/(KA^4+Z^4))
+v0=1, v1=7.3, beta=0.5, VM2=65, VM3=500
+K2=1, KR=2, KA=0.9, kf=1, k=10
+Z starts at 0.1
+Y starts at 0.1`;
+
+function renderEqPreview() {
+    const src = document.getElementById("eq-input");
+    const box = document.getElementById("eq-preview");
+    if (!src || !box) return;
+    const lines = src.value.split(/\n+/).map(l => l.split("#")[0].trim()).filter(Boolean);
+    if (!lines.length) { box.innerHTML = '<span class="placeholder-text">Your equations render here as you type.</span>'; return; }
+    box.innerHTML = "";
+    lines.forEach(line => {
+        // turn "dX/dt = ..." into pretty LaTeX; leave assignments/initials as text
+        let latex = null;
+        let m = line.match(/^d\s*([A-Za-z_]\w*)\s*\/\s*d\s*t\s*=\s*(.+)$/i);
+        if (m) latex = "\\frac{d" + m[1] + "}{dt} = " + toLatexRHS(m[2]);
+        else if (/^[A-Za-z_]\w*\s*=\s*.+/.test(line) && !/starts?\s+at/i.test(line)) latex = toLatexRHS(line);
+        const item = document.createElement("div");
+        item.className = "eq-preview-item";
+        if (latex) {
+            try { katex.render(latex, item, { throwOnError: false, displayMode: false }); }
+            catch { item.textContent = line; }
+        } else { item.textContent = line; }
+        box.appendChild(item);
+    });
+}
+// light touch: superscripts for ^ and \cdot for *, so the preview reads like math
+function toLatexRHS(s) {
+    return String(s)
+        .replace(/\*\*/g, "^")
+        .replace(/\^(\w+)/g, "^{$1}")
+        .replace(/\^\(([^)]+)\)/g, "^{$1}")
+        .replace(/\*/g, " \\cdot ");
+}
+(function wireEqEditor() {
+    const src = document.getElementById("eq-input");
+    const buildBtn = document.getElementById("btn-build-eq");
+    const exBtn = document.getElementById("btn-eq-example");
+    if (!src) return;
+    let t = null;
+    src.addEventListener("input", () => { clearTimeout(t); t = setTimeout(renderEqPreview, 200); });
+    if (exBtn) exBtn.addEventListener("click", () => { src.value = EQ_EXAMPLE; renderEqPreview(); });
+    if (buildBtn) buildBtn.addEventListener("click", async () => {
+        const equations = src.value.trim();
+        const statusEl = document.getElementById("eq-build-status");
+        if (!equations) { statusEl.textContent = "Write at least one equation, e.g. dX/dt = k - X."; return; }
+        statusEl.textContent = "Building model from your equations…";
+        updateStatus("Building model…", "yellow");
+        try {
+            const data = await apiJson("/api/equations-to-model", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ equations })
+            });
+            const loaded = await loadBlueprintIntoUI(data);
+            if (!loaded) {
+                statusEl.textContent = "The equations were parsed, but the model could not be compiled. Review the Model Summary.";
+            } else if (Array.isArray(data.validation_errors) && data.validation_errors.length) {
+                statusEl.textContent = "⚠ " + data.validation_errors.join("  ");
+            } else {
+                statusEl.textContent = "✓ Built model with " + (Array.isArray(data.nodes) ? data.nodes.length : 0) + " variable(s). Edit it in the Model Summary.";
+            }
+        } catch (e) {
+            console.error(e);
+            statusEl.textContent = "Could not build model: " + e.message;
+            updateStatus("Build failed", "red");
+        }
+    });
+})();
+
+async function compileBlueprint() {
+    if (!state.blueprint) return false;
+
+    try {
+        const data = await apiJson("/api/compile", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ blueprint: state.blueprint })
         });
-        
-        const data = await response.json();
         state.equations = data.equations;
         state.equationsVerbose = data.equations_verbose || data.equations;
 
         // Render Equations via KaTeX
         renderEquations();
-        
+
         // Load default values into parameters state
         state.customParams = {};
-        if (data.parameters) {
-            Object.assign(state.customParams, data.parameters);
-        }
-        
+        if (data.parameters) Object.assign(state.customParams, data.parameters);
+
         // Set simulation tmax (a preset may request a longer horizon, e.g. oscillations)
-        const tmax = state.tmaxOverride || state.blueprint.simulation_config?.t_max || 50;
-        document.getElementById("sim-tmax").value = tmax;
-        if (state.blueprint.simulation_config) state.blueprint.simulation_config.t_max = tmax;
+        const config = ensureSimulationConfig(state.blueprint);
+        const requestedTmax = Number(state.tmaxOverride || config.t_max);
+        config.t_max = Number.isFinite(requestedTmax) && requestedTmax > 0
+            ? requestedTmax
+            : (state.blueprint.type === "PDE" ? 100 : 50);
+        document.getElementById("sim-tmax").value = config.t_max;
         state.tmaxOverride = null;
 
-        // RenderSliders
         renderParameterSliders();
-
-        // Boundary/initial conditions panel + exploration target list
         renderBoundaryConditions();
         populateExploreTargets();
+        renderModelSummary();
+        return true;
     } catch (e) {
         console.error("Compilation error", e);
+        updateStatus("Compilation failed", "red");
+        if (typeof showToast === "function") showToast("Could not compile: " + e.message, "error", 7000);
+        // Keep the existing blueprint available for correction, but never claim it
+        // compiled successfully or erase the last valid equation display.
+        try { renderModelSummary(); } catch { /* summary is best-effort */ }
+        return false;
     }
 }
 
@@ -805,6 +1189,177 @@ function renderEquations() {
     });
 }
 
+// ==========================================================================
+// EDITABLE MODEL SUMMARY TABLE — variables, parameters, and (for custom-kinetics
+// models) the d/dt equations. Lets the user fine-tune what the AI generated:
+// change initial values / parameters, hand-edit an equation, or add a new
+// species+equation, then Apply to recompile and simulate.
+// ==========================================================================
+function _msEsc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;")
+                    .replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderModelSummary() {
+    const host = document.getElementById("model-summary-container");
+    if (!host) return;
+    const bp = state.blueprint;
+    if (!bp || !Array.isArray(bp.nodes) || bp.nodes.length === 0) {
+        host.innerHTML = '<p class="placeholder-text">Compile a model to see and edit its variables and parameters here.</p>';
+        return;
+    }
+    const isCustom = !!(bp.odes && Object.keys(bp.odes).length);
+    const odes = bp.odes || {};
+    const params = isCustom ? (bp.parameters || {}) : (state.customParams || {});
+
+    let h = '';
+    // ---- Variables ----
+    h += '<div class="ms-section"><div class="ms-head">Variables (state species) · ' + bp.nodes.length + '</div>';
+    h += '<div class="ms-table-wrap"><table class="ms-table"><thead><tr><th>Species</th><th>Initial value</th>' +
+         (isCustom ? '<th>d/dt equation</th>' : '') + '<th></th></tr></thead><tbody>';
+    bp.nodes.forEach(n => {
+        const id = n.id;
+        const init = (n.initial_value !== undefined ? n.initial_value : 0);
+        h += '<tr data-node="' + _msEsc(id) + '">';
+        h += '<td class="ms-name">' + _msEsc(id) + '</td>';
+        h += '<td><input class="ms-init" type="number" step="any" value="' + _msEsc(init) + '"></td>';
+        if (isCustom) h += '<td><input class="ms-ode" type="text" spellcheck="false" value="' + _msEsc(odes[id] || "0") + '"></td>';
+        h += '<td class="ms-x">' + (isCustom ? '<button class="ms-del ms-del-node" title="Remove species">✕</button>' : '') + '</td>';
+        h += '</tr>';
+    });
+    h += '</tbody></table></div>';
+    if (isCustom) {
+        h += '<div class="ms-add-row"><input class="ms-new-species" placeholder="new species id, e.g. Ca_mito">' +
+             '<input class="ms-new-init" type="number" step="any" placeholder="init" value="0">' +
+             '<button class="ms-btn ms-add-species">+ Add species &amp; equation</button></div>';
+    }
+    h += '</div>';
+
+    // ---- Parameters ----
+    const pnames = Object.keys(params).sort();
+    h += '<div class="ms-section"><div class="ms-head">Parameters · ' + pnames.length + '</div>';
+    h += '<div class="ms-table-wrap"><table class="ms-table"><thead><tr><th>Parameter</th><th>Value</th><th></th></tr></thead><tbody>';
+    pnames.forEach(p => {
+        h += '<tr data-param="' + _msEsc(p) + '">';
+        h += '<td class="ms-name">' + _msEsc(p) + '</td>';
+        h += '<td><input class="ms-pval" type="number" step="any" value="' + _msEsc(params[p]) + '"></td>';
+        h += '<td class="ms-x">' + (isCustom ? '<button class="ms-del ms-del-param" title="Remove parameter">✕</button>' : '') + '</td>';
+        h += '</tr>';
+    });
+    h += '</tbody></table></div>';
+    if (isCustom) {
+        h += '<div class="ms-add-row"><input class="ms-new-param-name" placeholder="name, e.g. k_leak">' +
+             '<input class="ms-new-param-val" type="number" step="any" placeholder="value" value="1">' +
+             '<button class="ms-btn ms-add-param">+ Add parameter</button></div>';
+    }
+    h += '</div>';
+
+    // ---- Actions ----
+    h += '<div class="ms-actions"><button class="ms-btn ms-apply">Apply &amp; Recompile</button>' +
+         '<span class="ms-note">' + (isCustom
+            ? 'Edit initial values & equations, add a species, then Apply.'
+            : 'Built from the interaction graph — edit initial values & parameter values here.') +
+         '</span></div>';
+
+    host.innerHTML = h;
+}
+
+// Read the current input values from the summary table back onto the blueprint /
+// customParams (without recompiling).
+function readSummaryEdits() {
+    const host = document.getElementById("model-summary-container");
+    const bp = state.blueprint;
+    if (!host || !bp) return;
+    const isCustom = !!(bp.odes && Object.keys(bp.odes).length);
+    host.querySelectorAll("tr[data-node]").forEach(tr => {
+        const id = tr.getAttribute("data-node");
+        const node = (bp.nodes || []).find(n => n.id === id);
+        if (!node) return;
+        const initEl = tr.querySelector(".ms-init");
+        if (initEl && initEl.value !== "") node.initial_value = parseFloat(initEl.value);
+        if (isCustom) {
+            const odeEl = tr.querySelector(".ms-ode");
+            if (odeEl) { bp.odes = bp.odes || {}; bp.odes[id] = odeEl.value; }
+        }
+    });
+    host.querySelectorAll("tr[data-param]").forEach(tr => {
+        const p = tr.getAttribute("data-param");
+        const el = tr.querySelector(".ms-pval");
+        if (!el || el.value === "") return;
+        const v = parseFloat(el.value);
+        if (isCustom) { bp.parameters = bp.parameters || {}; bp.parameters[p] = v; }
+        else { state.customParams = state.customParams || {}; state.customParams[p] = v; }
+    });
+}
+
+async function applySummary() {
+    const bp = state.blueprint;
+    if (!bp) return;
+    const isCustom = !!(bp.odes && Object.keys(bp.odes).length);
+    readSummaryEdits();
+    document.getElementById("blueprint-json-viewer").textContent = JSON.stringify(bp, null, 2);
+    if (isCustom) {
+        await compileBlueprint();   // recompiles equations, sliders, and this summary
+        renderCytoscape();
+    } else {
+        renderParameterSliders();
+        renderModelSummary();
+    }
+    if (typeof showToast === "function") showToast("Model updated.", "info", 2000);
+}
+
+// Delegated handling for the summary table's buttons (the table is re-rendered
+// often, so listen on the stable container).
+(function wireModelSummary() {
+    const host = document.getElementById("model-summary-container");
+    if (!host) return;
+    host.addEventListener("click", async (e) => {
+        const bp = state.blueprint;
+        if (!bp) return;
+        const t = e.target;
+        if (t.classList.contains("ms-apply")) { await applySummary(); return; }
+        if (t.classList.contains("ms-del-node")) {
+            const id = t.closest("tr").getAttribute("data-node");
+            readSummaryEdits();
+            bp.nodes = bp.nodes.filter(n => n.id !== id);
+            if (bp.odes) delete bp.odes[id];
+            await applySummary();
+            return;
+        }
+        if (t.classList.contains("ms-del-param")) {
+            const p = t.closest("tr").getAttribute("data-param");
+            readSummaryEdits();
+            if (bp.parameters) delete bp.parameters[p];
+            renderModelSummary();
+            return;
+        }
+        if (t.classList.contains("ms-add-species")) {
+            const nameEl = host.querySelector(".ms-new-species");
+            const initEl = host.querySelector(".ms-new-init");
+            const id = (nameEl.value || "").trim();
+            if (!id) { nameEl.focus(); return; }
+            if (!/^[A-Za-z_]\w*$/.test(id)) { alert("Species id must start with a letter/underscore and contain only letters, digits, or _."); return; }
+            if ((bp.nodes || []).some(n => n.id === id)) { alert("A species named '" + id + "' already exists."); return; }
+            readSummaryEdits();
+            bp.nodes.push({ id: id, initial_value: parseFloat(initEl.value) || 0 });
+            bp.odes = bp.odes || {}; bp.odes[id] = "0";
+            await applySummary();
+            return;
+        }
+        if (t.classList.contains("ms-add-param")) {
+            const nameEl = host.querySelector(".ms-new-param-name");
+            const valEl = host.querySelector(".ms-new-param-val");
+            const name = (nameEl.value || "").trim();
+            if (!name) { nameEl.focus(); return; }
+            if (!/^[A-Za-z_]\w*$/.test(name)) { alert("Parameter name must start with a letter/underscore and contain only letters, digits, or _."); return; }
+            readSummaryEdits();
+            bp.parameters = bp.parameters || {}; bp.parameters[name] = parseFloat(valEl.value) || 0;
+            renderModelSummary();
+            return;
+        }
+    });
+})();
+
 // 2. Database Queries
 const dbTabButtons = document.querySelectorAll(".db-tab-btn");
 dbTabButtons.forEach(btn => {
@@ -832,72 +1387,72 @@ document.getElementById("btn-db-search").addEventListener("click", async () => {
 
     const container = document.getElementById("db-results-container");
     container.innerHTML = `<p class="placeholder-text">Searching database...</p>`;
+    updateStatus("Searching database...", "yellow");
 
     try {
-        if (db === 'reactome') {
-            const response = await fetch(`/api/reactome/search?q=${encodeURIComponent(query)}`);
-            const data = await response.json();
+        const endpoint = db === 'reactome'
+            ? `/api/reactome/search?q=${encodeURIComponent(query)}`
+            : `/api/biomodels/search?q=${encodeURIComponent(query)}`;
+        const data = await apiJson(endpoint);
+        if (!Array.isArray(data)) throw new Error("The database returned an unexpected response.");
 
-            container.innerHTML = "";
-            if (data.length === 0) {
-                container.innerHTML = `<p class="placeholder-text">No pathways found.</p>`;
-                return;
-            }
+        container.innerHTML = "";
+        if (data.length === 0) {
+            container.innerHTML = `<p class="placeholder-text">No ${db === 'reactome' ? 'pathways' : 'models'} found.</p>`;
+            updateStatus("Ready", "green");
+            return;
+        }
 
-            data.forEach(item => {
-                const div = document.createElement("div");
-                div.className = "search-result-item";
+        data.forEach(rawItem => {
+            const item = rawItem && typeof rawItem === "object" ? rawItem : {};
+            const id = String(item.id || "");
+            const name = String(item.name || id || "Untitled result");
+            const div = document.createElement("div");
+            div.className = "search-result-item";
+
+            if (db === 'reactome') {
                 div.innerHTML = `
-                    <strong>${item.name}</strong><br>
-                    <span style="font-size:10px; color:var(--text-secondary);">${item.id} | ${item.species}</span>
+                    <strong>${escapeHtml(name)}</strong><br>
+                    <span style="font-size:10px; color:var(--text-secondary);">${escapeHtml(id)} | ${escapeHtml(item.species || "")}</span>
                 `;
-                div.addEventListener("click", () => loadReactomePathwayText(item.id, item.name));
-                container.appendChild(div);
-            });
-        } else if (db === 'biomodels') {
-            const response = await fetch(`/api/biomodels/search?q=${encodeURIComponent(query)}`);
-            const data = await response.json();
-
-            container.innerHTML = "";
-            if (!data.length) {
-                container.innerHTML = `<p class="placeholder-text">No models found.</p>`;
-                return;
-            }
-
-            data.forEach(item => {
-                const div = document.createElement("div");
-                div.className = "search-result-item";
+                if (id) div.addEventListener("click", () => loadReactomePathwayText(id, name));
+            } else {
                 div.innerHTML = `
-                    <strong>${item.id}</strong><br>
-                    <span style="font-size:11px; color:var(--text-primary);">${item.name}</span><br>
-                    <span style="font-size:10px; color:var(--text-secondary);">${(item.description || '').substring(0, 90)}</span>
+                    <strong>${escapeHtml(id)}</strong><br>
+                    <span style="font-size:11px; color:var(--text-primary);">${escapeHtml(name)}</span><br>
+                    <span style="font-size:10px; color:var(--text-secondary);">${escapeHtml(String(item.description || '').substring(0, 90))}</span>
                 `;
-                div.addEventListener("click", () => {
-                    document.getElementById("biomodel-id-input").value = item.id;
+                if (id) div.addEventListener("click", () => {
+                    document.getElementById("biomodel-id-input").value = id;
                     document.querySelector("[data-tab='maple']").click();
                 });
-                container.appendChild(div);
-            });
-        }
+            }
+            container.appendChild(div);
+        });
+        updateStatus("Ready", "green");
     } catch (e) {
-        container.innerHTML = `<p class="placeholder-text" style="color:var(--accent-red)">Search failed.</p>`;
+        console.error("Database search failed", e);
+        container.innerHTML = `<p class="placeholder-text err">Search failed: ${escapeHtml(e.message)}</p>`;
+        updateStatus("Database search failed", "red");
     }
 });
 
 async function loadReactomePathwayText(pathwayId, pathwayName) {
     updateStatus("Fetching pathway reactions...", "yellow");
-    const container = document.getElementById("db-results-container");
-    
+
     try {
-        const response = await fetch(`/api/reactome/reactions?pathway_id=${pathwayId}`);
-        const reactions = await response.json();
+        const reactions = await apiJson(
+            `/api/reactome/reactions?pathway_id=${encodeURIComponent(String(pathwayId))}`
+        );
+        if (!Array.isArray(reactions)) throw new Error("Reactome returned an unexpected response.");
 
         const lines = [`# Pathway: ${pathwayName} (${pathwayId})`];
 
         // Derive protein pairs from reaction display names (uppercase gene-like tokens)
         const pairs = [];
-        (reactions || []).forEach(rxn => {
-            const tokens = (rxn.name || '')
+        reactions.forEach(rawReaction => {
+            const rxn = rawReaction && typeof rawReaction === "object" ? rawReaction : {};
+            const tokens = String(rxn.name || '')
                 .replace(/[(),:;]/g, ' ')
                 .split(/\s+/)
                 .filter(w => w.length >= 2 && /^[A-Z][A-Z0-9-]*[A-Z0-9]$/.test(w) && isNaN(w));
@@ -906,14 +1461,12 @@ async function loadReactomePathwayText(pathwayId, pathwayName) {
         });
 
         if (pairs.length > 0) {
-            const nodes = new Set();
-            pairs.forEach(([a, b]) => { lines.push(`${a} activates ${b}.`); nodes.add(a); nodes.add(b); });
+            pairs.forEach(([a, b]) => lines.push(`${a} activates ${b}.`));
             lines.push(`${pairs[0][0]} starts at 10.0.`);
             document.getElementById("bio-input").value = lines.join('\n');
             showToast(`Loaded ${pairs.length} interaction${pairs.length !== 1 ? 's' : ''} from “${pathwayName}”. Review, then Compile.`, 'success');
-        } else if ((reactions || []).length > 0) {
-            // We have reactions but couldn't derive clean edges; list them as notes
-            reactions.slice(0, 20).forEach(rxn => lines.push(`# ${rxn.name}`));
+        } else if (reactions.length > 0) {
+            reactions.slice(0, 20).forEach(rxn => lines.push(`# ${String((rxn && rxn.name) || "Unnamed reaction")}`));
             lines.push(`# Couldn't auto-derive edges. Edit above, or use the 📖 Connection Library for these proteins.`);
             document.getElementById("bio-input").value = lines.join('\n');
             showToast(`Loaded ${reactions.length} reaction names from “${pathwayName}” as notes.`, 'info');
@@ -925,9 +1478,12 @@ async function loadReactomePathwayText(pathwayId, pathwayName) {
         }
 
         updateStatus("Ready", "green");
+        return true;
     } catch (e) {
-        updateStatus("Ready", "green");
-        showToast("Failed to load pathway details.", 'error');
+        console.error("Reactome pathway load failed", e);
+        updateStatus("Pathway load failed", "red");
+        showToast("Failed to load pathway details: " + e.message, 'error', 7000);
+        return false;
     }
 }
 
@@ -936,15 +1492,18 @@ document.getElementById("btn-run-simulation").addEventListener("click", runSimul
 
 async function runSimulation() {
     if (!state.blueprint) return alert("Please compile a blueprint first!");
-    
+
     updateStatus("Simulating model...", "yellow");
-    
-    // Read simulation tmax
-    const tmax = parseFloat(document.getElementById("sim-tmax").value);
-    state.blueprint.simulation_config.t_max = tmax;
-    
+
     try {
-        const response = await fetch("/api/simulate", {
+        const config = ensureSimulationConfig(state.blueprint);
+        const enteredTmax = Number(document.getElementById("sim-tmax").value);
+        if (!Number.isFinite(enteredTmax) || enteredTmax <= 0) {
+            throw new Error("Simulation time must be a positive number.");
+        }
+        config.t_max = enteredTmax;
+
+        state.simulationResults = await apiJson("/api/simulate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -952,22 +1511,16 @@ async function runSimulation() {
                 custom_params: state.customParams
             })
         });
-        
-        if (!response.ok) throw new Error(await response.text());
-        
-        state.simulationResults = await response.json();
-        
-        // Display plots
-        renderVisualizer();
-        
-        // Evaluate targets for the feedback screen
-        await evaluateSimulationTargets();
 
+        renderVisualizer();
+        await evaluateSimulationTargets();
         updateStatus("Ready", "green");
+        return true;
     } catch (e) {
-        console.error(e);
+        console.error("Simulation failed", e);
         updateStatus("Simulation failed", "red");
-        alert("Simulation failed: " + e.message);
+        if (typeof showToast === "function") showToast("Simulation failed: " + e.message, "error", 8000);
+        return false;
     }
 }
 
@@ -1187,10 +1740,119 @@ document.getElementById("pde-species-select").addEventListener("change", (e) => 
 // ==========================================
 // CYTOSCAPE GRAPH RENDERER
 // ==========================================
+
+// Custom-kinetics ODEs and PDE reaction systems carry their wiring inside
+// expressions rather than an edge list. Derive display-only edges from either
+// blueprint.odes or blueprint.spatial.reactions so valid PDEs never render as
+// disconnected nodes. This does not alter the equations used by the solvers.
+function deriveEdgesFromOdes(bp) {
+    const nodes = (bp.nodes || []).map(n => n.id).filter(Boolean);
+    const odeExpressions = bp.odes || {};
+    const pdeExpressions = (bp.spatial && bp.spatial.reactions) || {};
+    const expressions = Object.keys(odeExpressions).length ? odeExpressions : pdeExpressions;
+    const fluxes = bp.fluxes || {};
+    if (!nodes.length || !Object.keys(expressions).length) return [];
+    const esc = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const bySpeciesLen = [...nodes].sort((a, b) => b.length - a.length);
+    const fluxNames = Object.keys(fluxes).sort((a, b) => b.length - a.length);
+
+    function expandFluxes(expr) {
+        let e = String(expr);
+        for (let iter = 0; iter < 4; iter++) {
+            let changed = false;
+            for (const f of fluxNames) {
+                const re = new RegExp("\\b" + esc(f) + "\\b", "g");
+                if (re.test(e)) { e = e.replace(re, "(" + fluxes[f] + ")"); changed = true; }
+            }
+            if (!changed) break;
+        }
+        return e;
+    }
+
+    // Split into top-level additive terms, each tagged with its sign.
+    function signedTerms(expr) {
+        const s = String(expr), terms = [];
+        let depth = 0, cur = "", sign = "+";
+        for (let i = 0; i < s.length; i++) {
+            const c = s[i];
+            if (c === "(") { depth++; cur += c; }
+            else if (c === ")") { depth--; cur += c; }
+            else if ((c === "+" || c === "-") && depth === 0) {
+                const prev = cur.replace(/\s+$/, "").slice(-1);
+                if (cur.trim() === "" || "*/(^+-eE".includes(prev)) { cur += c; }
+                else { terms.push({ sign, term: cur }); sign = c; cur = ""; }
+            } else cur += c;
+        }
+        if (cur.trim() !== "") terms.push({ sign, term: cur });
+        return terms;
+    }
+
+    const speciesIn = (term) => bySpeciesLen.filter(sp =>
+        new RegExp("\\b" + esc(sp) + "\\b").test(term));
+
+    // A species in the immediate denominator has the opposite qualitative effect:
+    // e.g. U**2 / V means V inhibits U even though the whole term is positive.
+    function isImmediateDenominator(term, species) {
+        const text = String(term);
+        const speciesRe = new RegExp("\\b" + esc(species) + "\\b");
+        for (let i = 0; i < text.length; i++) {
+            if (text[i] !== "/") continue;
+            let j = i + 1;
+            while (/\s/.test(text[j] || "")) j++;
+            let segment = "";
+            if (text[j] === "(") {
+                let depth = 0;
+                for (; j < text.length; j++) {
+                    segment += text[j];
+                    if (text[j] === "(") depth++;
+                    if (text[j] === ")" && --depth === 0) break;
+                }
+            } else {
+                while (j < text.length && /[A-Za-z0-9_.]/.test(text[j])) segment += text[j++];
+            }
+            if (speciesRe.test(segment)) return true;
+        }
+        return false;
+    }
+
+    const edges = [], seen = new Set();
+    for (const target of nodes) {
+        if (!(target in expressions)) continue;
+        const pos = new Set(), neg = new Set();
+        for (const { sign, term } of signedTerms(expandFluxes(expressions[target]))) {
+            for (const regulator of speciesIn(term)) {
+                // Ignore ordinary self-decay, but retain explicit nonlinear
+                // autocatalysis such as U**2 or U*U as a self-activation loop.
+                if (regulator === target) {
+                    const id = esc(target);
+                    const nonlinearSelf = new RegExp("\\b" + id + "\\b\\s*(?:\\*\\*|\\^)").test(term) ||
+                        new RegExp("\\b" + id + "\\b\\s*\\*\\s*\\b" + id + "\\b").test(term);
+                    if (!nonlinearSelf || sign === "-") continue;
+                }
+                const denominator = isImmediateDenominator(term, regulator);
+                const inhibitory = (sign === "-") !== denominator;
+                (inhibitory ? neg : pos).add(regulator);
+            }
+        }
+        for (const regulator of new Set([...pos, ...neg])) {
+            const type = (neg.has(regulator) && !pos.has(regulator)) ? "inhibition" : "activation";
+            const key = regulator + "->" + target;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            edges.push({ source: regulator, target, type });
+        }
+    }
+    return edges;
+}
+
 function renderCytoscape() {
     const container = document.getElementById("cy-container");
-    if (!state.blueprint || !state.blueprint.nodes) return;
-    
+    if (cyInstance && typeof cyInstance.destroy === "function") {
+        cyInstance.destroy();
+        cyInstance = null;
+    }
+    if (!state.blueprint || !Array.isArray(state.blueprint.nodes)) return;
+
     // Format nodes and edges for Cytoscape
     const elements = [];
     const nodeIds = new Set();
@@ -1205,20 +1867,33 @@ function renderCytoscape() {
         });
     });
 
+    // Explicit edges take precedence. Equation-driven ODE and PDE models carry
+    // their wiring inside expressions, so derive display-only edges when needed.
+    let edgesToDraw = (state.blueprint.edges || []).filter(
+        e => nodeIds.has(e.source) && nodeIds.has(e.target));
+    const hasImplicitEdges = state.blueprint.odes ||
+        (state.blueprint.spatial && state.blueprint.spatial.reactions);
+    if (edgesToDraw.length === 0 && hasImplicitEdges) {
+        edgesToDraw = deriveEdgesFromOdes(state.blueprint).filter(
+            e => nodeIds.has(e.source) && nodeIds.has(e.target));
+    }
     // Defensive: only draw edges whose endpoints are declared nodes. Cytoscape
     // throws on a dangling edge, which would crash the whole compile.
-    (state.blueprint.edges || []).forEach((edge, index) => {
-        if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) return;
+    edgesToDraw.forEach((edge, index) => {
+        const rawType = String(edge.type || "association").toLowerCase();
+        const type = (rawType === "activation" || rawType === "inhibition")
+            ? rawType
+            : "association";
         elements.push({
             data: {
                 id: `e${index}`,
                 source: edge.source,
                 target: edge.target,
-                type: edge.type // activation / inhibition
+                type
             }
         });
     });
-    
+
     cyInstance = cytoscape({
         container: container,
         elements: elements,
@@ -1227,7 +1902,12 @@ function renderCytoscape() {
                 selector: 'node',
                 style: {
                     'background-color': 'rgba(138, 43, 226, 0.8)',
-                    'border-width': '2px',
+                    // Emphasis is carried by the border alone. Cytoscape draws to
+                    // canvas with its own style vocabulary, and this build accepts
+                    // neither CSS 'box-shadow' nor 'outline-*': both were parsed,
+                    // warned about on every single render, and discarded. Border
+                    // width/colour are supported here, so the cyan ring is the glow.
+                    'border-width': '3px',
                     'border-color': '#00f2fe',
                     'label': 'data(label)',
                     'color': '#f3f4f6',
@@ -1237,8 +1917,7 @@ function renderCytoscape() {
                     'text-valign': 'center',
                     'text-halign': 'center',
                     'width': '65px',
-                    'height': '65px',
-                    'box-shadow': '0 0 10px rgba(0,242,254,0.3)'
+                    'height': '65px'
                 }
             },
             {
@@ -1260,10 +1939,21 @@ function renderCytoscape() {
                     'target-arrow-shape': 'tee',
                     'curve-style': 'bezier'
                 }
+            },
+            {
+                selector: 'edge[type="association"]',
+                style: {
+                    'width': 2,
+                    'line-color': '#94a3b8',
+                    'target-arrow-color': '#94a3b8',
+                    'target-arrow-shape': 'none',
+                    'line-style': 'dashed',
+                    'curve-style': 'bezier'
+                }
             }
         ],
         layout: {
-            name: 'cose',
+            name: state.blueprint.nodes.length <= 2 ? 'circle' : 'cose',
             padding: 30
         }
     });
@@ -1280,7 +1970,7 @@ async function evaluateSimulationTargets() {
     const container = document.getElementById("target-eval-list");
     let results;
     try {
-        const resp = await fetch("/api/evaluate", {
+        const data = await apiJson("/api/evaluate", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 blueprint: state.blueprint,
@@ -1288,24 +1978,28 @@ async function evaluateSimulationTargets() {
                 custom_params: state.customParams
             })
         });
-        const data = await resp.json();
-        results = data.results || [];
+        if (!data || !Array.isArray(data.results)) {
+            throw new Error("The target evaluator returned an unexpected response.");
+        }
+        results = data.results;
     } catch (e) {
-        container.innerHTML = `<p class="placeholder-text err">Target evaluation failed: ${e.message}</p>`;
+        console.error("Target evaluation failed", e);
+        container.innerHTML = `<p class="placeholder-text err">Target evaluation failed: ${escapeHtml(e.message)}</p>`;
         return 0;
     }
 
     container.innerHTML = "";
     let metCount = 0;
-    results.forEach(r => {
+    results.forEach(rawResult => {
+        const r = rawResult && typeof rawResult === "object" ? rawResult : {};
         if (r.met) metCount++;
         const item = document.createElement("div");
         item.className = `eval-item ${r.met ? 'met' : 'failed'}`;
         item.innerHTML = `
             <div class="eval-icon">${r.met ? '🟢' : '🔴'}</div>
             <div class="eval-details">
-                <div class="target-title">${r.species || ''} ${(r.type || '').replace(/_/g, ' ')}</div>
-                <div class="target-status-msg">${r.detail || ''}</div>
+                <div class="target-title">${escapeHtml(r.species || '')} ${escapeHtml(String(r.type || '').replace(/_/g, ' '))}</div>
+                <div class="target-status-msg">${escapeHtml(r.detail || '')}</div>
             </div>
         `;
         container.appendChild(item);
@@ -1400,24 +2094,30 @@ async function runClosedLoopFeedback() {
     updateStatus("Optimizing...", "yellow");
 
     const maxIterations = 20;      // safety cap (usually converges in 1–2)
-    const stagnationLimit = 3;     // stop if no improvement for this many rounds
+    const stagnationLimit = 2;     // stop quickly if two rounds bring no improvement
     const total = state.targets.length;
-    const tmax = parseFloat(document.getElementById("sim-tmax").value);
+    const config = ensureSimulationConfig(state.blueprint);
+    const tmax = Number(document.getElementById("sim-tmax").value);
+    if (!Number.isFinite(tmax) || tmax <= 0) {
+        updateStatus("Optimization failed", "red");
+        showToast("Simulation time must be a positive number.", "error");
+        return false;
+    }
+    config.t_max = tmax;
 
     let iteration = 1;
     let allMet = false;
     let stagnation = 0;
+    let loopError = null;
     let best = { met: -1, blueprint: null };
 
     // Simulate the current blueprint, render, and return how many targets are met.
     const simulateCurrent = async () => {
-        state.blueprint.simulation_config.t_max = tmax;
-        const resp = await fetch("/api/simulate", {
+        ensureSimulationConfig(state.blueprint).t_max = tmax;
+        state.simulationResults = await apiJson("/api/simulate", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ blueprint: state.blueprint, custom_params: state.customParams })
         });
-        if (!resp.ok) throw new Error(await resp.text());
-        state.simulationResults = await resp.json();
         renderOdeChart();
         return await evaluateSimulationTargets();
     };
@@ -1430,6 +2130,7 @@ async function runClosedLoopFeedback() {
             writeConsole("Simulating model...", "info");
             met = await simulateCurrent();
         } catch (e) {
+            loopError = e;
             writeConsole(`Simulation failed: ${e.message}`, "error");
             break;
         }
@@ -1453,7 +2154,7 @@ async function runClosedLoopFeedback() {
         // Refine: numerical optimizer fits the parameters to the targets.
         writeConsole("Fitting parameters to targets (numerical optimizer)…", "info");
         try {
-            const refineData = await (await fetch("/api/refine", {
+            const refineData = await apiJson("/api/refine", {
                 method: "POST", headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     blueprint: state.blueprint,
@@ -1461,14 +2162,25 @@ async function runClosedLoopFeedback() {
                     targets: state.targets,
                     llm: getLlmConfig()
                 })
-            })).json();
+            });
 
-            (refineData.logs || []).forEach(l =>
-                writeConsole(l, l.startsWith("SUCCESS") ? "success" : (l.startsWith("Action") ? "warning" : "info")));
+            (Array.isArray(refineData.logs) ? refineData.logs : []).forEach(rawLog => {
+                const log = String(rawLog);
+                writeConsole(log, log.startsWith("SUCCESS") ? "success" : (log.startsWith("Action") ? "warning" : "info"));
+            });
 
-            state.blueprint = refineData.blueprint;
-            await compileBlueprint();   // pull the tuned parameters into the sliders
+            // Only adopt the refined blueprint if it is actually usable; never nuke
+            // state.blueprint with undefined (that used to crash the next iteration).
+            if (refineData.blueprint && Array.isArray(refineData.blueprint.nodes) && refineData.blueprint.nodes.length) {
+                state.blueprint = refineData.blueprint;
+                ensureSimulationConfig(state.blueprint).t_max = tmax;
+                const compiled = await compileBlueprint(); // pull tuned parameters into the sliders
+                if (!compiled) throw new Error("The optimized model could not be compiled.");
+            } else {
+                writeConsole("Optimizer returned no usable model; keeping the current one.", "warning");
+            }
         } catch (e) {
+            loopError = e;
             writeConsole(`Optimization request failed: ${e.message}`, "error");
             break;
         }
@@ -1480,8 +2192,17 @@ async function runClosedLoopFeedback() {
     // If we didn't fully converge, restore the best configuration we found.
     if (!allMet && best.blueprint) {
         state.blueprint = best.blueprint;
-        await compileBlueprint();
-        try { await simulateCurrent(); } catch (e) { /* ignore */ }
+        const restored = await compileBlueprint();
+        if (!restored && !loopError) loopError = new Error("The best model could not be restored.");
+        try { await simulateCurrent(); }
+        catch (e) { if (!loopError) loopError = e; }
+    }
+
+    if (loopError) {
+        updateStatus("Optimization failed", "red");
+        writeConsole(`Optimization stopped because of an error: ${loopError.message}`, "error");
+        showToast("Optimization failed: " + loopError.message, "error", 8000);
+        return false;
     }
 
     updateStatus("Ready", "green");
@@ -1492,6 +2213,7 @@ async function runClosedLoopFeedback() {
         writeConsole(`Stopped after ${iteration} round(s). Best result: ${best.met} / ${total} targets met.`, "error");
         showToast(`Best: ${best.met}/${total} targets met. Try widening target ranges or adding a feedback edge.`, "warn", 7000);
     }
+    return true;
 }
 
 // Bind slider inputs
@@ -1549,13 +2271,12 @@ async function searchDatabase() {
             endpoint = `/api/biomodels/search?q=${encodeURIComponent(query)}`;
         }
         
-        const response = await fetch(endpoint, {
+        const results = await apiJson(endpoint, {
             method: method,
             headers: { "Content-Type": "application/json" },
             body: body
         });
-        
-        const results = await response.json();
+        if (!Array.isArray(results)) throw new Error("The database returned an unexpected response.");
         container.innerHTML = "";
         
         if (results.length === 0) {
@@ -1563,44 +2284,53 @@ async function searchDatabase() {
             return;
         }
         
-        results.forEach(res => {
+        results.forEach(rawResult => {
+            const res = rawResult && typeof rawResult === "object" ? rawResult : {};
+            const id = String(res.id || "");
+            const name = String(res.name || "");
+            const source = String(res.source || "");
+            const target = String(res.target || "");
+            const type = String(res.type || "association").toLowerCase();
+            const score = Number(res.score);
             const item = document.createElement("div");
             item.className = "search-result-item";
-            
+
             if (state.currentDb === "reactome") {
-                item.innerHTML = `<strong>${res.id}</strong><br>${res.name}`;
+                item.innerHTML = `<strong>${escapeHtml(id)}</strong><br>${escapeHtml(name)}`;
             } else if (state.currentDb === "string" || state.currentDb === "omnipath") {
                 const isOmni = state.currentDb === "omnipath";
-                item.innerHTML = `<strong>${res.source} → ${res.target}</strong><br>
-                                  Type: ${res.type} | Score: ${res.score.toFixed(2)}
-                                  ${isOmni && res.references ? `<br>Refs: ${res.references.split(';')[0]}` : ''}`;
+                const scoreText = Number.isFinite(score) ? score.toFixed(2) : "n/a";
+                const reference = res.references == null ? "" : String(res.references).split(';')[0];
+                item.innerHTML = `<strong>${escapeHtml(source)} → ${escapeHtml(target)}</strong><br>
+                                  Type: ${escapeHtml(type)} | Score: ${scoreText}
+                                  ${isOmni && reference ? `<br>Refs: ${escapeHtml(reference)}` : ''}`;
                 item.addEventListener("click", () => {
                     const text = document.getElementById("bio-input");
-                    const action = res.type === "inhibition" ? "inhibits" : "activates";
-                    text.value += `\n${res.source} ${action} ${res.target}.`;
+                    const action = type === "inhibition" ? "inhibits" : "activates";
+                    text.value += `\n${source} ${action} ${target}.`;
                 });
             } else if (state.currentDb === "signor") {
-                item.innerHTML = `<strong>${res.source} → ${res.target}</strong><br>
-                                  Mech: ${res.mechanism} | Effect: ${res.effect}<br>
-                                  PMID: ${res.pmid}`;
+                item.innerHTML = `<strong>${escapeHtml(source)} → ${escapeHtml(target)}</strong><br>
+                                  Mech: ${escapeHtml(res.mechanism || "")} | Effect: ${escapeHtml(res.effect || "")}<br>
+                                  PMID: ${escapeHtml(res.pmid || "")}`;
                 item.addEventListener("click", () => {
                     const text = document.getElementById("bio-input");
-                    const action = res.type === "inhibition" ? "inhibits" : "activates";
-                    text.value += `\n${res.source} ${action} ${res.target}.`;
+                    const action = type === "inhibition" ? "inhibits" : "activates";
+                    text.value += `\n${source} ${action} ${target}.`;
                 });
             } else if (state.currentDb === "biomodels") {
-                item.innerHTML = `<strong>${res.id}</strong>: ${res.name}<br>
-                                  <span style="color:#6b7280;font-size:10px">${res.description.substring(0,80)}...</span>`;
+                item.innerHTML = `<strong>${escapeHtml(id)}</strong>: ${escapeHtml(name)}<br>
+                                  <span style="color:#6b7280;font-size:10px">${escapeHtml(String(res.description || "").substring(0, 80))}...</span>`;
                 item.addEventListener("click", () => {
-                    document.getElementById("biomodel-id-input").value = res.id;
+                    document.getElementById("biomodel-id-input").value = id;
                     document.querySelector("[data-tab='maple']").click();
                 });
             }
             container.appendChild(item);
         });
-        
+
     } catch(e) {
-        container.innerHTML = `<p class="placeholder-text" style="color:var(--accent-red)">Error: ${e.message}</p>`;
+        container.innerHTML = `<p class="placeholder-text err">Error: ${escapeHtml(e.message)}</p>`;
     }
 }
 
@@ -1611,28 +2341,37 @@ let abmResult = null;
 
 async function loadAbmPreset(name) {
     try {
-        const response = await fetch(`/api/abm/preset/${name}`);
-        const bp = await response.json();
+        const bp = await apiJson(`/api/abm/preset/${encodeURIComponent(String(name))}`);
+        if (!bp || typeof bp !== "object" || !Array.isArray(bp.cell_types)) {
+            throw new Error("The ABM preset returned an unexpected response.");
+        }
         state.abmBlueprint = bp;
-        
-        // Render info panel
+
+        // Render info panel. Clamp server-provided RGB channels before using them
+        // in a style attribute and escape all textual metadata.
         const panel = document.getElementById("abm-info-panel");
-        let html = `<div class="abm-info-title">${bp.name}</div>
-                    <div class="abm-info-desc">${bp.description}</div>
+        let html = `<div class="abm-info-title">${escapeHtml(bp.name || name)}</div>
+                    <div class="abm-info-desc">${escapeHtml(bp.description || "")}</div>
                     <div class="abm-cell-type-list">`;
-        
-        bp.cell_types.forEach(ct => {
-            const color = `rgb(${ct.color[0]},${ct.color[1]},${ct.color[2]})`;
+
+        bp.cell_types.forEach(rawCellType => {
+            const ct = rawCellType && typeof rawCellType === "object" ? rawCellType : {};
+            const channels = Array.isArray(ct.color) ? ct.color.slice(0, 3) : [];
+            while (channels.length < 3) channels.push(128);
+            const color = `rgb(${channels.map(v => Math.max(0, Math.min(255, Number(v) || 0))).join(',')})`;
             html += `<div class="cell-type-chip">
                         <span class="cell-type-swatch" style="background:${color}"></span>
-                        ${ct.name}
+                        ${escapeHtml(ct.name || "Unnamed cell type")}
                      </div>`;
         });
         html += `</div>`;
         panel.innerHTML = html;
-        
+        return true;
     } catch(e) {
         console.error("Failed to load ABM preset", e);
+        updateStatus("ABM preset failed", "red");
+        showToast("Failed to load ABM preset: " + e.message, "error", 7000);
+        return false;
     }
 }
 
@@ -1644,32 +2383,37 @@ async function runAbmSimulation() {
     updateStatus("Running CPM...", "yellow");
     
     try {
-        const response = await fetch("/api/abm/simulate", {
+        const result = await apiJson("/api/abm/simulate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ blueprint: state.abmBlueprint })
         });
-        
-        abmResult = await response.json();
-        
+        if (!result || !Array.isArray(result.lattice_frames) || result.lattice_frames.length === 0 ||
+            !Array.isArray(result.t) || !Array.isArray(result.cell_counts)) {
+            throw new Error("The ABM simulator returned incomplete playback data.");
+        }
+        abmResult = result;
+
         document.getElementById("abm-canvas").style.display = "block";
         document.getElementById("btn-run-abm").textContent = "Run ABM Simulation";
         updateStatus("Ready", "green");
-        
+
         // Init player
         document.getElementById("abm-playback").style.display = "flex";
         const slider = document.getElementById("abm-frame-slider");
         slider.max = abmResult.lattice_frames.length - 1;
         slider.value = 0;
-        
+
         state.abmCurrentFrame = 0;
         renderAbmFrame(0);
         toggleAbmPlayback(true);
-        
+        return true;
     } catch(e) {
-        alert("ABM Simulation failed: " + e.message);
+        console.error("ABM simulation failed", e);
+        showToast("ABM simulation failed: " + e.message, "error", 8000);
         document.getElementById("btn-run-abm").textContent = "Run ABM Simulation";
-        updateStatus("Error", "red");
+        updateStatus("ABM simulation failed", "red");
+        return false;
     }
 }
 
@@ -1752,18 +2496,18 @@ function toggleAbmPlayback(play) {
 async function extractMapleParameters() {
     const paramName = document.getElementById("maple-param-name").value;
     if (!paramName) return alert("Parameter Name is required.");
-    
+
     const units = document.getElementById("maple-param-units").value;
     const desc = document.getElementById("maple-param-desc").value;
     const context = document.getElementById("maple-param-context").value;
-    
+
     const btn = document.getElementById("btn-maple-extract");
     btn.textContent = "Extracting...";
     btn.disabled = true;
     updateStatus("LLM Extracting...", "yellow");
-    
+
     try {
-        const response = await fetch("/api/maple/extract", {
+        const result = await apiJson("/api/maple/extract", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -1774,85 +2518,94 @@ async function extractMapleParameters() {
                 llm: getLlmConfig()
             })
         });
-        
-        const result = await response.json();
-        
-        // Render JSON viewer
+        if (!result || typeof result !== "object") throw new Error("MAPLE returned an unexpected response.");
+
         const resContainer = document.getElementById("maple-results-container");
-        resContainer.innerHTML = `<pre class="maple-target-viewer">${JSON.stringify(result.target, null, 2)}</pre>`;
-        
-        // Render Validation Badges
+        resContainer.innerHTML = "";
+        const targetView = document.createElement("pre");
+        targetView.className = "maple-target-viewer";
+        targetView.textContent = JSON.stringify(result.target || {}, null, 2);
+        resContainer.appendChild(targetView);
+
         const valContainer = document.getElementById("maple-validation-container");
         valContainer.innerHTML = `<h4 class="subsection-title">Validation Checks</h4>`;
-        
-        if (result.validation && result.validation.results) {
-            result.validation.results.forEach(val => {
-                const div = document.createElement("div");
-                div.className = "validation-result-item";
-                
-                let badgeClass = "pass";
-                let badgeText = "✓";
-                if (!val.passed) {
-                    badgeClass = val.severity === "error" ? "fail" : "warn";
-                    badgeText = val.severity === "error" ? "✗" : "!";
-                }
-                
-                div.innerHTML = `
-                    <div class="validation-badge ${badgeClass}">${badgeText}</div>
-                    <div class="validation-msg">${val.message}</div>
-                    ${val.field_path ? `<div class="validation-field">${val.field_path}</div>` : ''}
-                `;
-                valContainer.appendChild(div);
-            });
-        }
-        
-        // Render Logs
+        const validations = result.validation && Array.isArray(result.validation.results)
+            ? result.validation.results
+            : [];
+        validations.forEach(rawValidation => {
+            const val = rawValidation && typeof rawValidation === "object" ? rawValidation : {};
+            const div = document.createElement("div");
+            div.className = "validation-result-item";
+            let badgeClass = "pass";
+            let badgeText = "✓";
+            if (!val.passed) {
+                badgeClass = val.severity === "error" ? "fail" : "warn";
+                badgeText = val.severity === "error" ? "✗" : "!";
+            }
+            div.innerHTML = `
+                <div class="validation-badge ${badgeClass}">${badgeText}</div>
+                <div class="validation-msg">${escapeHtml(val.message || "")}</div>
+                ${val.field_path ? `<div class="validation-field">${escapeHtml(val.field_path)}</div>` : ''}
+            `;
+            valContainer.appendChild(div);
+        });
+
         const logContainer = document.getElementById("maple-logs-container");
-        logContainer.innerHTML = result.logs.map(l => `<div class="log-line ${l.includes('fail')||l.includes('error') ? 'error' : 'info'}">${l}</div>`).join("");
-        
+        logContainer.innerHTML = "";
+        (Array.isArray(result.logs) ? result.logs : []).forEach(rawLog => {
+            const log = String(rawLog);
+            const line = document.createElement("div");
+            line.className = `log-line ${/fail|error/i.test(log) ? 'error' : 'info'}`;
+            line.textContent = log;
+            logContainer.appendChild(line);
+        });
+        updateStatus("Ready", "green");
+        return true;
     } catch(e) {
-        alert("Extraction failed: " + e.message);
+        console.error("MAPLE extraction failed", e);
+        updateStatus("MAPLE extraction failed", "red");
+        showToast("Extraction failed: " + e.message, "error", 8000);
+        return false;
     } finally {
         btn.textContent = "Extract & Validate";
         btn.disabled = false;
-        updateStatus("Ready", "green");
     }
 }
 
 async function importBioModelSbml() {
-    const modelId = document.getElementById("biomodel-id-input").value;
+    const modelId = document.getElementById("biomodel-id-input").value.trim();
     if (!modelId) return alert("Enter a BioModels ID (e.g., BIOMD0000000006)");
-    
+
     const btn = document.getElementById("btn-import-sbml");
     btn.textContent = "Importing...";
-    
+    btn.disabled = true;
+    updateStatus("Importing SBML...", "yellow");
+
     try {
-        const response = await fetch("/api/biomodels/import", {
+        const result = await apiJson("/api/biomodels/import", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ model_id: modelId })
         });
-        
-        if (!response.ok) throw new Error("Failed to import model");
-        
-        const result = await response.json();
-        
-        // Set blueprint
-        state.blueprint = result.blueprint;
-        document.getElementById("blueprint-json-viewer").textContent = JSON.stringify(state.blueprint, null, 2);
-        
-        // Switch to Blueprint tab
-        document.querySelector("[data-tab='blueprint']").click();
-        
-        // Attempt compile and render
-        await compileBlueprint();
-        
-        alert(`Successfully imported SBML model: ${modelId}`);
-        
+        if (!result || !result.blueprint || typeof result.blueprint !== "object") {
+            throw new Error("BioModels returned no usable blueprint.");
+        }
+
+        const loaded = await loadBlueprintIntoUI(result.blueprint);
+        if (!loaded) {
+            showToast(`Imported ${modelId}, but the model needs correction before simulation.`, "warn", 8000);
+            return false;
+        }
+        showToast(`Successfully imported SBML model: ${modelId}`, "success");
+        return true;
     } catch(e) {
-        alert("SBML Import failed: " + e.message);
+        console.error("SBML import failed", e);
+        updateStatus("SBML import failed", "red");
+        showToast("SBML import failed: " + e.message, "error", 8000);
+        return false;
     } finally {
         btn.textContent = "Import SBML";
+        btn.disabled = false;
     }
 }
 
@@ -1940,8 +2693,12 @@ async function runExploration() {
     const method = document.getElementById("explore-method").value;
     const nSamples = parseInt(document.getElementById("explore-samples").value) || 48;
     const target = document.getElementById("explore-target").value;
-    const tmax = parseFloat(document.getElementById("sim-tmax").value);
-    if (state.blueprint.simulation_config) state.blueprint.simulation_config.t_max = tmax;
+    const tmax = Number(document.getElementById("sim-tmax").value);
+    if (!Number.isFinite(tmax) || tmax <= 0) {
+        showToast("Simulation time must be a positive number.", "error");
+        return false;
+    }
+    ensureSimulationConfig(state.blueprint).t_max = tmax;
 
     const btn = document.getElementById("btn-explore");
     btn.textContent = "Sampling…";
@@ -1949,7 +2706,7 @@ async function runExploration() {
     updateStatus("Exploring parameter space...", "yellow");
 
     try {
-        const resp = await fetch("/api/sample", {
+        const data = await apiJson("/api/sample", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -1960,17 +2717,20 @@ async function runExploration() {
                 target_species: target
             })
         });
-        if (!resp.ok) throw new Error(await resp.text());
-        const data = await resp.json();
+        if (!data || !Array.isArray(data.t) || !Array.isArray(data.samples)) {
+            throw new Error("The parameter sampler returned incomplete results.");
+        }
         state.sampleResult = data;
         exploreSort = { key: 'id', dir: 1 };
         renderEnsembleChart(data);
         renderExploreResults(data);
         updateStatus("Ready", "green");
+        return true;
     } catch (e) {
-        console.error(e);
-        alert("Exploration failed: " + e.message);
+        console.error("Parameter exploration failed", e);
+        showToast("Exploration failed: " + e.message, "error", 8000);
         updateStatus("Exploration failed", "red");
+        return false;
     } finally {
         btn.textContent = "Explore Parameter Space";
         btn.disabled = false;
@@ -2130,16 +2890,18 @@ function openConnModalWith(db, query) {
 }
 
 function normalizeConn(item) {
-    const type = (item.type || 'association').toLowerCase();
+    const raw = item && typeof item === "object" ? item : {};
+    const rawType = String(raw.type || 'association').toLowerCase();
+    const score = Number(raw.score);
     return {
-        source: (item.source || '').trim(),
-        target: (item.target || '').trim(),
-        type: (type === 'activation' || type === 'inhibition') ? type : 'association',
-        score: item.score,
-        references: item.references,
-        pmid: item.pmid,
-        mechanism: item.mechanism,
-        effect: item.effect
+        source: String(raw.source || '').trim(),
+        target: String(raw.target || '').trim(),
+        type: (rawType === 'activation' || rawType === 'inhibition') ? rawType : 'association',
+        score: Number.isFinite(score) ? score : null,
+        references: raw.references == null ? "" : String(raw.references),
+        pmid: raw.pmid == null ? "" : String(raw.pmid),
+        mechanism: raw.mechanism == null ? "" : String(raw.mechanism),
+        effect: raw.effect == null ? "" : String(raw.effect)
     };
 }
 
@@ -2160,30 +2922,35 @@ async function connSearch() {
 
     if (!raw) {
         results.innerHTML = `<p class="placeholder-text">Enter one or more proteins to search.</p>`;
-        return;
+        return false;
     }
-    results.innerHTML = `<p class="placeholder-text">Searching ${connState.db}…</p>`;
+    results.innerHTML = `<p class="placeholder-text">Searching ${escapeHtml(connState.db)}…</p>`;
     const proteins = raw.split(/[\s,]+/).filter(Boolean);
 
     try {
         let data;
         if (connState.db === "omnipath") {
-            data = await (await fetch("/api/omnipath/interactions", {
+            data = await apiJson("/api/omnipath/interactions", {
                 method: "POST", headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ proteins })
-            })).json();
+            });
         } else if (connState.db === "string") {
-            data = await (await fetch("/api/string/network", {
+            data = await apiJson("/api/string/network", {
                 method: "POST", headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ proteins })
-            })).json();
-        } else { // signor
-            data = await (await fetch(`/api/signor/search?q=${encodeURIComponent(proteins[0] || raw)}`)).json();
+            });
+        } else {
+            data = await apiJson(`/api/signor/search?q=${encodeURIComponent(proteins[0] || raw)}`);
         }
-        connState.results = (data || []).map(normalizeConn).filter(c => c.source && c.target);
+        if (!Array.isArray(data)) throw new Error("The connection database returned an unexpected response.");
+        connState.results = data.map(normalizeConn).filter(c => c.source && c.target);
         renderConnResults();
+        return true;
     } catch (e) {
-        results.innerHTML = `<p class="placeholder-text err">Search failed: ${e.message}</p>`;
+        console.error("Connection search failed", e);
+        connState.results = [];
+        results.innerHTML = `<p class="placeholder-text err">Search failed: ${escapeHtml(e.message)}</p>`;
+        return false;
     }
 }
 
@@ -2223,17 +2990,17 @@ function renderConnResults() {
         const arrow = c.type === 'inhibition' ? '⊣' : (c.type === 'activation' ? '→' : '-');
 
         const meta = [];
-        if (c.score != null && !isNaN(c.score)) meta.push(`score ${Number(c.score).toFixed(2)}`);
+        if (c.score != null) meta.push(`score ${c.score.toFixed(2)}`);
         if (c.mechanism) meta.push(c.mechanism);
         if (c.effect) meta.push(c.effect);
         if (c.pmid) meta.push(`PMID:${c.pmid}`);
-        if (c.references) meta.push(`ref ${String(c.references).split(';')[0]}`);
+        if (c.references) meta.push(`ref ${c.references.split(';')[0]}`);
 
         html += `<label class="conn-entry ${inModel ? 'in-model' : ''}" data-type="${c.type}">
             <input type="checkbox" data-idx="${i}" ${inModel ? 'checked disabled' : ''}>
             <span class="conn-badge type-${c.type}">${verb}</span>
-            <span class="conn-pair"><b>${c.source}</b> <span class="arrow">${arrow}</span> <b>${c.target}</b></span>
-            <span class="conn-meta">${meta.join(' · ')}</span>
+            <span class="conn-pair"><b>${escapeHtml(c.source)}</b> <span class="arrow">${arrow}</span> <b>${escapeHtml(c.target)}</b></span>
+            <span class="conn-meta">${escapeHtml(meta.join(' · '))}</span>
             ${inModel ? '<span class="in-model-tag">✓ in model</span>' : ''}
         </label>`;
     });
@@ -2281,8 +3048,20 @@ function connClear() {
     updateConnCount();
 }
 
-function addSelectedConnections() {
-    if (!state.blueprint) { alert("Compile a model first."); return; }
+async function addSelectedConnections() {
+    if (!state.blueprint) { alert("Compile a model first."); return false; }
+
+    const hasExplicitEquations = state.blueprint.odes && Object.keys(state.blueprint.odes).length > 0;
+    const hasSpatialReactions = state.blueprint.spatial && state.blueprint.spatial.reactions &&
+        Object.keys(state.blueprint.spatial.reactions).length > 0;
+    if (state.blueprint.type === "PDE" || hasExplicitEquations || hasSpatialReactions) {
+        showToast(
+            "Connections cannot be added here because this model's dynamics are defined by explicit equations. Edit those equations in the Model Summary instead.",
+            "warn", 8000
+        );
+        return false;
+    }
+
     if (!state.blueprint.edges) state.blueprint.edges = [];
     if (!state.blueprint.nodes) state.blueprint.nodes = [];
 
@@ -2323,18 +3102,30 @@ function addSelectedConnections() {
         added++;
     });
 
-    // Refresh views; existing connections remain intact
+    // Refresh views; existing connections remain intact.
     document.getElementById("blueprint-json-viewer").textContent = JSON.stringify(state.blueprint, null, 2);
     renderCytoscape();
     renderTargets();
-    compileBlueprint();
-    closeConnModal();
-    updateStatus("Ready", "green");
 
     let msg = `Added ${added} connection${added !== 1 ? 's' : ''}.`;
     if (skippedDup) msg += ` ${skippedDup} already existed (unchanged).`;
     if (skippedNode) msg += ` ${skippedNode} skipped (species declined).`;
+
+    if (added > 0) {
+        const compiled = await compileBlueprint();
+        if (!compiled) {
+            showToast(msg + " Recompilation failed; review the model before simulating.", 'error', 8000);
+            return false;
+        }
+    }
+
+    closeConnModal();
+    const validationErrors = Array.isArray(state.blueprint.validation_errors)
+        ? state.blueprint.validation_errors.filter(Boolean)
+        : [];
+    updateStatus(validationErrors.length ? "Needs review" : "Ready", validationErrors.length ? "yellow" : "green");
     showToast(msg, added > 0 ? 'success' : 'info');
+    return true;
 }
 
 
@@ -2367,7 +3158,7 @@ let llmModelsInfo = null;
 let llmDraft = null;                 // uncommitted edits while the modal is open
 const activePolls = {};              // model key -> setInterval id (dedup + cleanup)
 
-function loadLlmSettings() {
+async function loadLlmSettings() {
     let hadSaved = false;
     try {
         const raw = localStorage.getItem('biosim_llm');
@@ -2375,14 +3166,14 @@ function loadLlmSettings() {
         if (saved && typeof saved === 'object') { Object.assign(state.llm, saved); hadSaved = true; }
     } catch (e) { /* ignore */ }
     updateEngineLabel();
+
     // If the server has a pre-configured .env for Bedrock, adopt its model/region
-    // and auto-select the Bedrock engine so no keys ever need typing in the app.
-    fetch('/api/llm/env').then(r => r.ok ? r.json() : null).then(env => {
-        if (!env) return;
-        if (env.model) state.llm.bedrock_model = env.model;
-        if (env.region) state.llm.bedrock_region = env.region;
-        // Only adopt Bedrock when the environment actually has usable credentials
-        // (placeholder .env values are reported as not-ready by the server).
+    // and auto-select the Bedrock engine. Credential values remain server-side.
+    try {
+        const env = await apiJson('/api/llm/env');
+        if (!env || typeof env !== "object") return;
+        if (env.model) state.llm.bedrock_model = String(env.model);
+        if (env.region) state.llm.bedrock_region = String(env.region);
         const wantBedrock = env.bedrock_env_ready &&
             (env.engine_default === 'bedrock' || !hadSaved);
         if (wantBedrock && state.llm.engine !== 'bedrock') {
@@ -2390,7 +3181,10 @@ function loadLlmSettings() {
             saveLlmSettings();
         }
         updateEngineLabel();
-    }).catch(() => { /* env endpoint optional */ });
+    } catch (e) {
+        // This metadata endpoint is optional; other engines remain usable.
+        console.warn("Could not load server LLM environment metadata", e.message);
+    }
 }
 
 function saveLlmSettings() {
@@ -2479,12 +3273,13 @@ async function loadLlmModels() {
     const list = document.getElementById('llm-model-list');
     list.innerHTML = `<p class="placeholder-text">Loading models…</p>`;
     try {
-        const info = await (await fetch('/api/llm/models')).json();
+        const info = await apiJson('/api/llm/models');
+        if (!info || !Array.isArray(info.models)) throw new Error("The model list returned an unexpected response.");
         llmModelsInfo = info;
         document.getElementById('llm-runtime-warning').hidden = !!info.runtime_available;
         renderLlmModels();
     } catch (e) {
-        list.innerHTML = `<p class="placeholder-text err">Failed to load models: ${e.message}</p>`;
+        list.innerHTML = `<p class="placeholder-text err">Failed to load models: ${escapeHtml(e.message)}</p>`;
     }
 }
 
@@ -2527,23 +3322,17 @@ async function startModelDownload(key) {
     const spec = llmModelsInfo && llmModelsInfo.models.find(x => x.key === key);
     if (action) action.innerHTML = `<span class="llm-progress">Downloading${spec ? ` ~${spec.size_gb} GB` : ''}…</span>`;
     try {
-        const resp = await fetch('/api/llm/download', {
+        await apiJson('/api/llm/download', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model: key })
         });
-        if (!resp.ok) {
-            // Surface the server's reason (e.g. runtime missing, disk full, another download running)
-            let detail = `HTTP ${resp.status}`;
-            try { const j = await resp.json(); if (j.detail) detail = j.detail; } catch (e) { /* ignore */ }
-            resetDownloadAction(key, 'Retry');
-            showToast(`Cannot download: ${detail}`, 'error', 7000);
-            return;
-        }
         showToast(`Downloading ${spec ? spec.label : key}${spec ? ` (~${spec.size_gb} GB)` : ''}. This can take a few minutes.`, 'info', 5000);
         pollDownload(key);
+        return true;
     } catch (e) {
         resetDownloadAction(key, 'Retry');
         showToast(`Download request failed: ${e.message}`, 'error', 6000);
+        return false;
     }
 }
 
@@ -2559,8 +3348,10 @@ function pollDownload(key) {
     if (activePolls[key]) return;    // dedup: one poller per model
     activePolls[key] = setInterval(async () => {
         let st;
-        try { st = await (await fetch(`/api/llm/status?model=${encodeURIComponent(key)}`)).json(); }
-        catch (e) { return; /* transient; keep polling */ }
+        try {
+            st = await apiJson(`/api/llm/status?model=${encodeURIComponent(key)}`);
+            if (!st || typeof st !== "object") return;
+        } catch (e) { return; /* transient; keep polling */ }
 
         const action = document.querySelector(`.llm-model-action[data-key="${key}"]`);
         if (st.downloaded || st.status === 'done') {

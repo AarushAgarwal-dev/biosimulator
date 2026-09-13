@@ -1,0 +1,34 @@
+{
+  "_comment_not_sent_to_aws": [
+    "Rule 1 prunes untagged layers: three untagged 1.3 GB images were found sitting in",
+    "this repo, which is ~$0.39/month billing for images that identify nothing.",
+    "Rule 2 replaces an earlier 'keep any 2' rule that would have evicted an immutable",
+    "build-* tag within two builds, defeating the point of having one: a result months",
+    "old must still be able to name the exact image that produced it.",
+    "AWS caps each rule description at 255 characters, so the reasoning lives here."
+  ],
+  "rules": [
+    {
+      "rulePriority": 1,
+      "description": "Expire untagged images after 1 day: superseded layers and build garbage that bill for storage while identifying nothing.",
+      "selection": {
+        "tagStatus": "untagged",
+        "countType": "sinceImagePushed",
+        "countUnit": "days",
+        "countNumber": 1
+      },
+      "action": { "type": "expire" }
+    },
+    {
+      "rulePriority": 2,
+      "description": "Keep the 3 most recent immutable build-* tags so an old result can still name the image that produced it. ~3 x 1.3 GB = about $0.39/month.",
+      "selection": {
+        "tagStatus": "tagged",
+        "tagPrefixList": ["build-"],
+        "countType": "imageCountMoreThan",
+        "countNumber": 3
+      },
+      "action": { "type": "expire" }
+    }
+  ]
+}

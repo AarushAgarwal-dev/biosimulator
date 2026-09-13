@@ -8,6 +8,34 @@ def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text or "").strip()
 
 
+def _named_field(value: Any, default: str = "") -> str:
+    """Read a field the APIs return inconsistently as a bare string or an object.
+
+    BioModels answers 'format' as the string "SBML" but 'publication' as
+    {"title": ...}, so a fixed .get("name") chain raised
+    AttributeError: 'str' object has no attribute 'get' and silently dropped every
+    live result to the offline set.
+    """
+    if isinstance(value, dict):
+        for key in ("name", "title", "label", "id"):
+            nested = value.get(key)
+            if nested:
+                return str(nested)
+        return default
+    if value is None or value == "":
+        return default
+    return str(value)
+
+
+def _looks_like_sbml(text: str) -> bool:
+    """True when a payload is actually SBML XML rather than HTML or a ZIP."""
+    return "<sbml" in (text or "")[:4000].lower()
+
+
+#: BioModels ids are alphanumeric; anything else is refused before it reaches a URL path.
+_VALID_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
+
 # Base URLs
 REACTOME_CONTENT_URL = "https://reactome.org/ContentService"
 STRING_API_URL = "https://string-db.org/api/json"
@@ -249,17 +277,26 @@ def search_biomodels(query: str, num_results: int = 10) -> List[Dict[str, Any]]:
         response = requests.get(url, params=params, timeout=15)
         if response.status_code == 200:
             data = response.json()
+            if not isinstance(data, dict):
+                raise ValueError("BioModels search did not return a JSON object.")
             models = []
             for item in data.get("models", []):
+                if not isinstance(item, dict):
+                    continue
                 models.append({
-                    "id": item.get("id", ""),
-                    "name": item.get("name", ""),
-                    "description": item.get("description", "")[:200],
-                    "format": item.get("format", {}).get("name", "SBML"),
-                    "submitter": item.get("submitter", ""),
-                    "publication": item.get("publication", {}).get("title", "")
+                    "id": str(item.get("id") or ""),
+                    "name": str(item.get("name") or ""),
+                    "description": str(item.get("description") or "")[:200],
+                    "format": _named_field(item.get("format"), "SBML"),
+                    "submitter": _named_field(item.get("submitter")),
+                    "publication": _named_field(item.get("publication")),
+                    "url": str(item.get("url") or ""),
                 })
-            return models
+            if models:
+                return models
+            # An empty parse on a 200 means the schema moved; prefer the offline
+            # set over handing the UI an empty list that looks like "no results".
+            print("BioModels search returned no parseable models; using offline set.")
         return get_mock_biomodels(query)
     except Exception as e:
         print(f"Error searching BioModels: {e}")
@@ -269,21 +306,30 @@ def search_biomodels(query: str, num_results: int = 10) -> List[Dict[str, Any]]:
 def fetch_biomodel_sbml(model_id: str) -> Optional[str]:
     """
     Download SBML content for a given BioModels ID.
+
+    Two things this must not do, both previously observed against the live API:
+    the '/{id}/download' form answers 200 with an HTML landing page, and omitting
+    'filename' answers 200 with a ZIP archive. Neither is SBML, so each response
+    is content-checked rather than trusted on status alone, and the form known to
+    return SBML is tried first.
     """
-    try:
-        url = f"{BIOMODELS_API_URL}/{model_id}/download"
-        response = requests.get(url, timeout=15, params={"filename": f"{model_id}_url.xml"})
-        if response.status_code == 200:
-            return response.text
-        # Try alternative URL
-        url = f"{BIOMODELS_API_URL}/model/download/{model_id}"
-        response = requests.get(url, timeout=15)
-        if response.status_code == 200:
-            return response.text
+    if not _VALID_MODEL_ID.match(model_id or ""):
+        print(f"Rejected malformed BioModels id: {model_id!r}")
         return None
-    except Exception as e:
-        print(f"Error fetching BioModel SBML: {e}")
-        return None
+
+    attempts = [
+        (f"{BIOMODELS_API_URL}/model/download/{model_id}", {"filename": f"{model_id}_url.xml"}),
+        (f"{BIOMODELS_API_URL}/{model_id}/download", {"filename": f"{model_id}_url.xml"}),
+    ]
+    for url, params in attempts:
+        try:
+            response = requests.get(url, timeout=15, params=params)
+        except Exception as e:
+            print(f"Error fetching BioModel SBML from {url}: {type(e).__name__}")
+            continue
+        if response.status_code == 200 and _looks_like_sbml(response.text):
+            return response.text
+    return None
 
 
 # Mock fallback systems for reliability and offline support

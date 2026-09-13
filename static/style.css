@@ -1773,3 +1773,64 @@ textarea:focus {
 .llm-progress { font-size: 12px; color: var(--accent-teal); font-family: 'JetBrains Mono', monospace; }
 .llm-err { font-size: 12px; color: var(--accent-red); font-weight: 600; }
 
+
+/* ===== Photo-to-equation upload (section 1) ===== */
+.or-divider { display:flex; align-items:center; gap:10px; margin:12px 0 8px; color:var(--text-muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
+.or-divider::before, .or-divider::after { content:""; flex:1; height:1px; background:var(--border-color); }
+.eq-image-status { margin-top:8px; font-size:12px; color:var(--text-secondary); font-family:'JetBrains Mono', monospace; min-height:14px; word-break:break-word; }
+
+/* ===== Editable Model Summary table ===== */
+.model-summary-card { margin-top:16px; }
+.model-summary-hint { font-size:12px; color:var(--text-muted); }
+.model-summary { display:flex; flex-direction:column; gap:18px; }
+.ms-section { display:flex; flex-direction:column; gap:8px; }
+.ms-head { font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--accent-teal); }
+.ms-table-wrap { overflow-x:auto; border:1px solid var(--border-color); border-radius:8px; }
+.ms-table { width:100%; border-collapse:collapse; font-size:13px; }
+.ms-table thead th { text-align:left; padding:8px 10px; font-size:11px; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:.05em; background:rgba(255,255,255,0.02); border-bottom:1px solid var(--border-color); }
+.ms-table tbody td { padding:6px 10px; border-bottom:1px solid var(--border-color); vertical-align:middle; }
+.ms-table tbody tr:last-child td { border-bottom:none; }
+.ms-name { font-family:'JetBrains Mono', monospace; color:var(--text-primary); font-weight:600; white-space:nowrap; }
+.ms-table input { width:100%; background:rgba(0,0,0,0.25); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); padding:5px 8px; font-family:'JetBrains Mono', monospace; font-size:12px; }
+.ms-table input:focus { outline:none; border-color:var(--accent-teal); }
+.ms-table .ms-init { max-width:120px; }
+.ms-table .ms-ode { min-width:240px; }
+.ms-x { width:34px; text-align:center; }
+.ms-del { background:transparent; border:none; color:var(--text-muted); cursor:pointer; font-size:14px; line-height:1; padding:2px 6px; border-radius:4px; }
+.ms-del:hover { color:var(--accent-red); background:rgba(255,0,127,0.08); }
+.ms-add-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.ms-add-row input { background:rgba(0,0,0,0.25); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); padding:6px 9px; font-family:'JetBrains Mono', monospace; font-size:12px; }
+.ms-add-row input.ms-new-species, .ms-add-row input.ms-new-param-name { flex:1; min-width:160px; }
+.ms-add-row input.ms-new-init, .ms-add-row input.ms-new-param-val { max-width:110px; }
+.ms-btn { background:rgba(0,242,254,0.08); border:1px solid var(--border-hover); color:var(--accent-teal); border-radius:6px; padding:7px 12px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; }
+.ms-btn:hover { background:rgba(0,242,254,0.16); }
+.ms-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding-top:4px; border-top:1px solid var(--border-color); margin-top:2px; }
+.ms-apply { background:var(--gradient-primary); color:#04121f; border:none; font-weight:700; padding:9px 18px; }
+.ms-note { font-size:12px; color:var(--text-muted); }
+
+/* ===== Input-mode tabs (Describe / Write equations / Photo) ===== */
+.input-mode-tabs { display:flex; gap:4px; background:rgba(0,0,0,0.25); border:1px solid var(--border-color); border-radius:8px; padding:4px; margin:12px 0 10px; }
+.imode-btn { flex:1; background:transparent; border:none; color:var(--text-secondary); font-size:12px; font-weight:600; padding:7px 6px; border-radius:6px; cursor:pointer; white-space:nowrap; transition:all .15s; }
+.imode-btn:hover { color:var(--text-primary); }
+.imode-btn.active { background:var(--gradient-primary); color:#04121f; }
+.imode-panel { display:none; }
+.imode-panel.active { display:block; }
+
+/* ===== Write-your-own-equations editor ===== */
+.eq-editor-hint { font-size:12px; color:var(--text-secondary); margin-bottom:8px; line-height:1.5; }
+.eq-editor-hint code { background:rgba(0,242,254,0.1); color:var(--accent-teal); padding:1px 5px; border-radius:4px; font-size:11px; }
+.eq-editor { width:100%; min-height:150px; resize:vertical; background:rgba(0,0,0,0.3); border:1px solid var(--border-color); border-radius:8px; color:var(--text-primary); padding:10px 12px; font-family:'JetBrains Mono', monospace; font-size:12.5px; line-height:1.7; }
+.eq-editor:focus { outline:none; border-color:var(--accent-teal); }
+.eq-editor-actions { display:flex; gap:8px; align-items:center; margin-top:8px; }
+.eq-editor-actions .btn-primary { flex:1; }
+.eq-preview-label { font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--accent-teal); margin:14px 0 6px; }
+.eq-preview { background:rgba(255,255,255,0.02); border:1px solid var(--border-color); border-radius:8px; padding:10px 12px; min-height:44px; display:flex; flex-direction:column; gap:8px; overflow-x:auto; }
+.eq-preview-item { color:var(--text-primary); font-size:14px; }
+
+/* ===== Photo drop-zone (click or drag) ===== */
+.eq-dropzone { border:2px dashed var(--border-color); border-radius:12px; padding:26px 16px; text-align:center; cursor:pointer; transition:all .15s; background:rgba(0,0,0,0.15); }
+.eq-dropzone:hover, .eq-dropzone:focus { border-color:var(--border-hover); background:rgba(0,242,254,0.04); outline:none; }
+.eq-dropzone.dragover { border-color:var(--accent-teal); background:rgba(0,242,254,0.1); }
+.eq-dropzone-icon { font-size:32px; margin-bottom:8px; }
+.eq-dropzone-main { font-size:13px; font-weight:600; color:var(--text-primary); }
+.eq-dropzone-sub { font-size:12px; color:var(--text-muted); margin-top:4px; }
