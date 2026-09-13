@@ -666,7 +666,17 @@
     <script src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
 
     <!-- Custom Application Logic -->
-    <script src="app.js?v=2"></script>
+    <!--
+        BUMP ?v= ON EVERY app.js CHANGE. The browser caches per URL, so a stale ?v=
+        serves an OLD app.js while the file on disk is new, and nothing warns you.
+        This sat at v=2 across a large number of JS changes: the page kept running
+        superseded code, which produced contradictory behaviour depending on what the
+        cache happened to hold, and cost hours of debugging a defect that did not exist.
+        A returning user would get the same stale bundle after a deploy.
+        If this keeps being forgotten, derive the token from the file's mtime or a
+        content hash at serve time instead of maintaining it by hand.
+    -->
+    <script src="app.js?v=3"></script>
 </body>
 
 </html>
