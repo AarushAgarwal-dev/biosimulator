@@ -266,6 +266,26 @@
                         </div>
 
                         <!-- Editable model summary: variables, parameters, equations -->
+                        <!--
+                            PERSISTENT record of anything the compiler decided on the
+                            researcher's behalf. This used to be a 5-second toast that
+                            also DELETED the notice from the payload, so the disclosure
+                            was unrecoverable once it faded. The notices that land here
+                            include "no starting amount was given for X, so it was set
+                            to 1.0" -- a number the PRODUCT chose, not the researcher.
+                            Anyone who looked away would report results from initial
+                            conditions they never set. It must not expire.
+                        -->
+                        <div class="card model-notice-card" id="model-notice-card" hidden>
+                            <div class="equation-head">
+                                <h3 class="card-title">What the compiler decided for you</h3>
+                                <button type="button" id="btn-dismiss-model-notice"
+                                    class="btn-tiny"
+                                    title="Hide this until the next time a model is compiled">Dismiss</button>
+                            </div>
+                            <p id="model-notice-text" class="model-notice-text"></p>
+                        </div>
+
                         <div class="card model-summary-card">
                             <div class="equation-head">
                                 <h3 class="card-title">Model Summary</h3>

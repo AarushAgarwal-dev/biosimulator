@@ -733,6 +733,26 @@ function getLlmConfig() {
     return { engine: 'off' };
 }
 
+/**
+ * Write, or clear, the persistent record of what the compiler decided by itself.
+ *
+ * Uses textContent rather than innerHTML: the notice interpolates species names, and a
+ * blueprint can arrive from an imported project file, so the text is not trusted. An
+ * XSS reachable from project import was already fixed once in this codebase.
+ *
+ * Passing "" clears and hides the panel, which is what makes the notice belong to the
+ * CURRENT model -- a stale disclosure sitting beside a freshly compiled model would be
+ * its own kind of lie.
+ */
+function showModelNotice(text) {
+    const card = document.getElementById("model-notice-card");
+    const body = document.getElementById("model-notice-text");
+    if (!card || !body) return;
+    const message = String(text || "").trim();
+    body.textContent = message;
+    card.hidden = !message;
+}
+
 // Shared: take a freshly parsed/extracted blueprint and load it into the whole UI.
 async function loadBlueprintIntoUI(parsedData, { switchTab = true } = {}) {
     if (!parsedData || typeof parsedData !== "object") {
@@ -742,9 +762,26 @@ async function loadBlueprintIntoUI(parsedData, { switchTab = true } = {}) {
 
     // Surface any LLM fallback / transcription notice without storing transport
     // metadata in the model itself.
+    //
+    // This was a 5-second toast followed by `delete parsedData._llm_notice`, which made
+    // the disclosure unrecoverable the moment it faded. That is the same expiring-toast
+    // pattern that once hid a wholly fabricated EGF cascade, and it is now carrying
+    // notices that a researcher MUST be able to re-read: which words were dropped from
+    // their description and therefore which downstream species will not move, which
+    // species take part in no interaction, and -- most importantly -- which initial
+    // values the compiler CHOSE because the description gave none. Reporting results
+    // from an initial condition you did not set, and were told about for five seconds,
+    // is exactly the kind of silent wrongness the rest of this work removed.
+    //
+    // So: still toast it for immediacy, but also write it to a panel that stays until
+    // the next compile, and do not delete it from the payload.
     if (parsedData._llm_notice) {
-        showToast(String(parsedData._llm_notice), 'warn', 5000);
+        const notice = String(parsedData._llm_notice);
+        showToast(notice, 'warn', 7000);
+        showModelNotice(notice);
         delete parsedData._llm_notice;
+    } else {
+        showModelNotice("");
     }
     if (parsedData._transcription) {
         const box = document.getElementById("bio-input");
@@ -1521,6 +1558,13 @@ async function loadReactomePathwayText(pathwayId, pathwayName) {
 
 // 3. Simulation Solver
 document.getElementById("btn-run-simulation").addEventListener("click", runSimulation);
+
+// Dismiss only hides the panel until the next compile -- it does not discard the
+// disclosure, because the next compiled model writes its own notice from scratch.
+const dismissNotice = document.getElementById("btn-dismiss-model-notice");
+if (dismissNotice) {
+    dismissNotice.addEventListener("click", () => showModelNotice(""));
+}
 
 async function runSimulation() {
     if (!state.blueprint) return alert("Please compile a blueprint first!");
