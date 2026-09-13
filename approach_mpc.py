@@ -139,7 +139,15 @@ class MPCAdapter(ApproachAdapter):
             requirements=["scipy"],
             notes=("Receding-horizon constrained optimal control. The predictive model "
                    "and the plant are configured separately, so model mismatch is "
-                   "explicit rather than assumed away."),
+                   "explicit rather than assumed away. "
+                   "USES: only the MPC settings on this stage. IGNORES: the domain, the "
+                   "mesh, the stage-4 reaction-diffusion model and the stage-5 boundary "
+                   "conditions. The plant simulated here is this stage's own first-order "
+                   "system dx/dt = -x/tau + gain*u -- NOT the model you prepared "
+                   "earlier. 'controlled_input' and 'measured_output' name that "
+                   "system's input and output, not species in your network. So this "
+                   "result demonstrates the controller; it is not yet a statement about "
+                   "your biology."),
         )
 
     # -- validation ---------------------------------------------------------

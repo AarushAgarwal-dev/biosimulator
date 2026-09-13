@@ -119,5 +119,58 @@ class RunManagerDispatchTests(unittest.TestCase):
             "which means some other engine ran in its place")
 
 
+class ApproachDisclosureTests(unittest.TestCase):
+    """Each approach must say which prepared stages it uses and which it ignores.
+
+    The workflow's premise -- "prepare a domain, topology, mesh and model ONCE, then
+    choose one approach to compile and run" -- invites the reader to assume every
+    approach runs the model they prepared. None of them fully does, and until now
+    nothing said so:
+
+      - MPC simulates its OWN first-order plant, dx/dt = -x/tau + gain*u. The domain,
+        mesh, stage-4 model and boundary conditions are unused, and 'controlled_input' /
+        'measured_output' are that plant's ports, not species in the network. It is a
+        correct controller demonstration with no connection to the biology.
+      - CompuCell3D carries each field's diffusion constant and decay only. Verified by
+        search: 'reaction' and 'advection' appear nowhere in approach_cc3d.py's code, and
+        the only matches for 'boundary' are comments. A logistic reaction written in
+        stage 4 is simply not simulated.
+      - ABM's Potts lattice is its own grid, independent of the stage-3 mesh.
+
+    A researcher who prepares a model and then picks an approach deserves to know which
+    of their work is actually being run. This does not fix the gap -- bridging the model
+    into each engine is a design change -- but an unstated gap is the failure mode this
+    codebase has been shedding, so the statement is the minimum.
+    """
+
+    def setUp(self):
+        approach_base.ensure_approaches_loaded()
+
+    def test_every_approach_states_what_it_ignores(self):
+        for approach_id in ("abm", "cc3d", "mpc"):
+            notes = str(getattr(approach_base.get_approach(approach_id)
+                                .get_capabilities(), "notes", "") or "")
+            self.assertTrue(
+                notes.strip(),
+                f"{approach_id} offers no notes at all, so the approach picker can say "
+                f"nothing about what it consumes")
+            self.assertIn(
+                "IGNORES", notes,
+                f"{approach_id}'s notes do not state which prepared stages it ignores. "
+                f"A researcher picking it would assume their stage-4 model is run.")
+
+    def test_mpc_admits_its_plant_is_not_the_prepared_model(self):
+        notes = str(approach_base.get_approach("mpc").get_capabilities().notes or "")
+        self.assertIn(
+            "stage-4", notes,
+            "MPC does not mention the stage-4 model it does not use")
+
+    def test_cc3d_admits_reaction_terms_are_not_simulated(self):
+        notes = str(approach_base.get_approach("cc3d").get_capabilities().notes or "")
+        self.assertIn(
+            "reaction", notes,
+            "CompuCell3D drops a field's reaction expression without saying so")
+
+
 if __name__ == "__main__":
     unittest.main()

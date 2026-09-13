@@ -227,12 +227,30 @@ class CompuCell3DAdapter(ApproachAdapter):
         remote = detected.get("method") == "aws-batch"
         backend = describe_backend(detected)
 
+        # What this approach consumes from the earlier stages, and what it does not.
+        # The workflow's premise is "prepare a domain, topology, mesh and model ONCE,
+        # then choose one approach", which invites the reader to assume every approach
+        # runs the model they prepared. This one does not, and the gap was previously
+        # unstated: the CC3DML generator carries a field's name, diffusion constant and
+        # decay only. Verified by search -- 'reaction' and 'advection' appear NOWHERE in
+        # this module's code, and the only three matches for 'boundary' are comments, so
+        # the stage-5 boundary conditions are not consumed either. A researcher who
+        # wrote a logistic reaction R = r*u*(1 - u/K) in stage 4 gets pure diffusion
+        # with linear decay, and nothing tells them.
+        stage_use = (" USES: the cell types, lattice and field diffusion/decay "
+                     "constants configured here. IGNORES: a stage-4 field's reaction "
+                     "and advection expressions and the stage-5 boundary conditions -- "
+                     "the generated CC3DML carries each field's diffusion constant and "
+                     "decay rate only, so a reaction term you wrote in stage 4 is NOT "
+                     "simulated here. Export the runnable project and add it as a "
+                     "steppable if you need it.")
+
         notes = ("Backend: " + backend + ". Four backends are supported, tried in this "
                  "order: the 'cc3d' Python package, " + RUNSCRIPT_ENV + ", a runScript "
                  "on PATH, then remote execution on AWS Batch. Configuration and "
                  "runnable-project export are available even when CompuCell3D is not "
                  "installed. This approach never falls back to the in-tree ABM engine "
-                 "or to MPC.")
+                 "or to MPC." + stage_use)
         if remote:
             notes = ("Running on AWS Batch on demand: the engine is not installed on "
                      "this host, so a job is dispatched and billed only while it runs. "

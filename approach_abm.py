@@ -99,7 +99,12 @@ class ABMAdapter(ApproachAdapter):
             requirements=["numpy"],
             notes=("Cell-level Monte Carlo dynamics on a pixel lattice: adhesion, "
                    "volume and surface constraints, chemotaxis, division and death. "
-                   "Does not require CompuCell3D."),
+                   "Does not require CompuCell3D. "
+                   "USES: the cell types and lattice settings on this stage. IGNORES: "
+                   "the stage-3 mesh (the Potts lattice is its own grid, independent of "
+                   "the PDE mesh), the stage-4 reaction expressions and the stage-5 "
+                   "boundary conditions. Cells respond to the chemotaxis field "
+                   "configured here, not to a field solved from your stage-4 model."),
         )
 
     # -- validation ---------------------------------------------------------
