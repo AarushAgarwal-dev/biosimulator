@@ -123,7 +123,7 @@ Nothing below is scoped, and calling it scoped would be a lie:
 
 Deliberate omissions, listed so nobody assumes they were missed:
 
-- `elbv2:DescribeLoadBalancers` — `provision_aws.ps1` calls this in its final cost-guard scan, with `-AllowFailure`. Granting `elasticloadbalancing:Describe*` for a check that only ever expects an empty list is not worth the read surface; the call will fail soft and print a warning. **Add it if you want that guard to actually run.** This is the one place the deployer is knowingly narrower than the scripts.
+- `elasticloadbalancing:DescribeLoadBalancers` — **granted** (statement `CostGuardLoadBalancerCheck`), after this was initially left out. `provision_aws.ps1:1411` calls it in the final cost-guard scan with `-AllowFailure`, so omitting it did not break provisioning — the guard just printed a warning instead of running. That is the wrong trade for this project: an idle load balancer is roughly $16/month against a $5 ceiling, so the one check that would catch it must not silently degrade into a warning. Granted as the SINGLE read action rather than `elasticloadbalancing:Describe*`, which was the reason it was skipped, and bounded by the region condition. Creating a load balancer stays denied outright by `DenyAlwaysBillingCapacity`, so the deployer can see one in order to warn about it and can never make one.
 - `iam:CreateAccessKey` and friends — explicitly denied. See below.
 - `bedrock-runtime` (`llm_provider.py`) — the application's LLM path, unrelated to deploying the CC3D footprint. It belongs on the app's own identity, not the deployer's.
 - `ec2:RunInstances` — Batch does this through its service-linked role.

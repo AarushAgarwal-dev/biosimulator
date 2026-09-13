@@ -164,6 +164,17 @@
       "Resource": "*"
     },
     {
+      "Sid": "CostGuardLoadBalancerCheck",
+      "Effect": "Allow",
+      "Action": "elasticloadbalancing:DescribeLoadBalancers",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
       "Sid": "StackInventoryForTeardown",
       "Effect": "Allow",
       "Action": "tag:GetResources",
