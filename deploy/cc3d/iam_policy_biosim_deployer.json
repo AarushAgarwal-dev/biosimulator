@@ -1,0 +1,191 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadOwnIdentity",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "RunBucketAdmin",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:DeleteBucket",
+        "s3:ListBucket",
+        "s3:ListBucketVersions",
+        "s3:GetBucketLocation",
+        "s3:GetBucketVersioning",
+        "s3:PutBucketVersioning",
+        "s3:GetEncryptionConfiguration",
+        "s3:PutEncryptionConfiguration",
+        "s3:GetLifecycleConfiguration",
+        "s3:PutLifecycleConfiguration",
+        "s3:GetBucketTagging",
+        "s3:PutBucketTagging",
+        "s3:GetBucketPublicAccessBlock",
+        "s3:PutBucketPublicAccessBlock"
+      ],
+      "Resource": "arn:aws:s3:::biosim-cc3d-333308931113-us-east-2"
+    },
+    {
+      "Sid": "RunBucketObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts"
+      ],
+      "Resource": "arn:aws:s3:::biosim-cc3d-333308931113-us-east-2/*"
+    },
+    {
+      "Sid": "WorkerImageRepoOnly",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:CreateRepository",
+        "ecr:DeleteRepository",
+        "ecr:DescribeRepositories",
+        "ecr:DescribeImages",
+        "ecr:ListImages",
+        "ecr:BatchDeleteImage",
+        "ecr:GetLifecyclePolicy",
+        "ecr:PutLifecyclePolicy",
+        "ecr:TagResource",
+        "ecr:ListTagsForResource",
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload",
+        "ecr:PutImage"
+      ],
+      "Resource": "arn:aws:ecr:us-east-2:333308931113:repository/cc3d-worker"
+    },
+    {
+      "Sid": "EcrRegistryAuthUnscopable",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "BatchStackMutations",
+      "Effect": "Allow",
+      "Action": [
+        "batch:CreateComputeEnvironment",
+        "batch:UpdateComputeEnvironment",
+        "batch:DeleteComputeEnvironment",
+        "batch:CreateJobQueue",
+        "batch:UpdateJobQueue",
+        "batch:DeleteJobQueue",
+        "batch:RegisterJobDefinition",
+        "batch:DeregisterJobDefinition",
+        "batch:TagResource",
+        "batch:ListTagsForResource"
+      ],
+      "Resource": [
+        "arn:aws:batch:us-east-2:333308931113:compute-environment/biosim-cc3d-ce",
+        "arn:aws:batch:us-east-2:333308931113:job-queue/biosim-cc3d-queue",
+        "arn:aws:batch:us-east-2:333308931113:job-definition/biosim-cc3d-job",
+        "arn:aws:batch:us-east-2:333308931113:job-definition/biosim-cc3d-job:*"
+      ]
+    },
+    {
+      "Sid": "BatchSubmitOnlyThisQueueAndDefinition",
+      "Effect": "Allow",
+      "Action": "batch:SubmitJob",
+      "Resource": [
+        "arn:aws:batch:us-east-2:333308931113:job-queue/biosim-cc3d-queue",
+        "arn:aws:batch:us-east-2:333308931113:job-definition/biosim-cc3d-job",
+        "arn:aws:batch:us-east-2:333308931113:job-definition/biosim-cc3d-job:*"
+      ]
+    },
+    {
+      "Sid": "BatchReadsAndTerminateUnscopable",
+      "Effect": "Allow",
+      "Action": [
+        "batch:Describe*",
+        "batch:ListJobs",
+        "batch:TerminateJob",
+        "batch:CancelJob"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "StackLogGroupsOnly",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:DeleteLogGroup",
+        "logs:PutRetentionPolicy",
+        "logs:DescribeLogStreams",
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents",
+        "logs:StartLiveTail",
+        "logs:ListTagsForResource",
+        "logs:ListTagsLogGroup"
+      ],
+      "Resource": [
+        "arn:aws:logs:us-east-2:333308931113:log-group:/aws/batch/job",
+        "arn:aws:logs:us-east-2:333308931113:log-group:/aws/batch/job:*",
+        "arn:aws:logs:us-east-2:333308931113:log-group:/aws/codebuild/biosim-cc3d-image-build",
+        "arn:aws:logs:us-east-2:333308931113:log-group:/aws/codebuild/biosim-cc3d-image-build:*"
+      ]
+    },
+    {
+      "Sid": "EnumerateLogGroupsInThisAccountRegion",
+      "Effect": "Allow",
+      "Action": "logs:DescribeLogGroups",
+      "Resource": "arn:aws:logs:us-east-2:333308931113:log-group:*"
+    },
+    {
+      "Sid": "ImageBuildProjectOnly",
+      "Effect": "Allow",
+      "Action": [
+        "codebuild:CreateProject",
+        "codebuild:UpdateProject",
+        "codebuild:DeleteProject",
+        "codebuild:BatchGetProjects",
+        "codebuild:StartBuild",
+        "codebuild:StopBuild",
+        "codebuild:BatchGetBuilds"
+      ],
+      "Resource": "arn:aws:codebuild:us-east-2:333308931113:project/biosim-cc3d-image-build"
+    },
+    {
+      "Sid": "ListCodeBuildProjectsUnscopable",
+      "Effect": "Allow",
+      "Action": "codebuild:ListProjects",
+      "Resource": "*"
+    },
+    {
+      "Sid": "StackInventoryForTeardown",
+      "Effect": "Allow",
+      "Action": "tag:GetResources",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "CostGuardrailBudgetOnly",
+      "Effect": "Allow",
+      "Action": [
+        "budgets:CreateBudget",
+        "budgets:DescribeBudget",
+        "budgets:DeleteBudget",
+        "budgets:ViewBudget",
+        "budgets:ModifyBudget",
+        "budgets:TagResource"
+      ],
+      "Resource": "arn:aws:budgets::333308931113:budget/biosim-cc3d-monthly-5usd"
+    }
+  ]
+}
