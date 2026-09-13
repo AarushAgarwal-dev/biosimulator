@@ -362,6 +362,67 @@
                     <div class="wf-approach-config">
                         <div class="wf-subhead">7. Configure <span id="approach-config-name">—</span></div>
                         <div id="approach-config" class="wf-param-grid"></div>
+
+                        <!-- Cell types: a real form, one row per type.
+                             These were a raw JSON text box — the most biological
+                             inputs in the product (names, target volumes, division
+                             and death rates) demanded hand-written JSON. The form is
+                             the DEFAULT; the raw list is still reachable under
+                             "Advanced" for power users and for the keys this form
+                             does not cover. The two are one value: whichever the
+                             researcher edits, the other follows. -->
+                        <div class="wf-struct-editor" id="cell-type-editor" hidden>
+                            <div class="wf-editor-head">
+                                <div class="wf-subhead">Cell types <span class="wf-count"
+                                    id="cell-type-count">0</span></div>
+                                <button class="btn btn-secondary btn-sm" type="button"
+                                    id="cell-type-add">Add cell type</button>
+                            </div>
+                            <p class="wf-hint" id="cell-type-note"></p>
+                            <div id="cell-type-rows"></div>
+                            <div class="wf-issues" id="cell-type-issues"></div>
+                            <details class="wf-details" id="cell-type-json-details">
+                                <summary>Advanced: raw cell_types JSON</summary>
+                                <label class="wf-field">
+                                    <span id="cell-type-json-caption">cell_types (JSON list)</span>
+                                    <textarea id="cell-type-json" rows="8" spellcheck="false"
+                                        aria-describedby="cell-type-json-hint"></textarea>
+                                    <span class="wf-field-error" id="cell-type-json-error" hidden></span>
+                                </label>
+                                <p class="wf-hint" id="cell-type-json-hint">The form above and this
+                                    text are the same value. Editing either updates the other, and a
+                                    list this box cannot parse blocks the run instead of letting the
+                                    simulation quietly use the previous value.</p>
+                            </details>
+                        </div>
+
+                        <!-- Contact energies, for the same reason: they reference cell
+                             type NAMES, so hand-written JSON let a typo name a type
+                             that does not exist. Each side is a select over the types
+                             defined above plus Medium. -->
+                        <div class="wf-struct-editor" id="contact-energy-editor" hidden>
+                            <div class="wf-editor-head">
+                                <div class="wf-subhead">Contact energies <span class="wf-count"
+                                    id="contact-energy-count">0</span></div>
+                                <button class="btn btn-secondary btn-sm" type="button"
+                                    id="contact-energy-add">Add contact pair</button>
+                            </div>
+                            <p class="wf-hint" id="contact-energy-note"></p>
+                            <div id="contact-energy-rows"></div>
+                            <div class="wf-issues" id="contact-energy-issues"></div>
+                            <details class="wf-details" id="contact-energy-json-details">
+                                <summary>Advanced: raw contact_energies JSON</summary>
+                                <label class="wf-field">
+                                    <span id="contact-energy-json-caption">contact_energies (JSON list)</span>
+                                    <textarea id="contact-energy-json" rows="6" spellcheck="false"
+                                        aria-describedby="contact-energy-json-hint"></textarea>
+                                    <span class="wf-field-error" id="contact-energy-json-error" hidden></span>
+                                </label>
+                                <p class="wf-hint" id="contact-energy-json-hint">Same value as the
+                                    rows above, in the shape the engine receives.</p>
+                            </details>
+                        </div>
+
                         <div class="wf-row">
                             <button class="btn btn-secondary btn-sm" id="approach-export">Export this configuration</button>
                             <!-- The runnable CompuCell3D project. This is what makes the

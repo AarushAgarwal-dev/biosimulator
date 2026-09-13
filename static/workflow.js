@@ -2460,6 +2460,10 @@ function mcsClause(dims) {
  * unit selection.
  */
 function refreshLatticeMapping() {
+    // The per-row "≈ N um²" lines under a volume are the same mapping at a different
+    // scale, so they are refreshed on exactly the same triggers -- in place, never by
+    // rebuilding the rows they sit in.
+    refreshStructDerived();
     const host = $("approach-lattice-map");
     if (!host) return;
     const text = latticeMappingText();
@@ -2512,7 +2516,10 @@ function renderApproachCards() {
         meta.innerHTML = [
             `engine: ${escapeHtml(capability.engine_name || "—")}` +
             (capability.engine_version ? ` ${escapeHtml(capability.engine_version)}` : ""),
-            `dims: ${(capability.dimensions || []).join("/") || "—"}`,
+            // `dimensions` was the one member of this list interpolated RAW. It comes
+            // off the wire with the two beside it, which are both escaped, so leaving
+            // it bare was an inconsistency waiting to become the next injection.
+            `dims: ${escapeHtml((capability.dimensions || []).join("/")) || "—"}`,
             `pause ${capability.supports_pause ? "yes" : "no"} · ` +
             `cancel ${capability.supports_cancel ? "yes" : "no"} · ` +
             `seeded ${capability.deterministic_with_seed ? "reproducible" : "no"}`,
@@ -2552,32 +2559,97 @@ function selectApproach(id) {
 }
 
 /**
- * Config textareas whose text does not parse as JSON, keyed by field path.
+ * Edits that are ON SCREEN but NOT in the project document, keyed by field path.
  * While this is non-empty the SCREEN and the value that would RUN disagree, so the
  * approach stage is reported invalid and the run is refused.
+ *
+ * Each entry is the COMPLETE sentence to show. It started life holding only a JSON
+ * parser message, which forced every reader to wrap it in "is not valid JSON (...)"
+ * -- true of a textarea, wrong for the structured editor, whose refusals read
+ * "Target volume must be a number." and "Type id must be a whole number."
  */
 const unparsedConfigText = {};
 
-function renderUnparsedConfigWarning() {
-    const keys = Object.keys(unparsedConfigText);
-    if (!keys.length) {
-        renderIssues("approach-issues", { issues: [] });
-        return;
-    }
-    renderIssues("approach-issues", {
-        issues: keys.map((key) => ({
-            severity: "error",
-            message: `"${key}" is not valid JSON (${unparsedConfigText[key]}). `
-                     + `The box shows your edit, but the simulation would still use the `
-                     + `previous value. Fix the JSON before running.`,
-        })),
+/** Registers a refusal against a field path and repaints the approach issue list. */
+function blockConfigEdit(path, message) {
+    unparsedConfigText[path] = message;
+    renderUnparsedConfigWarning();
+}
+
+/** Clears a refusal once the field parses again. */
+function unblockConfigEdit(path) {
+    if (!(path in unparsedConfigText)) return;
+    delete unparsedConfigText[path];
+    renderUnparsedConfigWarning();
+}
+
+/**
+ * Drops every refusal whose path is, or sits under, `prefix`.
+ *
+ * Switching approach used to leave them behind: the keys are bare config paths
+ * ("cell_types"), the offending textarea was destroyed by the panel rebuild, and
+ * nothing ever deleted the key -- so an unparsed ABM cell list went on blocking the
+ * run from inside a CompuCell3D panel that contained no such box, with no way to
+ * clear it short of reloading the page.
+ */
+function clearConfigBlocks(prefix) {
+    let changed = false;
+    Object.keys(unparsedConfigText).forEach((key) => {
+        if (!prefix || key === prefix || key.startsWith(`${prefix}[`)
+            || key.startsWith(`${prefix}.`)) {
+            delete unparsedConfigText[key];
+            changed = true;
+        }
     });
+    if (changed) renderUnparsedConfigWarning();
+}
+
+function renderUnparsedConfigWarning() {
+    // Repaint through the merge, not straight into the container: the two writers to
+    // #approach-issues used to clobber each other. Any scalar edit called
+    // validateProject, which re-rendered the container from the BACKEND's verdict --
+    // and the backend validates the last COMMITTED value, which is valid, so the box
+    // read "Approach configuration is valid." while the run was still refused for a
+    // blocking edit the researcher could no longer see anywhere.
+    renderApproachIssues(((state.validation || {}).stages || {}).approach);
+}
+
+/**
+ * The single writer to #approach-issues. Blocking on-screen edits come FIRST --
+ * they are the reason a run would be refused -- followed by whatever the backend
+ * said about the last committed value. The "valid" message is withheld while
+ * anything blocks, because the project the backend validated is not the one on
+ * screen.
+ *
+ * Guarded by a signature: the structured editor commits per keystroke, so typing
+ * "abc" into a numeric box would otherwise repaint this list on every character
+ * with byte-identical content.
+ */
+let approachIssueSignature = null;
+function renderApproachIssues(approachStage) {
+    const blocking = Object.keys(unparsedConfigText).sort().map((path) => ({
+        severity: "error",
+        message: `${unparsedConfigText[path]} The box shows your edit, but the `
+                 + `simulation would still use the previous value. Fix it before running.`,
+        path,
+    }));
+    const backend = ((approachStage || {}).issues) || [];
+    const ok = !blocking.length && approachStage && approachStage.status === "valid"
+        ? "Approach configuration is valid." : null;
+    const issues = blocking.concat(backend);
+    const signature = JSON.stringify([ok, issues]);
+    if (signature === approachIssueSignature) return;
+    approachIssueSignature = signature;
+    renderIssues("approach-issues", { issues }, ok);
 }
 
 function renderApproachConfig() {
     const host = $("approach-config");
     host.innerHTML = "";
     const id = state.project.selected_approach;
+    // Every blocking edit belongs to the panel being torn down here. Its boxes no
+    // longer exist, so a leftover key could never be cleared by the user.
+    clearConfigBlocks("");
     $("approach-config-name").textContent = id
         ? (approachCapabilities.find((c) => c.approach_id === id) || {}).label || id
         : "—";
@@ -2588,10 +2660,14 @@ function renderApproachConfig() {
     if (cc3dExport) cc3dExport.hidden = id !== "cc3d";
     if (!id) {
         host.appendChild(el("div", "wf-empty-state", "Select an approach above."));
+        renderStructEditors(null, null);
         return;
     }
     const config = state.project.approaches[id] || {};
     buildConfigEditor(host, config, "", id, config);
+    // Drawn AFTER the scalar grid so the structured lists sit below the numbers they
+    // depend on (the lattice size, the fluctuation amplitude).
+    renderStructEditors(id, config);
     refreshLatticeMapping();
 }
 
@@ -2620,6 +2696,955 @@ async function exportCc3dProject() {
     }
 }
 
+/* --------------------------------------------------------------------------
+ * Structured list editors: cell types and contact energies
+ *
+ * These two keys used to be rendered by buildConfigEditor's array branch, as a
+ * raw JSON <textarea>. They are the most biological inputs in the product -- cell
+ * type names, target volumes, adhesion energies, division and death rates -- and
+ * setting them meant hand-writing JSON with no labels, no units, no per-field
+ * validation, and no way to add a type except by typing a brace.
+ *
+ * The FORM is now the default. The raw list stays reachable under "Advanced" for
+ * the keys this form does not cover (chemotaxis, secretion and uptake rates,
+ * freeze) and for pasting a list wholesale.
+ *
+ * Three rules the implementation is built around:
+ *
+ * 1. STRUCTURE vs VALUE. Rows are rebuilt only when the LIST changes -- add,
+ *    remove, or a raw-JSON paste. A value edit writes to the document and then
+ *    updates captions, inline messages, derived hints and the JSON text IN PLACE
+ *    via textContent / .value. Two separate focus-destruction bugs in this file
+ *    came from re-rendering a panel inside an edit handler; nothing here does it.
+ *
+ * 2. NEVER SILENTLY DISAGREE. A value that PARSES is committed immediately, so
+ *    what would run is what is on screen. A value that cannot be represented at
+ *    all (a blank number, "1e", a fractional type id) is NOT committed -- it is
+ *    registered in unparsedConfigText, which shows a persistent error and refuses
+ *    the run, exactly as an unparsed textarea already did.
+ *
+ * 3. TYPE errors block; RANGE errors do not. "abc" in a numeric box cannot be put
+ *    in the document, so it blocks. -5 for a target volume CAN be, so it is
+ *    committed and reported inline and by the backend -- refusing to commit it
+ *    would put the screen and the document back into disagreement, which is the
+ *    thing this whole panel exists to prevent.
+ * ----------------------------------------------------------------------- */
+
+/** What JSON.parse produced, for a message that says why a list was expected. */
+function describeJsonKind(value) {
+    if (value === null) return "null";
+    if (Array.isArray(value)) return "a list";
+    return `a ${typeof value}`;
+}
+
+/** Rounds a colour channel into 0-255, so an imported value cannot escape the range. */
+function colourChannel(value) {
+    const number = Math.round(Number(value));
+    if (!Number.isFinite(number)) return 0;
+    return Math.min(255, Math.max(0, number));
+}
+
+/** [0, 200, 255] -> "#00c8ff". The engine default is used when there is no colour. */
+function rgbToHex(rgb) {
+    const parts = Array.isArray(rgb) ? rgb : [100, 100, 255];
+    return `#${[0, 1, 2].map((i) => colourChannel(parts[i]).toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** "#00c8ff" -> [0, 200, 255]. Anything unrecognised keeps the engine default. */
+function hexToRgb(hex) {
+    const match = /^#([0-9a-f]{6})$/i.exec(String(hex || "").trim());
+    if (!match) return [100, 100, 255];
+    const n = parseInt(match[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/**
+ * The backend's own path format, so a frontend message and a backend issue about
+ * the same field read identically: cell_types[0].target_volume.
+ */
+function structFieldPath(listKey, index, fieldKey) {
+    return `${listKey}[${index}].${fieldKey}`;
+}
+
+/**
+ * ABM cell type fields, in the order a researcher fills them in: identity first,
+ * then the volume constraint, then behaviour, then how many to seed.
+ *
+ * `unit` is a function so a unit derived from the project's own unit selection is
+ * re-read on every render rather than frozen at load. `derive` returns a
+ * second line under the box -- the sites-to-area conversion, which is the one
+ * mapping a researcher previously had to work out by hand.
+ */
+const ABM_CELL_TYPE_FIELDS = [
+    { key: "name", kind: "text", label: "Name", required: true,
+      hint: "Shown in results and referenced by contact energies." },
+    { key: "type_id", kind: "int", label: "Type id", unit: () => "dimensionless",
+      required: true, hint: "1 or above; 0 is reserved for medium." },
+    { key: "target_volume", kind: "number", label: "Target volume",
+      unit: () => "lattice sites", derive: siteCountToArea },
+    { key: "lambda_volume", kind: "number", label: "Volume constraint λ",
+      unit: () => "dimensionless" },
+    { key: "target_surface", kind: "number", label: "Target surface",
+      unit: () => "site edges" },
+    { key: "lambda_surface", kind: "number", label: "Surface constraint λ",
+      unit: () => "dimensionless" },
+    { key: "max_volume_before_division", kind: "number", label: "Divides above",
+      unit: () => "lattice sites", derive: siteCountToArea },
+    { key: "growth_rate", kind: "number", label: "Growth rate",
+      unit: () => "sites/MCS" },
+    { key: "death_probability", kind: "number", label: "Death probability",
+      unit: () => "per MCS", hint: "A probability between 0 and 1." },
+    { key: "initial_count", kind: "int", label: "Initial count", unit: () => "cells" },
+    { key: "color", kind: "colour", label: "Display colour" },
+];
+
+/**
+ * CompuCell3D reads ONLY the name and the type id from each entry: its exporter
+ * emits TypeId/TypeName plus ONE global volume plugin, so a per-type volume typed
+ * here would be silently ignored by the run. Offering those boxes would be a lie,
+ * so the row carries identity only and the note points at volume_constraint.
+ */
+const CC3D_CELL_TYPE_FIELDS = [
+    { key: "name", kind: "text", label: "Name", required: true,
+      hint: "Used verbatim in the generated CC3D XML." },
+    { key: "type_id", kind: "int", label: "Type id", unit: () => "dimensionless",
+      required: true, hint: "1 or above; 0 is Medium." },
+];
+
+const CONTACT_ENERGY_FIELDS = [
+    { key: "type1", kind: "select", label: "Type A", required: true, options: knownTypeNames },
+    { key: "type2", kind: "select", label: "Type B", required: true, options: knownTypeNames },
+    { key: "energy", kind: "number", label: "Contact energy",
+      unit: () => "Potts energy (dimensionless)" },
+];
+
+/** Every cell type name in the current config, plus CompuCell3D's reserved Medium. */
+function knownTypeNames(config) {
+    const names = (Array.isArray(config.cell_types) ? config.cell_types : [])
+        .filter((spec) => spec && typeof spec === "object")
+        .map((spec) => String(spec.name == null ? "" : spec.name).trim())
+        .filter(Boolean);
+    return Array.from(new Set(names.concat(["Medium"])));
+}
+
+/**
+ * A site count expressed as a physical area, when the lattice is 2D and the domain
+ * has an extent to divide. Returns "" when it is not derivable -- a wrong area is
+ * worse than none, and a 3D lattice has no third domain extent to divide.
+ */
+function siteCountToArea(value) {
+    const sites = Number(value);
+    if (!Number.isFinite(sites) || sites <= 0) return "";
+    const area = latticeSiteArea();
+    if (!Number.isFinite(area) || area <= 0) return "";
+    return `≈ ${fmt(sites * area, 2)} ${areaUnit()} at the current lattice`;
+}
+
+const STRUCT_EDITORS = {
+    cell_types: {
+        listKey: "cell_types",
+        approaches: ["abm", "cc3d"],
+        ids: {
+            editor: "cell-type-editor", rows: "cell-type-rows", count: "cell-type-count",
+            note: "cell-type-note", issues: "cell-type-issues", json: "cell-type-json",
+            add: "cell-type-add", details: "cell-type-json-details",
+            jsonError: "cell-type-json-error", caption: "cell-type-json-caption",
+        },
+        noun: "cell type",
+        fields: (approachId) => (approachId === "cc3d"
+            ? CC3D_CELL_TYPE_FIELDS : ABM_CELL_TYPE_FIELDS),
+        title: (spec, index) => String(spec && spec.name ? spec.name : `type ${index + 1}`),
+        blank: blankCellType,
+        note: cellTypeNote,
+        issues: cellTypeIssues,
+    },
+    contact_energies: {
+        listKey: "contact_energies",
+        approaches: ["cc3d"],
+        ids: {
+            editor: "contact-energy-editor", rows: "contact-energy-rows",
+            count: "contact-energy-count", note: "contact-energy-note",
+            issues: "contact-energy-issues", json: "contact-energy-json",
+            add: "contact-energy-add", details: "contact-energy-json-details",
+            jsonError: "contact-energy-json-error", caption: "contact-energy-json-caption",
+        },
+        noun: "contact pair",
+        fields: () => CONTACT_ENERGY_FIELDS,
+        title: (spec) => `${spec && spec.type1 ? spec.type1 : "?"} ↔ ` +
+                         `${spec && spec.type2 ? spec.type2 : "?"}`,
+        blank: blankContactPair,
+        note: () =>
+            "Contact energies are in dimensionless Potts energy units — the same scale as " +
+            "the fluctuation amplitude above, whose ratio to them sets how readily " +
+            "boundaries move. Not joules, and not degrees. A pair that is absent is " +
+            "treated as zero by CompuCell3D, which means freely mixing.",
+        issues: contactEnergyIssues,
+    },
+};
+
+/**
+ * Live row references, so a value edit can reach the exact caption, error span and
+ * derived line it has to update WITHOUT rebuilding anything. Rewritten only by
+ * rebuildStructRows.
+ */
+const structRows = { cell_types: [], contact_energies: [] };
+
+/** The approach and config the editors are currently bound to. */
+let structContextId = null;
+
+function structConfig() {
+    const id = structContextId;
+    if (!id || !state.project) return null;
+    return (state.project.approaches || {})[id] || null;
+}
+
+function blankCellType(approachId, list) {
+    const used = new Set(list.map((spec) => Number(spec && spec.type_id)).filter(Number.isFinite));
+    let typeId = 1;
+    while (used.has(typeId)) typeId += 1;
+    const names = new Set(list.map((spec) => String((spec && spec.name) || "")));
+    // "CellA", "CellB", ... matches the default the approach ships with.
+    let name = "";
+    for (let i = 0; i < 26 && !name; i += 1) {
+        const candidate = `Cell${String.fromCharCode(65 + i)}`;
+        if (!names.has(candidate)) name = candidate;
+    }
+    if (!name) name = `Cell${typeId}`;
+    if (approachId === "cc3d") return { type_id: typeId, name };
+    return {
+        type_id: typeId, name, target_volume: 25, lambda_volume: 2.0,
+        target_surface: 20, lambda_surface: 0.5, max_volume_before_division: 400,
+        growth_rate: 0, death_probability: 0, color: [0, 200, 255], initial_count: 8,
+    };
+}
+
+/**
+ * Proposes a pair that is not already listed. Offering a duplicate of the first row
+ * was the obvious first draft and it was immediately wrong: CompuCell3D keeps the
+ * LAST entry for a pair, so a duplicate silently shadows the energy above it.
+ */
+function blankContactPair(approachId, list, config) {
+    const names = knownTypeNames(config || {});
+    const taken = new Set((list || []).map((entry) => [
+        String((entry || {}).type1 || ""), String((entry || {}).type2 || ""),
+    ].sort().join("\u0000")));
+    for (let i = 0; i < names.length; i += 1) {
+        for (let j = i; j < names.length; j += 1) {
+            const key = [names[i], names[j]].sort().join("\u0000");
+            if (!taken.has(key)) return { type1: names[i], type2: names[j], energy: 12 };
+        }
+    }
+    const first = names.find((name) => name !== "Medium") || "Medium";
+    return { type1: first, type2: "Medium", energy: 12 };
+}
+
+function cellTypeNote(approachId) {
+    if (approachId === "cc3d") {
+        return "CompuCell3D reads only the name and the type id from each row: the " +
+               "exporter emits one GLOBAL volume constraint (set it under " +
+               "volume_constraint above), not a volume per type. \"Medium\" is " +
+               "CompuCell3D's reserved name for empty space and cannot be reused.";
+    }
+    return `${SITE_COUNT_NOTE}. "Divides above" counts sites too, and the target ` +
+           "surface counts site edges — none of them is an area. Volumes show their " +
+           `equivalent in ${areaUnit() || "domain units"} underneath when the lattice ` +
+           "is 2D and the domain has an extent to divide.";
+}
+
+/**
+ * Everything wrong with the cell type list, split into per-field messages and
+ * whole-list messages. Mirrors approach_abm.validate and approach_cc3d.validate so
+ * the researcher is told at the box rather than by a stage badge after the fact.
+ * Severity "warning" states something suspicious that the backend still accepts.
+ */
+function cellTypeIssues(approachId, list) {
+    const byField = {};
+    const group = [];
+    const nameCounts = {};
+    const idCounts = {};
+    list.forEach((spec) => {
+        if (!spec || typeof spec !== "object") return;
+        const name = String(spec.name == null ? "" : spec.name).trim();
+        if (name) nameCounts[name] = (nameCounts[name] || 0) + 1;
+        const id = Number(spec.type_id);
+        if (Number.isInteger(id)) idCounts[id] = (idCounts[id] || 0) + 1;
+    });
+
+    let seededCells = 0;
+    list.forEach((spec, index) => {
+        const mark = (key, severity, message) => {
+            const path = structFieldPath("cell_types", index, key);
+            if (!byField[path] || byField[path].severity !== "error") {
+                byField[path] = { severity, message };
+            }
+        };
+        if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
+            group.push({ severity: "error",
+                         message: `Entry ${index + 1} is not an object. Fix it in the raw JSON view.` });
+            return;
+        }
+        const name = String(spec.name == null ? "" : spec.name).trim();
+        if (!name) {
+            mark("name", "error", "Every cell type needs a name.");
+        } else if (nameCounts[name] > 1) {
+            mark("name", "error", `Another cell type is already called "${name}".`);
+        } else if (approachId === "cc3d" && name.toLowerCase() === "medium") {
+            mark("name", "error",
+                 "\"Medium\" is CompuCell3D's reserved type for empty space; choose another name.");
+        }
+
+        const id = Number(spec.type_id);
+        if (!Number.isInteger(id)) {
+            mark("type_id", "error", "Type id must be a whole number.");
+        } else if (id <= 0) {
+            mark("type_id", "error", "Type id 0 is reserved for medium (empty space); use 1 or above.");
+        } else if (idCounts[id] > 1) {
+            mark("type_id", "error", `Type id ${id} is used by another cell type.`);
+        }
+
+        if (approachId !== "abm") return;
+
+        const volume = Number(spec.target_volume);
+        if (spec.target_volume !== undefined && !(Number.isFinite(volume) && volume > 0)) {
+            mark("target_volume", "error", "Target volume must be greater than zero.");
+        }
+        if (spec.lambda_volume !== undefined && Number(spec.lambda_volume) < 0) {
+            mark("lambda_volume", "error", "A negative λ pushes cells AWAY from their target volume.");
+        }
+        if (spec.lambda_surface !== undefined && Number(spec.lambda_surface) < 0) {
+            mark("lambda_surface", "error", "A negative λ pushes cells away from their target surface.");
+        }
+        const death = Number(spec.death_probability);
+        if (spec.death_probability !== undefined && !(Number.isFinite(death) && death >= 0 && death <= 1)) {
+            mark("death_probability", "error",
+                 "A per-step probability must be between 0 and 1.");
+        } else if (death > 0.1) {
+            mark("death_probability", "warning",
+                 `At ${fmt(death, 3)} per step, about half the population dies within ` +
+                 `${Math.ceil(Math.log(0.5) / Math.log(1 - death))} MCS.`);
+        }
+        const divide = Number(spec.max_volume_before_division);
+        if (spec.max_volume_before_division !== undefined && Number.isFinite(divide)
+            && Number.isFinite(volume) && divide <= volume) {
+            mark("max_volume_before_division", "warning",
+                 `At or below the target volume of ${fmt(volume, 0)}, so cells divide as ` +
+                 "soon as they reach their target rather than growing first.");
+        }
+        if (Number(spec.growth_rate) < 0) {
+            mark("growth_rate", "warning", "A negative growth rate shrinks cells every step.");
+        }
+        const count = Number(spec.initial_count);
+        if (spec.initial_count !== undefined) {
+            if (!Number.isInteger(count) || count < 0) {
+                mark("initial_count", "error", "Initial count must be a whole number, zero or more.");
+            } else {
+                seededCells += count;
+            }
+        }
+
+        // The swatch cannot render "absent", so it shows the engine's own default --
+        // which means the box displays a value the project document does not contain.
+        // That assumption is disclosed here, beside the swatch, and it clears the
+        // moment a colour is picked. It is deliberately NOT a toast: a disclosure
+        // that expires leaves the researcher looking at a value nothing told them
+        // was invented.
+        if (spec.color === undefined || spec.color === null) {
+            mark("color", "warning",
+                 "No colour in the project — showing the engine default (100, 100, 255). " +
+                 "Pick one to write it into the document.");
+        } else if (!Array.isArray(spec.color) || spec.color.length < 3
+                   || spec.color.some((channel) => !Number.isFinite(Number(channel)))) {
+            mark("color", "warning",
+                 `${JSON.stringify(spec.color)} is not an [r, g, b] triple — the swatch is ` +
+                 "showing the engine default. Picking a colour replaces it.");
+        }
+    });
+
+    // The backend refuses this outright: a lattice seeded with nothing runs to
+    // completion and reports success with no cells in it.
+    if (approachId === "abm" && list.length && seededCells <= 0
+        && !(structConfig() || {}).initial_config) {
+        group.push({ severity: "error",
+                     message: "No cells would be placed. Give at least one type a positive " +
+                              "initial count, or supply an explicit initial_config." });
+    }
+    if (!list.length) {
+        group.push({ severity: "error",
+                     message: "Define at least one cell type before running." });
+    }
+    return { byField, group };
+}
+
+function contactEnergyIssues(approachId, list) {
+    const byField = {};
+    const group = [];
+    const config = structConfig() || {};
+    const known = new Set(knownTypeNames(config));
+    const pairs = {};
+    list.forEach((spec, index) => {
+        const mark = (key, severity, message) => {
+            byField[structFieldPath("contact_energies", index, key)] = { severity, message };
+        };
+        if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
+            group.push({ severity: "error",
+                         message: `Entry ${index + 1} is not an object. Fix it in the raw JSON view.` });
+            return;
+        }
+        ["type1", "type2"].forEach((side) => {
+            const value = String(spec[side] == null ? "" : spec[side]).trim();
+            if (!value) {
+                mark(side, "error", "Choose a cell type.");
+            } else if (!known.has(value)) {
+                // Reachable by import or by renaming a type after the pair was made.
+                mark(side, "error",
+                     `No cell type is called "${value}". Known: ${Array.from(known).sort().join(", ")}.`);
+            }
+        });
+        if (!Number.isFinite(Number(spec.energy))) {
+            mark("energy", "error", "Contact energy must be a number.");
+        }
+        const key = [String(spec.type1 || ""), String(spec.type2 || "")].sort().join("\u0000");
+        pairs[key] = (pairs[key] || 0) + 1;
+        if (pairs[key] > 1) {
+            mark("energy", "warning",
+                 "This pair is listed more than once; the last one wins in the generated XML.");
+        }
+    });
+    return { byField, group };
+}
+
+/**
+ * What the editor had to ASSUME about a config it was handed, per list key.
+ *
+ * A project whose cell_types is missing, or is a number rather than a list, cannot be
+ * rendered as rows -- so the key is replaced with an empty list. That is a change to
+ * the researcher's document made on their behalf, and it stays on screen until they
+ * act on it rather than being announced once and expiring.
+ */
+const structAdoptionNote = { cell_types: null, contact_energies: null };
+
+/** Shows, hides and populates both editors for the selected approach. */
+function renderStructEditors(approachId, config) {
+    structContextId = approachId;
+    Object.values(STRUCT_EDITORS).forEach((editor) => {
+        const host = $(editor.ids.editor);
+        const applies = Boolean(approachId) && editor.approaches.includes(approachId);
+        if (host) host.hidden = !applies;
+        structAdoptionNote[editor.listKey] = null;
+        if (!applies) {
+            structRows[editor.listKey] = [];
+            return;
+        }
+        // A config that predates the key, or an import that carries the wrong type, gets
+        // a list created here rather than the editor rendering nothing at all -- and
+        // says so, because replacing a value silently is the bug this panel is fixing.
+        const existing = config[editor.listKey];
+        if (!Array.isArray(existing)) {
+            structAdoptionNote[editor.listKey] = existing === undefined
+                ? `This project carried no ${editor.listKey}, so an empty list was created. `
+                  + `Nothing was discarded.`
+                : `This project's ${editor.listKey} was ${describeJsonKind(existing)}, not a `
+                  + `list. It was replaced with an empty list — the original value is `
+                  + `${JSON.stringify(existing)} and is no longer in the project.`;
+            config[editor.listKey] = [];
+        }
+        const note = $(editor.ids.note);
+        if (note) note.textContent = editor.note(approachId);
+        // The signature cache belongs to the previous approach's message set.
+        structIssueSignature[editor.listKey] = null;
+        rebuildStructRows(editor.listKey);
+    });
+}
+
+/** The list currently being edited, or null when the editor does not apply. */
+function structList(listKey) {
+    const config = structConfig();
+    if (!config) return null;
+    if (!Array.isArray(config[listKey])) return null;
+    return config[listKey];
+}
+
+/**
+ * Rebuilds one editor's ROWS. The only caller set is structural: add, remove, a
+ * raw-JSON paste, and the initial render. A value edit must never reach this.
+ */
+function rebuildStructRows(listKey) {
+    const editor = STRUCT_EDITORS[listKey];
+    const host = $(editor.ids.rows);
+    const list = structList(listKey);
+    if (!host || !list) return;
+    host.innerHTML = "";
+    structRows[listKey] = [];
+    if (!list.length) {
+        host.appendChild(el("div", "wf-empty-state",
+                            `No ${editor.noun}s yet — add one to configure the simulation.`));
+    }
+    list.forEach((spec, index) => {
+        const row = buildStructRow(editor, spec, index);
+        structRows[listKey].push(row);
+        host.appendChild(row.node);
+    });
+    const count = $(editor.ids.count);
+    if (count) count.textContent = String(list.length);
+    syncStructJson(listKey);
+    revalidateStruct(listKey);
+}
+
+/** One row: a heading with a Remove button, then a labelled grid of its fields. */
+function buildStructRow(editor, spec, index) {
+    const approachId = structContextId;
+    const config = structConfig() || {};
+    const node = el("div", "wf-cell-row");
+    const head = el("div", "wf-cell-row-head");
+    // The index sits BESIDE the heading, not inside it. Nested, it was destroyed by
+    // every `heading.textContent = ...` and had to be re-created -- one createElement
+    // per keystroke, which is exactly the structural churn this editor exists to
+    // avoid. The harness counts it, which is how it was caught.
+    const label = el("div", "wf-cell-row-label");
+    const heading = el("strong", null, editor.title(spec, index));
+    label.appendChild(heading);
+    label.appendChild(el("span", "wf-row-index", `${editor.listKey}[${index}]`));
+    head.appendChild(label);
+    const remove = el("button", "btn btn-secondary btn-sm", "Remove");
+    remove.type = "button";
+    remove.title = `Remove ${editor.title(spec, index)}`;
+    remove.addEventListener("click", () => removeStructEntry(editor.listKey, index));
+    head.appendChild(remove);
+    node.appendChild(head);
+
+    const grid = el("div", "wf-param-grid");
+    const fields = {};
+    editor.fields(approachId).forEach((fieldSpec) => {
+        const built = buildStructField(editor, spec, index, fieldSpec, config);
+        fields[fieldSpec.key] = built;
+        grid.appendChild(built.wrapper);
+    });
+    node.appendChild(grid);
+
+    // Keys the form does not cover must not look as though they are gone: chemotaxis,
+    // secretion and uptake rates and freeze all reach the ABM engine and all survive
+    // an edit here, because the row mutates the SAME object the raw JSON shows.
+    const covered = new Set(editor.fields(approachId).map((fieldSpec) => fieldSpec.key));
+    const extra = Object.keys(spec || {}).filter((key) => !covered.has(key));
+    const extraNote = el("p", "wf-unknown-keys");
+    node.appendChild(extraNote);
+    const row = { node, heading, fields, extraNote, index, spec };
+    paintExtraKeys(row, extra);
+    return row;
+}
+
+function paintExtraKeys(row, extra) {
+    if (!extra.length) {
+        row.extraNote.hidden = true;
+        row.extraNote.textContent = "";
+        return;
+    }
+    row.extraNote.hidden = false;
+    // textContent, not innerHTML: these key names come from an imported project.
+    row.extraNote.textContent =
+        `Also carries ${extra.join(", ")} — kept as-is; edit under "Advanced: raw JSON".`;
+}
+
+/** One labelled control, its unit, its inline error span and its derived line. */
+function buildStructField(editor, spec, index, fieldSpec, config) {
+    const wrapper = el("label", "wf-field");
+    const unit = typeof fieldSpec.unit === "function" ? fieldSpec.unit(config) : fieldSpec.unit;
+    const caption = el("span", null, `${fieldSpec.label}${unitSuffix(unit || "")}`);
+    wrapper.appendChild(caption);
+
+    let input;
+    if (fieldSpec.kind === "select") {
+        input = el("select");
+        fillSelectOptions(input, fieldSpec.options(config), spec[fieldSpec.key]);
+    } else {
+        input = el("input");
+        if (fieldSpec.kind === "colour") {
+            input.type = "color";
+            input.value = rgbToHex(spec[fieldSpec.key]);
+        } else if (fieldSpec.kind === "int" || fieldSpec.kind === "number") {
+            input.type = "number";
+            input.step = fieldSpec.kind === "int" ? "1" : "any";
+            input.value = spec[fieldSpec.key] === undefined || spec[fieldSpec.key] === null
+                ? "" : String(spec[fieldSpec.key]);
+        } else {
+            input.type = "text";
+            input.value = spec[fieldSpec.key] === undefined || spec[fieldSpec.key] === null
+                ? "" : String(spec[fieldSpec.key]);
+        }
+    }
+    // The path doubles as the focus-restore token, so a rebuild can put the cursor
+    // back on the same field instead of dropping it to <body>.
+    input.dataset.structField = structFieldPath(editor.listKey, index, fieldSpec.key);
+    if (fieldSpec.hint) input.title = fieldSpec.hint;
+
+    const commit = () => commitStructField(editor, spec, index, fieldSpec, input);
+    // `input` fires per keystroke, so a value that parses is in the document
+    // immediately -- what would run is what is on screen. `change` catches the
+    // committed-on-blur cases a keystroke stream does not produce (a colour picker,
+    // a select, an autofill).
+    input.addEventListener("input", commit);
+    input.addEventListener("change", commit);
+    wrapper.appendChild(input);
+
+    const derived = el("span", "wf-field-derived");
+    derived.hidden = true;
+    wrapper.appendChild(derived);
+    const error = el("span", "wf-field-error");
+    error.hidden = true;
+    wrapper.appendChild(error);
+    return { wrapper, caption, input, error, derived, fieldSpec };
+}
+
+/**
+ * Replaces a select's options IN PLACE, and only when the offered set has actually
+ * changed. The guard matters because this runs on every keystroke of a cell type's
+ * name: without it, typing "Fibroblast" tore down and rebuilt every contact-energy
+ * dropdown ten times. The <select> element itself is never replaced, so a dropdown
+ * that has focus keeps it either way.
+ */
+function fillSelectOptions(select, values, current) {
+    const chosen = current === undefined || current === null ? "" : String(current);
+    const options = values.slice();
+    // A value the list no longer offers (a renamed or deleted type) stays selectable
+    // rather than being silently swapped for the first option -- which would change
+    // what runs without the researcher touching anything.
+    if (chosen && !options.includes(chosen)) options.push(chosen);
+    const signature = options.join("\u0000");
+    if (select.dataset.optionSignature === signature) {
+        if (select.value !== chosen) select.value = chosen;
+        return;
+    }
+    select.dataset.optionSignature = signature;
+    select.innerHTML = "";
+    options.forEach((value) => {
+        const option = el("option", null, value);
+        option.value = value;
+        select.appendChild(option);
+    });
+    select.value = chosen;
+}
+
+/**
+ * Writes one field to the project document.
+ *
+ * A blank numeric box is NEVER coerced: Number("") === 0, so the old scalar path
+ * turned a cleared rate into a real zero. Here a blank registers a refusal that
+ * blocks the run, and the document keeps its previous value.
+ */
+function commitStructField(editor, spec, index, fieldSpec, input) {
+    const path = structFieldPath(editor.listKey, index, fieldSpec.key);
+    const raw = fieldSpec.kind === "colour" ? input.value : String(input.value).trim();
+
+    if (fieldSpec.kind === "colour") {
+        spec[fieldSpec.key] = hexToRgb(raw);
+        unblockConfigEdit(path);
+    } else if (fieldSpec.kind === "int" || fieldSpec.kind === "number") {
+        const number = Number(raw);
+        if (raw === "") {
+            blockConfigEdit(path, `${fieldSpec.label} in ${editor.listKey}[${index}] is empty.`);
+            markStructField(editor.listKey, index, fieldSpec.key, "error",
+                            `${fieldSpec.label} needs a number — a blank box is not zero.`);
+            return;
+        }
+        if (!Number.isFinite(number)) {
+            blockConfigEdit(path,
+                            `${fieldSpec.label} in ${editor.listKey}[${index}] is not a number.`);
+            markStructField(editor.listKey, index, fieldSpec.key, "error",
+                            `"${raw}" is not a number.`);
+            return;
+        }
+        if (fieldSpec.kind === "int" && !Number.isInteger(number)) {
+            blockConfigEdit(path,
+                            `${fieldSpec.label} in ${editor.listKey}[${index}] must be a whole number.`);
+            markStructField(editor.listKey, index, fieldSpec.key, "error",
+                            `${fieldSpec.label} must be a whole number.`);
+            return;
+        }
+        spec[fieldSpec.key] = number;
+        unblockConfigEdit(path);
+    } else {
+        // Text and select commit whatever is typed. An empty name is representable,
+        // so it is committed and then reported inline -- blocking the commit would
+        // put the box and the document out of step, which is the bug this replaces.
+        spec[fieldSpec.key] = input.value;
+        unblockConfigEdit(path);
+    }
+
+    onStructValueChanged(editor, index, fieldSpec);
+}
+
+/**
+ * Everything that has to follow a committed value -- all of it IN PLACE. No render
+ * function is called from here: rebuilding the panel inside an edit handler is what
+ * destroyed keyboard focus twice in this file already.
+ */
+function onStructValueChanged(editor, index, fieldSpec) {
+    const list = structList(editor.listKey);
+    const row = structRows[editor.listKey][index];
+    if (row && list && list[index]) {
+        // A pure text write. The index label is a SIBLING, so nothing has to be
+        // re-created to keep it.
+        row.heading.textContent = editor.title(list[index], index);
+    }
+    // A cell type's NAME is the identity contact energies reference, so renaming one
+    // has to re-offer the options -- in place, without rebuilding those rows.
+    if (editor.listKey === "cell_types" && fieldSpec.key === "name") {
+        refreshStructOptions("contact_energies");
+        revalidateStruct("contact_energies");
+        syncStructJson("contact_energies");
+    }
+    syncStructJson(editor.listKey);
+    revalidateStruct(editor.listKey);
+    refreshLatticeMapping();
+    scheduleProjectValidation();
+}
+
+/** Re-offers every select's options from the current config, preserving the choice. */
+function refreshStructOptions(listKey) {
+    const editor = STRUCT_EDITORS[listKey];
+    const config = structConfig();
+    if (!editor || !config) return;
+    const list = structList(listKey) || [];
+    structRows[listKey].forEach((row, index) => {
+        Object.values(row.fields).forEach((field) => {
+            if (!field.fieldSpec.options) return;
+            const spec = list[index] || {};
+            fillSelectOptions(field.input, field.fieldSpec.options(config), spec[field.fieldSpec.key]);
+        });
+    });
+}
+
+/** Re-quotes every derived line (site counts as an area) without a rebuild. */
+function refreshStructDerived() {
+    Object.keys(STRUCT_EDITORS).forEach((listKey) => {
+        const list = structList(listKey) || [];
+        structRows[listKey].forEach((row, index) => {
+            const spec = list[index] || {};
+            Object.values(row.fields).forEach((field) => {
+                if (!field.fieldSpec.derive) return;
+                const text = field.fieldSpec.derive(spec[field.fieldSpec.key]);
+                field.derived.textContent = text;
+                field.derived.hidden = !text;
+            });
+        });
+    });
+}
+
+/** Sets one field's inline message. textContent only -- no structural change. */
+function markStructField(listKey, index, fieldKey, severity, message) {
+    const row = (structRows[listKey] || [])[index];
+    const field = row && row.fields[fieldKey];
+    if (!field) return;
+    field.error.textContent = message || "";
+    field.error.hidden = !message;
+    field.error.className = `wf-field-error${severity === "warning" ? " warning" : ""}`;
+    if (message) field.input.setAttribute("aria-invalid", severity === "warning" ? "false" : "true");
+    else field.input.removeAttribute("aria-invalid");
+}
+
+/**
+ * The last list-level message set painted into each editor's issue container, so an
+ * unchanged set is not re-rendered. Without this, every keystroke assigned innerHTML
+ * on the container -- cheap, but it is the same "rebuild inside an edit handler"
+ * habit that produced the two focus bugs, and the harness counts it as one.
+ */
+const structIssueSignature = { cell_types: null, contact_energies: null };
+
+/**
+ * Recomputes every inline message for one editor from the CURRENT document, then
+ * writes them into the spans that already exist. A blocking refusal recorded by
+ * commitStructField is preserved: it describes text that is not in the document at
+ * all, which no rule derived from the document could reproduce.
+ */
+function revalidateStruct(listKey) {
+    const editor = STRUCT_EDITORS[listKey];
+    const list = structList(listKey);
+    if (!editor || !list) return;
+    const { byField, group } = editor.issues(structContextId, list);
+    // An assumption the editor made about the incoming document ranks above the rules
+    // derived from it: the researcher is looking at a list that is partly the editor's
+    // doing, and needs to be told so for as long as that is true.
+    const messages = structAdoptionNote[listKey]
+        ? [{ severity: "warning", message: structAdoptionNote[listKey] }].concat(group)
+        : group;
+    structRows[listKey].forEach((row, index) => {
+        let rowHasError = false;
+        const covered = new Set(Object.keys(row.fields));
+        Object.entries(row.fields).forEach(([fieldKey, field]) => {
+            const path = structFieldPath(listKey, index, fieldKey);
+            if (path in unparsedConfigText) {
+                rowHasError = true;
+                return;     // the commit refusal already on screen is the truth here
+            }
+            const issue = byField[path];
+            markStructField(listKey, index, fieldKey, issue && issue.severity,
+                            issue && issue.message);
+            if (issue && issue.severity === "error") rowHasError = true;
+        });
+        row.node.classList.toggle("invalid", rowHasError);
+        paintExtraKeys(row, Object.keys(list[index] || {}).filter((key) => !covered.has(key)));
+    });
+    const signature = messages.map((issue) => `${issue.severity}\u0000${issue.message}`).join("\u0001");
+    if (signature !== structIssueSignature[listKey]) {
+        structIssueSignature[listKey] = signature;
+        renderIssues(editor.ids.issues, { issues: messages });
+    }
+}
+
+/**
+ * Pushes the form's value into the raw JSON box.
+ *
+ * Skipped while that box HAS focus: it is then the one being edited, so it is the
+ * source of truth and the form follows it on commit instead. This is the only place
+ * the two views can be out of step, and it lasts exactly as long as the caret is in
+ * the textarea.
+ */
+function syncStructJson(listKey) {
+    const editor = STRUCT_EDITORS[listKey];
+    const area = $(editor.ids.json);
+    const list = structList(listKey);
+    if (!area || !list) return;
+    if (document.activeElement === area) return;
+    area.value = JSON.stringify(list, null, 1);
+    area.removeAttribute("aria-invalid");
+    setStructJsonError(listKey, "");
+    unblockConfigEdit(listKey);
+}
+
+function setStructJsonError(listKey, message) {
+    const host = $(STRUCT_EDITORS[listKey].ids.jsonError);
+    if (!host) return;
+    host.textContent = message || "";
+    host.hidden = !message;
+}
+
+/**
+ * Pulls the raw JSON box into the document. This is a STRUCTURAL change -- a
+ * different number of entries, possibly different keys -- so the rows are rebuilt,
+ * with focus restored by field path.
+ */
+function commitStructJson(listKey) {
+    const editor = STRUCT_EDITORS[listKey];
+    const area = $(editor.ids.json);
+    const config = structConfig();
+    if (!area || !config) return;
+    try {
+        const parsed = JSON.parse(area.value);
+        if (!Array.isArray(parsed)) {
+            throw new Error(`expected a JSON list, got ${describeJsonKind(parsed)}`);
+        }
+        const bad = parsed.findIndex((entry) =>
+            !entry || typeof entry !== "object" || Array.isArray(entry));
+        if (bad !== -1) {
+            throw new Error(`entry ${bad + 1} is ${describeJsonKind(parsed[bad])}, not an object`);
+        }
+        config[listKey] = parsed;
+        area.removeAttribute("aria-invalid");
+        setStructJsonError(listKey, "");
+        unblockConfigEdit(listKey);
+        // The researcher has now replaced the whole list themselves, so a note about
+        // what the editor did to the list it was handed no longer describes anything
+        // on screen.
+        structAdoptionNote[listKey] = null;
+        // Field-level refusals belonged to boxes that no longer exist.
+        clearConfigBlocks(listKey);
+        withStructFocus(() => {
+            rebuildStructRows(listKey);
+            if (listKey === "cell_types") rebuildStructRows("contact_energies");
+        });
+        refreshLatticeMapping();
+        validateProject();
+    } catch (error) {
+        area.setAttribute("aria-invalid", "true");
+        setStructJsonError(listKey, `Not a usable ${listKey} list: ${error.message}. `
+                                    + "The rows above still show what would run.");
+        blockConfigEdit(listKey, `"${listKey}" is not a valid JSON list (${error.message}).`);
+    }
+}
+
+function addStructEntry(listKey) {
+    const editor = STRUCT_EDITORS[listKey];
+    const config = structConfig();
+    const list = structList(listKey);
+    if (!config || !list) {
+        toast("Select an approach first.", "warn");
+        return;
+    }
+    list.push(editor.blank(structContextId, list, config));
+    rebuildStructRows(listKey);
+    if (listKey === "cell_types") {
+        // A new type is a new option for every contact pair.
+        refreshStructOptions("contact_energies");
+        revalidateStruct("contact_energies");
+    }
+    // Put the caret in the new row's first box: adding a type is always followed by
+    // naming it, and hunting for the box with the mouse is the part that annoys.
+    const rows = structRows[listKey];
+    const last = rows[rows.length - 1];
+    const first = last && Object.values(last.fields)[0];
+    if (first && first.input.focus) first.input.focus();
+    refreshLatticeMapping();
+    validateProject();
+}
+
+function removeStructEntry(listKey, index) {
+    const list = structList(listKey);
+    if (!list || !list[index]) return;
+    const editor = STRUCT_EDITORS[listKey];
+    const removed = editor.title(list[index], index);
+    list.splice(index, 1);
+    // Every field path at or after `index` has shifted, so refusals recorded against
+    // them describe boxes that no longer hold that text.
+    clearConfigBlocks(listKey);
+    rebuildStructRows(listKey);
+    if (listKey === "cell_types") {
+        refreshStructOptions("contact_energies");
+        revalidateStruct("contact_energies");
+        syncStructJson("contact_energies");
+    }
+    // Focus would otherwise fall to <body> with the button that had it now gone.
+    const add = $(editor.ids.add);
+    if (add && add.focus) add.focus();
+    toast(`Removed ${editor.noun} "${removed}".`, "info");
+    refreshLatticeMapping();
+    validateProject();
+}
+
+/**
+ * Runs a structural rebuild and puts the caret back where it was, addressed by
+ * field path rather than by element -- the element it was on has been replaced.
+ */
+function withStructFocus(rebuild) {
+    const active = document.activeElement;
+    const token = active && active.dataset ? active.dataset.structField : null;
+    const start = active ? active.selectionStart : null;
+    rebuild();
+    if (!token) return;
+    const next = document.querySelector(`[data-struct-field="${token}"]`);
+    if (!next || !next.focus) return;
+    next.focus();
+    if (start != null && next.setSelectionRange) {
+        try { next.setSelectionRange(start, start); } catch (error) { /* not a text input */ }
+    }
+}
+
+/**
+ * Trailing-debounced backend validation.
+ *
+ * The structured editor commits on every keystroke, which is what keeps the screen
+ * and the document in step -- but posting the whole project per keystroke would put
+ * a request in flight for every character of a cell type's name. The document is
+ * updated immediately; only the backend's OPINION of it is coalesced.
+ */
+let structValidateTimer = null;
+function scheduleProjectValidation(delay = 250) {
+    if (structValidateTimer) clearTimeout(structValidateTimer);
+    structValidateTimer = setTimeout(() => {
+        structValidateTimer = null;
+        validateProject();
+    }, delay);
+}
+
 /**
  * Renders scalars as inputs and nested objects as sub-grids, recursively.
  * `approachId` and `root` are carried down so a caption can look its unit up by
@@ -2629,6 +3654,12 @@ async function exportCc3dProject() {
 function buildConfigEditor(host, object, prefix, approachId, root) {
     Object.entries(object).forEach(([key, value]) => {
         const path = `${prefix}${key}`;
+        // cell_types and contact_energies have a dedicated FORM below this grid --
+        // a labelled row per entry with units and per-field validation. They were
+        // the two keys a researcher had to hand-write JSON for, and they are the
+        // most biological inputs in the product. Skipped here so there is exactly
+        // one editor per value rather than a form and a textarea competing.
+        if (!prefix && STRUCT_EDITORS[key]) return;
         if (Array.isArray(value)) {
             const wrapper = el("label", "wf-field");
             wrapper.style.gridColumn = "1 / -1";
@@ -2636,50 +3667,45 @@ function buildConfigEditor(host, object, prefix, approachId, root) {
             const area = el("textarea");
             area.rows = Math.min(10, Math.max(3, JSON.stringify(value, null, 1).split("\n").length));
             area.value = JSON.stringify(value, null, 1);
+            // Persistent, and adjacent to the box. A toast was the only textual signal
+            // here and it expired after nine seconds, leaving a 1px border colour as
+            // the entire explanation of why the run was being refused.
+            const message = el("span", "wf-field-error");
+            message.hidden = true;
             area.addEventListener("change", () => {
                 try {
-                    object[key] = JSON.parse(area.value);
-                    area.style.borderColor = "";
+                    const parsed = JSON.parse(area.value);
+                    // Parsing is not the same as being the right SHAPE. `5` and
+                    // `{"a":1}` both parse, and the old branch assigned either
+                    // straight over a list -- clearing the blocking error, so the
+                    // panel then claimed the edit had been accepted while the config
+                    // held a structurally impossible value for the backend to reject.
+                    if (!Array.isArray(parsed)) {
+                        throw new Error(`expected a JSON list, got ${describeJsonKind(parsed)}`);
+                    }
+                    object[key] = parsed;
                     area.removeAttribute("aria-invalid");
-                    delete unparsedConfigText[path];
-                    renderUnparsedConfigWarning();
-                    // ABM keeps target_volume inside this list, so the mapping line
-                    // is only right if it is recomputed when the list is edited.
+                    message.hidden = true;
+                    message.textContent = "";
+                    unblockConfigEdit(path);
                     refreshLatticeMapping();
                     validateProject();
                 } catch (error) {
                     // Keep the text so the user can fix it; mark it instead of reverting.
-                    area.style.borderColor = "#ff007f";
                     area.setAttribute("aria-invalid", "true");
                     // The OLD array is still what runs. Previously the only lasting
                     // signal was a 1px border -- colour alone, no text -- and
                     // validateProject was never called, so the rail badge still read
-                    // valid while the screen showed cell types the run was not using.
+                    // valid while the screen showed values the run was not using.
                     // That divergence is now persistent, textual, and blocks the run.
-                    unparsedConfigText[path] = error.message;
-                    renderUnparsedConfigWarning();
-                    toast(`${key} is not valid JSON: ${error.message}`, "error", 9000);
+                    message.textContent = `Not a usable list: ${error.message}. `
+                                          + `The previous value is what would run.`;
+                    message.hidden = false;
+                    blockConfigEdit(path, `"${path}" is not a valid JSON list (${error.message}).`);
                 }
             });
             wrapper.appendChild(area);
-            // A JSON textarea has no per-key label to hang a unit on, so the units
-            // of the keys inside it are stated once, here.
-            if (key === "cell_types") {
-                wrapper.appendChild(el("p", "wf-hint",
-                    `${SITE_COUNT_NOTE}. max_volume_before_division counts sites too, ` +
-                    "and target_surface counts site edges — none of them is an area. " +
-                    "The line under the lattice size converts sites to " +
-                    `${areaUnit() || "domain units"} when the lattice is 2D.`));
-            }
-            if (key === "contact_energies") {
-                // Reinforces the fluctuation-amplitude relabel: what governs the
-                // simulation is the RATIO of these energies to that amplitude, and
-                // neither carries a physical unit.
-                wrapper.appendChild(el("p", "wf-hint",
-                    "Contact energies are in dimensionless Potts energy units — the same " +
-                    "scale as the fluctuation amplitude above, whose ratio to them sets " +
-                    "how readily boundaries move. Not joules, and not degrees."));
-            }
+            wrapper.appendChild(message);
             host.appendChild(wrapper);
             return;
         }
@@ -2721,24 +3747,49 @@ function buildConfigEditor(host, object, prefix, approachId, root) {
         if (numeric) input.step = "any";
         input.value = nullable ? "" : value;
         if (nullable) input.placeholder = "none";
+        // Persistent, beside the box, like every other refusal in this panel.
+        const message = el("span", "wf-field-error");
+        message.hidden = true;
+        const refuse = (text) => {
+            message.textContent = text;
+            message.hidden = false;
+            input.setAttribute("aria-invalid", "true");
+            blockConfigEdit(path, `${path}: ${text}`);
+        };
+        const accept = () => {
+            message.hidden = true;
+            message.textContent = "";
+            input.removeAttribute("aria-invalid");
+            unblockConfigEdit(path);
+        };
         input.addEventListener("change", () => {
             const raw = input.value.trim();
             if (nullable) {
+                if (raw !== "" && !Number.isFinite(Number(raw))) {
+                    refuse(`"${raw}" is not a number. Leave it empty for no constraint.`);
+                    return;
+                }
                 object[key] = raw === "" ? null : Number(raw);
             } else if (numeric) {
-                if (raw === "" || !Number.isFinite(Number(raw))) {
+                if (raw === "") {
                     // Never silently coerce a blank to 0. Number("") === 0, so a
                     // cleared diffusion coefficient used to become zero -- a
-                    // scientific error with no visible symptom.
-                    input.value = String(object[key]);
-                    // The path, not the caption: this names the field being refused.
-                    toast(`${path} must be a number.`, "warn");
+                    // scientific error with no visible symptom. The box used to snap
+                    // back to the old value with a nine-second toast as the only
+                    // explanation; the refusal now stays on screen and blocks the run
+                    // until the researcher resolves it.
+                    refuse("This needs a number — a blank box is not zero.");
+                    return;
+                }
+                if (!Number.isFinite(Number(raw))) {
+                    refuse(`"${raw}" is not a number.`);
                     return;
                 }
                 object[key] = Number(raw);
             } else {
                 object[key] = input.value;
             }
+            accept();
             // A lattice dimension, a step count or a target_volume all move the
             // mapping, so it is recomputed on every scalar edit rather than only
             // when the panel is rebuilt.
@@ -2746,6 +3797,7 @@ function buildConfigEditor(host, object, prefix, approachId, root) {
             validateProject();
         });
         field.appendChild(input);
+        field.appendChild(message);
         host.appendChild(field);
     });
 }
@@ -2782,10 +3834,11 @@ async function validateProject() {
         });
         state.validation = payload;
         paintStageBadges(payload);
-        const approachStage = payload.stages && payload.stages.approach;
-        renderIssues("approach-issues", approachStage,
-                     approachStage && approachStage.status === "valid"
-                         ? "Approach configuration is valid." : null);
+        // Through the merged writer, so the backend's verdict on the last COMMITTED
+        // value can never overwrite a blocking on-screen edit -- which is how this
+        // container came to read "Approach configuration is valid." while the run
+        // button refused, with the reason no longer displayed anywhere.
+        renderApproachIssues(payload.stages && payload.stages.approach);
         return payload;
     } catch (error) {
         toast(`Project validation failed: ${error.message}`, "error");
@@ -2814,12 +3867,13 @@ async function startRun() {
         showStage("approach");
         return;
     }
-    // Refuse while any config textarea's text does not parse: the researcher would be
-    // running the PREVIOUS value while reading their edit on screen.
+    // Refuse while any config box's text is not in the document: the researcher would
+    // be running the PREVIOUS value while reading their edit on screen.
     const unparsed = Object.keys(unparsedConfigText);
     if (unparsed.length) {
-        toast(`Cannot run: ${unparsed.join(", ")} contains invalid JSON, so the run `
-              + `would not use what the box shows. Fix it in stage 7.`, "error", 10000);
+        toast(`Cannot run: ${unparsed.join(", ")} shows an edit that could not be `
+              + `applied, so the run would not use what is on screen. Fix it in stage 7.`,
+              "error", 10000);
         showStage("approach");
         return;
     }
@@ -3791,6 +4845,16 @@ function bindControls() {
     // Stage 6/7
     on("approach-export", "click", exportApproachConfiguration);
     on("approach-export-cc3d", "click", exportCc3dProject);
+    // The structured cell type / contact energy editors. Bound once here through the
+    // guarded helper, because the markup is STATIC -- only the rows inside it are
+    // built at render time, and those bind on the nodes they create.
+    on("cell-type-add", "click", () => addStructEntry("cell_types"));
+    on("contact-energy-add", "click", () => addStructEntry("contact_energies"));
+    // `change` only, not `input`: a textarea mid-edit is almost never a parseable
+    // list, and reporting that on every keystroke would flag the box red while the
+    // researcher is still typing the first brace.
+    on("cell-type-json", "change", () => commitStructJson("cell_types"));
+    on("contact-energy-json", "change", () => commitStructJson("contact_energies"));
     on("results-canvas", "click", handleResultsCanvasClick);
 
     // Stage 8/9

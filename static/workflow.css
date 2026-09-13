@@ -353,6 +353,89 @@
 .wf-approach-pill.off { background: rgba(255, 0, 127, 0.16); color: var(--accent-red); }
 .wf-approach-config { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border-color); }
 
+/* --- structured list editors (cell types, contact energies) --------------
+   These replace a raw JSON textarea, so they must read as a FORM: one row per
+   entry, a caption and a unit on every box, and the validation message beside
+   the box that is wrong rather than in a toast that disappears. Built on the
+   same .wf-field / .wf-param-grid / .wf-field-card idiom as the model stage --
+   no new UI vocabulary, and no new colour.                                  */
+.wf-struct-editor { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-color); }
+
+.wf-editor-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.wf-editor-head .wf-subhead { margin: 0; }
+
+.wf-cell-row {
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 10px;
+    background: rgba(255, 255, 255, 0.02);
+}
+/* A row carrying an error is bordered, not coloured over: the message beside the
+   offending box is what explains it, and tinting the whole row would suggest
+   every field in it is wrong. */
+.wf-cell-row.invalid { border-color: rgba(255, 0, 127, 0.55); }
+
+.wf-cell-row-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+.wf-cell-row-head strong { color: var(--text-primary); font-size: 0.88rem; }
+.wf-cell-row-label { display: flex; align-items: baseline; min-width: 0; }
+.wf-row-index {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    margin-left: 7px;
+}
+
+/* Inline, per-field validation. Hidden until there is something to say, so an
+   empty message never reserves space and shift the boxes as the user types. */
+.wf-field-error {
+    font-size: 0.72rem;
+    line-height: 1.45;
+    color: var(--accent-red);
+}
+.wf-field-error.warning { color: #ffb020; }
+.wf-field input[aria-invalid="true"],
+.wf-field select[aria-invalid="true"],
+.wf-field textarea[aria-invalid="true"] { border-color: var(--accent-red); }
+
+/* A value DERIVED from another stage (sites converted to an area at the current
+   lattice). Distinguished from an error by weight and colour, never by position. */
+.wf-field-derived {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    line-height: 1.45;
+}
+
+/* The colour swatch is a real <input type="color">, which most browsers render at
+   an intrinsic size that ignores padding -- so it is sized explicitly to line up
+   with the text boxes beside it. */
+.wf-field input[type="color"] {
+    padding: 2px;
+    height: 32px;
+    cursor: pointer;
+}
+
+.wf-unknown-keys {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin: 8px 0 0;
+}
+.wf-unknown-keys code { font-family: 'JetBrains Mono', monospace; color: var(--text-secondary); }
+
 /* --- run ----------------------------------------------------------------- */
 .wf-run-state { display: flex; align-items: center; gap: 12px; margin: 16px 0; flex-wrap: wrap; }
 
