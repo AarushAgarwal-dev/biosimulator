@@ -2095,24 +2095,58 @@ async function evaluateSimulationTargets() {
 
     container.innerHTML = "";
     let metCount = 0;
+    let refusedCount = 0;
     results.forEach(rawResult => {
         const r = rawResult && typeof rawResult === "object" ? rawResult : {};
-        if (r.met) metCount++;
+
+        // THREE outcomes, not two. The backend distinguishes "the target was measured
+        // and met", "measured and not met", and REFUSED -- it could not be evaluated at
+        // all. app.js read only `r.met`, so a refusal rendered as a red failure,
+        // subtracted from the score identically, and the researcher could not tell
+        // "your model failed this test" from "this test could not be run".
+        const refused = r.refused === true;
+        if (refused) refusedCount++;
+        else if (r.met) metCount++;
+
         const item = document.createElement("div");
-        item.className = `eval-item ${r.met ? 'met' : 'failed'}`;
+        item.className = `eval-item ${refused ? 'refused' : (r.met ? 'met' : 'failed')}`;
         item.innerHTML = `
-            <div class="eval-icon">${r.met ? '🟢' : '🔴'}</div>
+            <div class="eval-icon">${refused ? '⚪' : (r.met ? '🟢' : '🔴')}</div>
             <div class="eval-details">
-                <div class="target-title">${escapeHtml(r.species || '')} ${escapeHtml(String(r.type || '').replace(/_/g, ' '))}</div>
+                <div class="target-title">${escapeHtml(r.species || '')} ${escapeHtml(String(r.type || '').replace(/_/g, ' '))}${refused ? ' — could not be evaluated' : ''}</div>
                 <div class="target-status-msg">${escapeHtml(r.detail || '')}</div>
             </div>
         `;
+
+        // The backend computes an honest falsifiability warning -- for the shipped
+        // Turing target it says the tolerance is as large as the target value, so the
+        // test "accepts anything in [-9, 11]. It cannot fail, so it tests nothing."
+        // That warning was computed and then THROWN AWAY here, so the flagship spatial
+        // demo showed a green tick and a reassuring number on a test that cannot fail.
+        // A target that cannot fail is worse than no target, so it is shown next to the
+        // result rather than buried.
+        const warning = String(r.warning || "").trim();
+        if (warning) {
+            const note = document.createElement("div");
+            note.className = "target-warning";
+            note.textContent = warning;
+            const details = item.querySelector(".eval-details");
+            (details || item).appendChild(note);
+        }
+
         container.appendChild(item);
     });
 
-    // Update circular progress
-    const pct = Math.round((metCount / state.targets.length) * 100);
-    document.getElementById("target-score-percentage").textContent = `${pct}%`;
+    // Update circular progress.
+    //
+    // A refused target is excluded from the denominator rather than counted as a
+    // failure: scoring "could not be evaluated" as "not met" understates a model that
+    // may be perfectly good, and it also lets a refusal quietly drag the ring down with
+    // no visible cause. If every target was refused the score is not a number at all.
+    const scorable = state.targets.length - refusedCount;
+    const pct = scorable > 0 ? Math.round((metCount / scorable) * 100) : 0;
+    document.getElementById("target-score-percentage").textContent =
+        scorable > 0 ? `${pct}%` : "—";
     const circle = document.getElementById("target-progress-bar");
     const radius = circle.r.baseVal.value;
     const circumference = radius * 2 * Math.PI;

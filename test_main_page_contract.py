@@ -170,5 +170,43 @@ class MainPageContractTests(unittest.TestCase):
             f"{response.text[:300]}")
 
 
+    def test_evaluate_surfaces_its_own_honesty_fields(self):
+        """`warning` and `refused` must reach the caller, not just exist server-side.
+
+        agent.target_falsifiability_warning correctly flags the shipped Turing target:
+        its tolerance (10) is larger than its target value (1), so it accepts anything in
+        [-9, 11] -- including zero and the opposite sign -- and therefore cannot fail.
+        The evaluator computed that warning and app.js discarded it, reading only `met`
+        and `detail`. The flagship spatial demo showed a green tick and a reassuring
+        number on a test that tests nothing.
+
+        `refused` matters for the same reason: a target that COULD NOT BE EVALUATED was
+        rendered as a red failure and subtracted from the score identically, so "your
+        model failed this test" and "this test could not be run" were indistinguishable.
+        """
+        turing_targets = PRESETS["turing"].get("targets") or []
+        if not turing_targets:
+            self.skipTest("the Turing preset ships no targets")
+        payload = self._post("/api/evaluate",
+                             {"blueprint": BLUEPRINTS["turing"],
+                              "targets": turing_targets,
+                              "custom_params": {}}, "Turing evaluation")
+        results = payload.get("results") or []
+        self.assertTrue(results, "the Turing target produced no result")
+        for result in results:
+            self.assertIn("refused", result,
+                          "the result carries no `refused` flag, so the UI cannot tell "
+                          "'could not be evaluated' from 'failed'")
+        warnings = [str(r.get("warning") or "").strip() for r in results]
+        self.assertTrue(
+            any(warnings),
+            "the shipped Turing target is unfalsifiable (tolerance >= target value) and "
+            "the evaluator no longer says so -- that warning is the only thing standing "
+            "between a researcher and a green tick on a test that cannot fail")
+        self.assertTrue(
+            any("UNFALSIFIABLE" in w.upper() for w in warnings),
+            f"the warning no longer identifies the target as unfalsifiable: {warnings}")
+
+
 if __name__ == "__main__":
     unittest.main()
