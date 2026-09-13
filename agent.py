@@ -1498,17 +1498,83 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
     
     # Default structures
     if is_pde:
-        # Default Turing model (Gierer-Meinhardt / Activator-Inhibitor)
+        # SPATIAL BRANCH. This used to return a hard-coded Gierer-Meinhardt
+        # activator-inhibitor model -- species U and V, reactions "U**2/V - U + 0.02"
+        # and "U**2 - V" -- for ANY text containing one of the trigger words above,
+        # DISCARDING every species the researcher named, and with an EMPTY notice.
+        # Measured before this fix:
+        #
+        #   "Nodal and Lefty set up a spatial pattern in the zebrafish embryo."  -> U, V
+        #   "Sonic hedgehog diffuses from the notochord to pattern the neural tube." -> U, V
+        #   "PIP2 diffusion in the membrane is slow."                            -> U, V
+        #
+        # It would then form a pattern and the shipped target would pass, so the
+        # researcher had a working spatial model of a system they had not described.
+        # The ODE branch below was explicitly fixed to refuse rather than fabricate, and
+        # the comment there argues that a fabricated result with a disappearing
+        # disclaimer is worse than a refusal. This branch was still doing exactly what
+        # that comment condemns, and worse, because it did not even warn.
+        #
+        # Now: use the species the text actually names, and say plainly that the
+        # KINETICS are an assumption rather than something derived from the description.
+        # Which tokens are the SPECIES? A shape heuristic alone is not enough: the
+        # shipped Turing text reads "A reaction-diffusion system containing Activator U
+        # and Inhibitor V", where the species are U and V while "A", "Activator" and
+        # "Inhibitor" are an article and two descriptors. Picking the first two
+        # capitalised tokens chose A and ACTIVATOR.
+        #
+        # A species is REFERRED TO REPEATEDLY, because the description goes on to say
+        # what it does: U appears four times ("Activator U", "U activates", "U starts
+        # at", "U diffuses"), while "Activator" appears once. So rank by frequency and
+        # break ties by first appearance. A single-letter name additionally has to occur
+        # at least twice, which is what keeps the English article "A" out while still
+        # admitting the textbook U and V.
+        counts = {}
+        order = {}
+        for index, token in enumerate(re.findall(r"\b[A-Za-z][A-Za-z0-9_-]*\b", text)):
+            upper = token.upper()
+            if not is_valid_species(upper):
+                continue
+            looks_named = (token.isupper() or any(c.isdigit() for c in token)
+                           or (token[:1].isupper() and len(token) > 2))
+            if not looks_named:
+                continue
+            counts[upper] = counts.get(upper, 0) + 1
+            order.setdefault(upper, index)
+
+        spatial_names = [name for name in counts
+                         if len(name) > 1 or counts[name] >= 2]
+        spatial_names.sort(key=lambda name: (-counts[name], order[name]))
+
+        if len(spatial_names) < 2:
+            return {
+                "type": "PDE",
+                "nodes": [],
+                "edges": [],
+                "validation_errors": [
+                    "A spatial model needs at least two named species that interact.",
+                ],
+                "_llm_notice": (
+                    "That description mentions space or diffusion, but it does not name "
+                    "two species clearly enough to build a reaction-diffusion model, so "
+                    "none was built. No canned model was substituted. Name the species "
+                    "and how they act on each other -- for example 'A activates B and "
+                    "diffuses slowly; B inhibits A and diffuses quickly' -- or load the "
+                    "Turing preset for a worked example."
+                ),
+            }
+
+        activator, inhibitor = spatial_names[0], spatial_names[1]
         return {
             "type": "PDE",
             "nodes": [
-                {"id": "U", "name": "Activator U", "initial_value": 1.0},
-                {"id": "V", "name": "Inhibitor V", "initial_value": 1.0}
+                {"id": activator, "name": f"{activator} (activator)", "initial_value": 1.0},
+                {"id": inhibitor, "name": f"{inhibitor} (inhibitor)", "initial_value": 1.0}
             ],
             "edges": [
-                {"source": "U", "target": "U", "type": "activation", "parameters": {"k": 1.0, "K_d": 1.0, "n": 2.0}},
-                {"source": "U", "target": "V", "type": "activation", "parameters": {"k": 1.0, "K_d": 1.0, "n": 2.0}},
-                {"source": "V", "target": "U", "type": "inhibition", "parameters": {"k": 1.0, "K_d": 1.0, "n": 2.0}}
+                {"source": activator, "target": activator, "type": "activation", "parameters": {"k": 1.0, "K_d": 1.0, "n": 2.0}},
+                {"source": activator, "target": inhibitor, "type": "activation", "parameters": {"k": 1.0, "K_d": 1.0, "n": 2.0}},
+                {"source": inhibitor, "target": activator, "type": "inhibition", "parameters": {"k": 1.0, "K_d": 1.0, "n": 2.0}}
             ],
             "spatial": {
                 "x_grid": 50,
@@ -1516,18 +1582,30 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
                 "dx": 1.0,
                 "dy": 1.0,
                 "diffusion": {
-                    "U": 0.05,
-                    "V": 1.0
+                    activator: 0.05,
+                    inhibitor: 1.0
                 },
                 "reactions": {
-                    "U": "U**2 / V - U + 0.02",
-                    "V": "U**2 - V"
+                    activator: f"{activator}**2 / {inhibitor} - {activator} + 0.02",
+                    inhibitor: f"{activator}**2 - {inhibitor}"
                 }
             },
             "simulation_config": {
                 "t_max": 200.0,
                 "dt": 0.1
-            }
+            },
+            "_llm_notice": (
+                f"This is the Gierer-Meinhardt activator-inhibitor model, with "
+                f"{activator} taken as the activator and {inhibitor} as the inhibitor. "
+                f"THE RATE LAWS AND DIFFUSION CONSTANTS ARE AN ASSUMPTION, not something "
+                f"read from your description: the reactions are "
+                f"{activator}**2/{inhibitor} - {activator} + 0.02 and "
+                f"{activator}**2 - {inhibitor}, with D={activator} 0.05 and "
+                f"D={inhibitor} 1.0 (the inhibitor must diffuse faster for a Turing "
+                f"pattern). Any species beyond the first two were not used. Edit the "
+                f"reactions and diffusion constants on the PDE-model stage to describe "
+                f"your own system."
+            ),
         }
     
     # Otherwise assume ODE Signaling Pathway
@@ -1667,8 +1745,19 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
                 src, tgt = _orient(m, is_reversed, sentence)
                 if src is None:
                     continue
-                if src == tgt:
-                    continue
+                # SELF-EDGES ARE KEPT. This used to continue, so
+                # "CAMKII activates CAMKII." produced ZERO edges, an empty notice, and
+                # the model dCAMKII/dt = -0.1*CAMKII -- pure decay presented as
+                # autocatalysis. Autoregulation is not an edge case: it is the core motif
+                # of every bistable switch and most oscillators, and the repo's own
+                # verify_language_to_model.py [5/5] claimed to verify self-activation
+                # while passing on that decay.
+                #
+                # The Hill compiler already expresses it correctly with no change: for a
+                # self-activation the term k*X**n/(Kd**n + X**n) is added to X's own
+                # production, which IS an autocatalytic term, and for a self-inhibition
+                # the factor Kd**n/(Kd**n + X**n) multiplies it, which IS autorepression.
+                # Dropping the edge was discarding a capability the engine already had.
                 if src not in nodes:
                     nodes[src] = {"id": src, "name": f"{src} protein", "initial_value": 0.0}
                 if tgt not in nodes:
@@ -1686,8 +1775,19 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
                 src, tgt = _orient(m, is_reversed, sentence)
                 if src is None:
                     continue
-                if src == tgt:
-                    continue
+                # SELF-EDGES ARE KEPT. This used to continue, so
+                # "CAMKII activates CAMKII." produced ZERO edges, an empty notice, and
+                # the model dCAMKII/dt = -0.1*CAMKII -- pure decay presented as
+                # autocatalysis. Autoregulation is not an edge case: it is the core motif
+                # of every bistable switch and most oscillators, and the repo's own
+                # verify_language_to_model.py [5/5] claimed to verify self-activation
+                # while passing on that decay.
+                #
+                # The Hill compiler already expresses it correctly with no change: for a
+                # self-activation the term k*X**n/(Kd**n + X**n) is added to X's own
+                # production, which IS an autocatalytic term, and for a self-inhibition
+                # the factor Kd**n/(Kd**n + X**n) multiplies it, which IS autorepression.
+                # Dropping the edge was discarding a capability the engine already had.
                 if src not in nodes:
                     nodes[src] = {"id": src, "name": f"{src} protein", "initial_value": 0.0}
                 if tgt not in nodes:
