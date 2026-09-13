@@ -26,15 +26,15 @@ _SYSTEM_COMPILER = (
 # defaulting to a generic Hill graph, and it must never promote a constant into a species.
 _COMPILER_PROMPT = r"""You are a biological model compiler. Translate the natural-language description below into a structured JSON blueprint for simulation.
 
-STEP 1 - VALIDATION. Act as a biological/physical consistency checker. If the description is physically impossible or self-contradictory (e.g. a membrane protein diffusing freely, mass created from nothing, a reaction that drives a concentration negative), do NOT build a model: return {"validation_errors": ["..."]} only.
+STEP 1 - VALIDATION. Act as a biological/physical consistency checker. If the description is physically impossible or self-contradictory (e.g. a membrane protein diffusing freely, mass created from nothing, a reaction that drives a concentration negative), do NOT build a model: return {"validation_errors": ["..."]} only. Missing detail is NOT a reason to refuse: a description with no rates, no parameters and no compartments is a normal, supported input - build the QUALITATIVE form of it in STEP 2 instead of refusing. Reserve validation_errors for a description that CONTRADICTS itself or physics.
 
 STEP 2 - CHOOSE THE REPRESENTATION.
 - MECHANISTIC (emit "odes" + "fluxes" + "parameters"): use this whenever the text describes explicit rate processes - entry/influx at a rate, pumping/transport between compartments or pools, release, leak, removal/extrusion, production/decay, or a rate that is "activated by"/"gated by" some quantity. This produces an exact mass-conserving rate-law model.
-- QUALITATIVE (emit "edges"): use ONLY for a bare influence sketch ("A activates B, B inhibits C") with no rates, compartments, stimuli, or conservation.
+- QUALITATIVE (emit "edges"): use for a bare influence sketch ("A activates B, B inhibits C") with no rates, compartments, stimuli, or conservation. This is the CORRECT answer for such a description - emit the nodes and edges and stop. Do NOT refuse it, and do NOT invent an upstream stimulus or rate law to turn it into a mechanistic model. Give the most UPSTREAM species (one nothing else activates) a non-zero initial_value such as 1.0 and leave the downstream ones at 0.0: with every species at zero the graph is an exact fixed point and nothing can happen.
 - SPATIAL / PDE (emit "type":"PDE" with a "spatial" block): use when the text mentions diffusion, spatial patterns, or reaction-diffusion (Turing).
-When in doubt, prefer MECHANISTIC. Words like enters, pumped, released, leaks, removed, extruded, at a (constant) rate, stimulus, store/compartment/pool => MECHANISTIC.
+Prefer MECHANISTIC when the text gives you any rate process to work from; use QUALITATIVE when it gives you none. Words like enters, pumped, released, leaks, removed, extruded, at a (constant) rate, stimulus, store/compartment/pool => MECHANISTIC.
 
-STEP 3 - HARD RULES (violating these makes the model wrong):
+STEP 3 - HARD RULES for the MECHANISTIC form (violating these makes the model wrong). They constrain the rate laws you write; they are never a reason to refuse a description or to add species it does not mention:
 R1. A constant input rate, an external reservoir treated as fixed, or an applied stimulus level is a PARAMETER (a number), NOT a species. Never create a node or ODE for it, and never give it a degradation/decay term. ("Calcium enters from outside at a constant rate, increased by a stimulus" => two parameters like v0 and v1*beta in an influx term - NOT species named EXTERNAL or STIMULUS.)
 R2. CONSERVED TRANSPORT. When material moves from pool X to pool Y (pump, release, transport, leak), model it as ONE named flux that appears with a MINUS sign in dX/dt and a PLUS sign in dY/dt. Never model transport as an "activation" edge, and never let transport create or destroy material.
 R3. RATE GATING / FEEDBACK. When a flux is "strongly activated by"/"gated by" a species S, multiply that flux by a Hill term, e.g. S**n/(K**n + S**n). Do NOT add a separate edge for this - it belongs inside the flux expression.
@@ -45,6 +45,10 @@ R7. DISTINCT CONSTANTS. Use a separate named rate constant for each distinct pro
 R8. DRIVERS/STIMULI. A quantity that is imposed/held from outside (an applied Ca level, a tetanus, a clamp) is a PARAMETER, or - if it must vary in time - a smooth algebraic function of t (e.g. a logistic step 1/(1+exp(-s*(t-t0)))). NEVER write a piecewise if(...) and never give an imposed driver its own accumulation ODE.
 R9. ODES AND SPECIES MUST MATCH EXACTLY. Every entry in "odes" must be a species in "nodes", and every species in "nodes" must have exactly one entry in "odes". Never write an ODE for something that is not a declared species; never declare a species that has no ODE (that is a dead node - make it a parameter instead). Do not leave a species defined with d/dt = 0 that nothing else uses.
 R10. THE SYSTEM MUST BE ABLE TO LEAVE ITS INITIAL STATE. If production of a species is autocatalytic (proportional to an already-active/phosphorylated form that starts at zero), you MUST also include a separate INITIATION or basal term that does not depend on that form, so the first bit can appear. Otherwise the all-zero state is a permanent fixed point and nothing ever happens.
+R11. EVERY SPECIES MUST ACTUALLY MOVE. Each species you declare must visibly change during the simulation. It is NOT enough that some species move: check each one. A species whose only source term is proportional to itself (dRAS/dt = k*RAS/(1+RAS) - ...) or to another species that starts at zero stays pinned at zero forever, and every species downstream of it does too - the plot is a flat line at 0 and reports nothing. Drive the first species of any chain from something that is already non-zero at t=0.
+R12. ONE SPECIES PER NAMED ENTITY. If the description names ERK, model ERK - do NOT emit ERK plus a separate ERK_act/ERKa/pERK twin and put the dynamics in the twin, because the species the researcher named would then be a flat unused pool. If an inactive/active split is genuinely required, make the interconversion two-way so BOTH forms vary. Never leave the named species constant.
+R13. BOUNDED MAGNITUDES. Concentrations must stay within a few orders of magnitude of the initial values and parameters you chose. A species that grows exponentially to thousands of times the model's own scale is wrong, and it is almost always caused by adding one flux to two different species without subtracting it anywhere (material out of nothing), or by an unsaturated self-production term. Every named flux that MOVES material must appear with a minus sign in the source ODE and a plus sign in the destination ODE.
+R14. MODEL ONLY WHAT IS DESCRIBED. Do not elaborate the description into the textbook pathway it reminds you of. "RAS activates RAF. RAF activates MEK." is a THREE-species model: do NOT add EGF, EGFR, ERK, or any other upstream or downstream step the user did not mention. Extra species change every trajectory in the model and appear to the user as species they asked for. Introduce an unnamed intermediate only when the described mechanism cannot be written without it.
 
 SCHEMA (include only the relevant fields):
 {
@@ -124,6 +128,13 @@ def sanitize_blueprint(bp: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(bp, dict):
         return bp
 
+    # --- normalize "type": the schema defines ODE and PDE. Models invent other values
+    # ("qualitative", "influence graph", "ode"), and an unrecognised type would reach the
+    # API and the frontend as a third mode nothing knows how to render.
+    raw_type = bp.get("type")
+    if raw_type is not None:
+        bp["type"] = "PDE" if str(raw_type).strip().upper() == "PDE" else "ODE"
+
     # --- normalize nodes: each becomes {"id": <str>, "initial_value": <float>, ...} ---
     nodes = bp.get("nodes")
     if isinstance(nodes, list):
@@ -148,7 +159,22 @@ def sanitize_blueprint(bp: Dict[str, Any]) -> Dict[str, Any]:
         bp["nodes"] = nodes = norm_nodes
 
     # --- normalize parameters: {str: float} ---
+    # Models also emit this block as a LIST of objects ([{"name": "k", "value": 0.5}]),
+    # which reaches the compiler as a list and crashes it with
+    # "'list' object has no attribute 'items'". Coerce that shape instead of dropping it,
+    # so a model that is otherwise fine is not thrown away over its parameter container.
     params = bp.get("parameters")
+    if isinstance(params, list):
+        rebuilt: Dict[str, Any] = {}
+        for item in params:
+            if not isinstance(item, dict):
+                continue
+            name = _coerce_id(item.get("name") or item.get("id") or item.get("parameter")
+                              or item.get("symbol"))
+            if not name:
+                continue
+            rebuilt[name] = item.get("value", item.get("default", item.get("val", 1.0)))
+        bp["parameters"] = params = rebuilt
     if isinstance(params, dict):
         norm = {}
         for k, v in params.items():
@@ -156,6 +182,8 @@ def sanitize_blueprint(bp: Dict[str, Any]) -> Dict[str, Any]:
             if key:
                 norm[key] = _coerce_number(v, 1.0)
         bp["parameters"] = norm
+    elif params is not None:
+        bp["parameters"] = {}
 
     # --- normalize fluxes / odes: {str: str} (drop non-scalar expression values) ---
     for key in ("fluxes", "odes"):
@@ -176,6 +204,24 @@ def sanitize_blueprint(bp: Dict[str, Any]) -> Dict[str, Any]:
         for e in edges:
             if not isinstance(e, dict):
                 continue
+            # Per-edge parameters are read with .get(), so a list or a scalar here is an
+            # AttributeError in the compiler. Anything that is not a {name: number} map
+            # becomes an empty map, which makes the compiler use its Hill defaults.
+            ep = e.get("parameters")
+            if isinstance(ep, list):
+                rebuilt = {}
+                for item in ep:
+                    if isinstance(item, dict):
+                        name = _coerce_id(item.get("name") or item.get("id"))
+                        if name:
+                            rebuilt[name] = _coerce_number(
+                                item.get("value", item.get("default", 1.0)), 1.0)
+                e["parameters"] = rebuilt
+            elif isinstance(ep, dict):
+                e["parameters"] = {str(k).strip(): _coerce_number(v, 1.0)
+                                   for k, v in ep.items() if str(k).strip()}
+            elif ep is not None:
+                e["parameters"] = {}
             for key in ("source", "target"):
                 nid = _coerce_id(e.get(key))
                 if nid:
@@ -198,7 +244,7 @@ Your previous JSON:
 Defect found when compiling/simulating it:
 <<<ERROR>>>
 
-Return ONLY the corrected raw JSON (same schema: type, nodes, parameters, fluxes, odes, simulation_config). Keep the mechanism and mass conservation - just fix the defect. Enforce: constants/stimuli are PARAMETERS (never species); every term of each d/dt is a rate; a distinct rate constant per process (never reuse one symbol for two rates); no species may go negative (loss terms proportional to the species); a time-varying driver is a parameter or a smooth function of t, never a piecewise if(); the odes keys and the species set must be identical (no ODE for a non-species, no species without an ODE, no dead d/dt=0 species); and the system must be able to leave its initial state (if production is autocatalytic in a form that starts at zero, add a separate initiation/basal term so it is not frozen)."""
+Return ONLY the corrected raw JSON (same schema: type, nodes, parameters, fluxes, odes, simulation_config). Keep the mechanism and mass conservation - just fix the defect. Enforce: constants/stimuli are PARAMETERS (never species); every term of each d/dt is a rate; a distinct rate constant per process (never reuse one symbol for two rates); no species may go negative (loss terms proportional to the species); a time-varying driver is a parameter or a smooth function of t, never a piecewise if(); the odes keys and the species set must be identical (no ODE for a non-species, no species without an ODE, no dead d/dt=0 species); the system must be able to leave its initial state (if production is autocatalytic in a form that starts at zero, add a separate initiation/basal term so it is not frozen); EVERY species must visibly change (a species whose only source is proportional to itself, or to another species that starts at zero, stays pinned at zero forever and so does everything downstream of it); ONE species per entity the description names (no flat named pool beside an _act/a/p twin that carries all the dynamics); and every flux that MOVES material must appear with a minus sign in the source ODE and a plus sign in the destination ODE, so nothing grows without bound."""
 
 
 def _validation_error_messages(raw: Any) -> List[str]:
@@ -213,17 +259,70 @@ def _is_nonblocking_sparse_refusal(errors: List[str]) -> bool:
     Bare qualitative graphs are valid input because the deterministic Hill compiler can
     supply generic dynamics. Every other refusal is preserved for the user rather than
     silently compiling a model the LLM judged contradictory or impossible.
+
+    This has to read FREE-FORM model prose, so it cannot be a list of exact phrases.
+    Measured against Bedrock (mistral.mistral-large-3-675b-instruct, us-east-2), the
+    input "MEK activates ERK." was refused with
+
+        "Description is a bare influence sketch with no rates, compartments, or
+         mechanistic details. ... A qualitative influence graph is the only valid
+         representation."
+
+    which matched none of the original phrase list, so the most basic input a researcher
+    can type came back as a hard validation error with NO model - even though a bare
+    influence sketch is exactly what the deterministic Hill compiler exists to handle.
+    The test is therefore: does the refusal complain about MISSING information, and does
+    it stop short of naming a concrete contradiction?
     """
-    sparse_markers = (
-        "too sparse", "only qualitative", "qualitative description",
-        "insufficient detail", "insufficient information", "not enough information",
-        "missing quantitative", "lacks quantitative", "no kinetic", "missing kinetic",
-        "no parameter values", "missing parameter values",
+    if not errors:
+        return False
+
+    # A concrete physical/logical contradiction. Each marker must describe THE SYSTEM
+    # being wrong, never the modelling being under-determined: a bare "impossible" is
+    # deliberately absent, because a sparse refusal routinely says it is "impossible to
+    # construct a mass-conserving model" from a description with no rates in it, and
+    # reading that as a contradiction is what hard-failed "MEK activates ERK."
+    blocking_markers = (
+        "contradict", "creates mass", "mass from nothing", "mass out of nothing",
+        "violates conservation", "violates mass", "violates the conservation",
+        "conservation of mass is violated", "not mass-conserving because",
+        "cannot be negative", "goes negative", "negative concentration",
+        "concentration negative", "drives the concentration",
+        "mutually exclusive", "logically inconsistent", "self-inconsistent",
+        "self-contradictory", "physically impossible", "biologically impossible",
+        "thermodynamically impossible", "physically unrealizable", "unphysical",
     )
-    return bool(errors) and all(
-        any(marker in error.lower() for marker in sparse_markers)
-        for error in errors
+    # A complaint about ABSENT detail. A fixed phrase list cannot keep up with model
+    # prose - three runs of the same input produced "no mechanistic details", "lacks
+    # mechanistic detail" and "without any mechanistic details" - so the real test is
+    # structural: a negator sitting close to a word for the kind of information that is
+    # missing. The explicit phrases below only cover wordings with no negator at all.
+    negation_window = re.compile(
+        r"\b(no|not|non|none|without|lack|lacks|lacking|missing|absent|omits?|"
+        r"insufficient|inadequate|underdetermined|under-determined|only|bare|sparse|"
+        r"unspecified|ambiguous|unclear|more|additional|further)\b"
+        r"[^.;]{0,60}?"
+        r"\b(rate|rates|kinetic|kinetics|mechanistic|mechanism|mechanisms|parameter|"
+        r"parameters|quantitative|numeric|numerical|number|value|values|compartment|"
+        r"compartments|conservation|constant|constants|detail|details|information|"
+        r"initial|stoichiometr\w*|dynamics|transport|process|processes|specific\w*)\b",
+        re.IGNORECASE)
+    sparse_phrases = (
+        "too sparse", "sparse", "only qualitative", "qualitative description",
+        "qualitative influence", "influence sketch", "influence graph",
+        "influence statement", "influence diagram", "qualitative model",
+        "qualitative representation", "cannot determine", "cannot be determined",
+        "cannot tell", "does not specify", "does not say", "provides no",
+        "is not specified", "unable to determine",
     )
+    for error in errors:
+        lowered = error.lower()
+        if any(marker in lowered for marker in blocking_markers):
+            return False
+        if not (negation_window.search(lowered)
+                or any(phrase in lowered for phrase in sparse_phrases)):
+            return False
+    return True
 
 
 def _pde_blueprint_status(bp: Dict[str, Any]) -> Tuple[str, str]:
@@ -422,6 +521,610 @@ def validate_blueprint(bp: Dict[str, Any]) -> Tuple[str, str]:
     return _blueprint_status(bp)
 
 
+# =============================================================================
+# LLM-OUTPUT INTEGRITY AUDIT  (applied to LLM output only)
+# =============================================================================
+# _blueprint_status() answers "does this compile and run?". For LLM output that is
+# not enough: the two worst defects measured against real AWS Bedrock models BOTH
+# compile, integrate to t_max, stay finite and stay non-negative, so they were
+# graded "ok" and handed to the researcher as validated models.
+#
+#  1. DEAD NAMED POOL. For an EGF -> EGFR -> RAS -> RAF -> MEK -> ERK cascade, the
+#     model emitted  egfr_ras = k_egfr_ras*RAS/(1 + RAS)  as the ONLY source term of
+#     RAS. RAS starts at 0, so dRAS/dt is 0 for all time, and RAF/MEK/ERK downstream
+#     of it are identically 0 as well: FOUR of the six species the text named were
+#     flat lines at exactly 0.0 while EGF and EGFR evolved normally.
+#     _blueprint_status passed it because its "did anything move?" test is a single
+#     OR over all species - one moving species exonerates every other one. A target
+#     placed on ERK then measures a flat zero, and a flat trace is indistinguishable
+#     from a real result. This is the same failure mode as the historical
+#     ERK / ERK_act split, where the species the researcher named is a flat pool
+#     beside a dynamic twin that carries all the actual dynamics.
+#
+#  2. UNBOUNDED GROWTH FROM MASS CREATION. The same cascade was written as
+#     dEGFR/dt = -egf_egfr + egfr_ras  while ALSO writing  dRAS/dt = +egfr_ras:
+#     one flux added to two species with a minus sign nowhere, i.e. material out of
+#     nothing, and autocatalytic in EGFR. EGFR reached 10226.8 from an initial value
+#     of 1.0 (RAS 5113, RAF 5083) and was still climbing at t_max - yet the run was
+#     finite and non-negative, so this too was graded "ok".
+#
+# The audit therefore adds what a compile-and-run smoke test structurally cannot see:
+# per-species dynamics, model-relative magnitude, and flux sign conservation. It runs
+# ONLY on LLM output, so the deterministic parser and a researcher's own hand-written
+# equations keep their existing (looser) contract.
+
+# A species is a runaway when it exceeds this multiple of the model's OWN scale
+# (largest initial value or parameter magnitude) and is still growing at t_max.
+_RUNAWAY_FACTOR = 1.0e3
+
+
+def _llm_model_scale(bp: Dict[str, Any]) -> float:
+    """The model's own level scale: the largest initial value or parameter magnitude.
+    Judging magnitude relative to this (never against an absolute number) keeps a
+    model whose natural units are large from being called a runaway."""
+    vals = [1.0]
+    for node in bp.get("nodes") or []:
+        if isinstance(node, dict):
+            try:
+                vals.append(abs(float(node.get("initial_value", 0.0) or 0.0)))
+            except (TypeError, ValueError):
+                pass
+    params = bp.get("parameters")
+    if isinstance(params, dict):
+        for v in params.values():
+            try:
+                vals.append(abs(float(v)))
+            except (TypeError, ValueError):
+                pass
+    return max(vals)
+
+
+def _llm_active_twin(sid: str, candidates: List[str], is_flat) -> Optional[str]:
+    """Return a DYNAMIC species that is clearly the activated twin of ``sid``
+    (ERK -> ERKa / ERK_act / pERK / ppERK), or None. Matched loosely on the shape
+    "another species' name plus a short suffix" rather than against a fixed list of
+    spellings, because the suffix a model picks varies from run to run - 'a' and
+    '_act' have both been observed for the same description."""
+    for other in candidates:
+        if other == sid or is_flat(other):
+            continue
+        if _llm_twin_base(other, [sid, other]) == sid:
+            return other
+    return None
+
+
+def _llm_flux_conservation_error(bp: Dict[str, Any]) -> Optional[str]:
+    """Detect a named flux that ADDS material to two or more species while removing it
+    from none - material out of nothing.
+
+    A real conversion or transport flux always carries a matching minus sign: A -> B + C
+    is -1 in dA/dt and +1 in each of dB/dt and dC/dt. A flux that is positive in several
+    ODEs and negative in none has no source. A flux whose expression uses NO species (a
+    constant supply term) is exempt, because a constant influx may legitimately feed
+    several pools at once.
+    """
+    import sympy as sp
+    fluxes, odes = bp.get("fluxes"), bp.get("odes")
+    if not (isinstance(fluxes, dict) and fluxes and isinstance(odes, dict) and odes):
+        return None
+    species = {n.get("id") for n in bp.get("nodes") or []
+               if isinstance(n, dict) and n.get("id")}
+
+    parsed: Dict[str, Any] = {}
+    for sid, expr in odes.items():
+        try:
+            parsed[sid] = sp.sympify(str(expr))
+        except Exception:
+            return None          # unparsable: the compile check in _blueprint_status owns it
+
+    for fname, fexpr in fluxes.items():
+        try:
+            fsym = sp.Symbol(str(fname))
+            body = sp.sympify(str(fexpr))
+        except Exception:
+            continue
+        if not ({str(s) for s in body.free_symbols} & species):
+            continue             # parameter-only supply: a legitimate shared source
+        plus, minus = [], []
+        for sid, expr in parsed.items():
+            if fsym not in expr.free_symbols:
+                continue
+            try:
+                d = sp.diff(expr, fsym)
+                val = float(d.subs({s: 1.0 for s in d.free_symbols}))
+            except Exception:
+                continue
+            if val > 1e-12:
+                plus.append(sid)
+            elif val < -1e-12:
+                minus.append(sid)
+        if len(plus) >= 2 and not minus:
+            return (f"Flux '{fname}' is ADDED to {sorted(plus)} and subtracted from nothing, so it "
+                    f"creates material out of nothing (it depends on a species, so it is not a "
+                    f"constant supply term). The same flux must appear with a MINUS sign in the ODE "
+                    f"of the pool it comes FROM and a PLUS sign in the pool it enters.")
+    return None
+
+
+def _llm_model_integrity(bp: Dict[str, Any]) -> Tuple[str, str]:
+    """Audit an LLM blueprint that already compiles and runs.
+
+    Returns ``(status, message)`` with the same vocabulary as ``_blueprint_status``:
+    ``ok``, ``imperfect`` (usable but flagged to the user), or ``broken`` (send back
+    for repair, and never present as a validated model).
+    """
+    if not isinstance(bp, dict) or bp.get("validation_errors"):
+        return "ok", ""
+    if str(bp.get("type", "ODE")).upper() == "PDE":
+        return "ok", ""                       # PDE fields are graded by _pde_blueprint_status
+    if not bp.get("nodes"):
+        return "ok", ""
+
+    conservation = _llm_flux_conservation_error(bp)
+
+    try:
+        model = ODEModel(bp)
+        t_max = float((bp.get("simulation_config") or {}).get("t_max", 50.0) or 50.0)
+        sim_tmax = min(max(t_max, 1.0), 200.0)
+        res = model.simulate(sim_tmax, num_points=200)
+        traces = {sid: np.asarray(vals, dtype=float)
+                  for sid, vals in (res.get("species") or {}).items()}
+    except Exception:
+        # A model that will not compile or run is already _blueprint_status's verdict.
+        return ("broken", conservation) if conservation else ("ok", "")
+    if not traces:
+        return ("broken", conservation) if conservation else ("ok", "")
+
+    def _flat(sid: str) -> bool:
+        a = traces.get(sid)
+        if a is None or a.size == 0 or not np.all(np.isfinite(a)):
+            return True
+        span = float(np.nanmax(a) - np.nanmin(a))
+        local = max(abs(float(a[0])), abs(float(np.nanmean(a))), 1e-9)
+        return not (span > 1e-6 and (span / local) > 1e-3)
+
+    ids = list(traces.keys())
+    flat = sorted(sid for sid in ids if _flat(sid))
+    moving = [sid for sid in ids if sid not in flat]
+
+    # Nothing moved at all -> already reported by _blueprint_status; do not double-report.
+    if not moving:
+        return ("broken", conservation) if conservation else ("ok", "")
+
+    # --- Defect 1a: a declared species that is identically zero for the whole run. ---
+    dead = [sid for sid in flat
+            if float(np.nanmax(np.abs(traces[sid]))) <= 1e-9]
+    if dead:
+        return "broken", (
+            f"Species {dead} never leave zero: they are flat at exactly 0.0 for the whole "
+            f"simulation while {moving} evolve, so the model reports nothing about them. "
+            f"A named species that stays at zero is an unused pool, and a flat trace cannot be "
+            f"told apart from a real result. Usually the only production term for the first such "
+            f"species is proportional to that species itself (or to another species that starts "
+            f"at zero), which makes zero a permanent fixed point - give it a source term that does "
+            f"NOT depend on it, or drive it from a species that is already non-zero at t=0."
+            + (f" Also: {conservation}" if conservation else ""))
+
+    # --- Defect 1b: a flat pool beside a dynamic activated twin (ERK vs ERKa). ---
+    # _llm_resolve_active_twins() runs before this and COLLAPSES the pair whenever the
+    # flat pool is a pure decoy, so anything reaching here is a pool that other rate
+    # laws genuinely use. That split may be real, but it must never be silent: grade it
+    # imperfect so the reason travels to the user in _llm_notice.
+    twins = [(sid, _llm_active_twin(sid, ids, _flat)) for sid in flat]
+    twins = [(sid, twin) for sid, twin in twins if twin]
+    if twins:
+        orphans = [(sid, twin) for sid, twin in twins
+                   if not _llm_symbol_used_elsewhere(bp, sid)]
+        if orphans:
+            pairs = ", ".join(f"'{sid}' (flat) beside '{twin}' (dynamic)" for sid, twin in orphans)
+            return "broken", (
+                f"The model split a species into an inert pool and an active twin: {pairs}. The "
+                f"species the description names must be the one that carries the dynamics; as "
+                f"written, a target placed on it would measure a flat line. Emit ONE species per "
+                f"named entity, or make the interconversion two-way so the named species varies."
+                + (f" Also: {conservation}" if conservation else ""))
+        pairs = "; ".join(
+            f"'{sid}' is constant while '{twin}' carries the dynamics - read '{twin}'"
+            for sid, twin in twins)
+        return "imperfect", (
+            f"The model uses an inactive/active split: {pairs}. "
+            + (conservation or ""))
+
+    # --- Defect 2: unbounded growth (mass creation / unsaturated autocatalysis). ---
+    scale = _llm_model_scale(bp)
+    for sid, a in traces.items():
+        hi = float(np.nanmax(np.abs(a)))
+        if hi <= _RUNAWAY_FACTOR * scale:
+            continue
+        tail = a[max(1, int(0.9 * a.size)):]
+        still_growing = (tail.size >= 2 and
+                         float(tail[-1] - tail[0]) > 1e-6 * max(1.0, abs(float(tail[-1]))))
+        if still_growing:
+            return "broken", (
+                f"Species '{sid}' grows without bound: it reaches {hi:.4g}, which is "
+                f"{hi / scale:.0f}x this model's own scale ({scale:.4g}, the largest initial value "
+                f"or parameter), and it is still increasing at t_max, so the trajectory has no "
+                f"physical meaning. "
+                + (conservation or
+                   "Add saturation to the responsible term, or subtract the growth flux from the "
+                   "pool it consumes so material is conserved."))
+
+    if conservation:
+        return "broken", conservation
+
+    # --- Flat but non-zero and with no active twin: usable, but the user must be told. ---
+    if flat:
+        return "imperfect", (
+            f"Species {flat} never change over the whole simulation (they sit at their initial "
+            f"value). Any target placed on them would measure a constant.")
+    return "ok", ""
+
+
+# Gene / protein-like tokens a description names explicitly. Deliberately narrow:
+# an all-caps or mixed-caps token with at least one letter and no lowercase-only form
+# (ERK, MEK, EGFR, MDM2, G6P, p53, LacI, TetR), which is how researchers write species.
+_NAMED_TOKEN_RE = re.compile(r"\b(?:[A-Z][A-Za-z]*\d+[A-Za-z\d]*|[A-Z]{2,}\d*|[a-z]\d{2,})\b")
+_NAMED_TOKEN_STOPWORDS = {
+    "ODE", "PDE", "JSON", "DNA", "RNA", "MRNA", "ATP", "ADP", "GTP", "GDP", "NAD",
+    "AND", "OR", "NOT", "THE", "A", "AN", "IF", "IS", "ARE", "IT", "ITS", "BY", "AT",
+    "TO", "OF", "IN", "ON", "FOR", "WITH", "THEN", "ALSO", "BOTH", "EACH", "OTHER",
+}
+
+
+def _llm_missing_named_species(text: str, bp: Dict[str, Any]) -> List[str]:
+    """Tokens the description names explicitly that appear NOWHERE in the model.
+
+    Heuristic and advisory only: it never changes the blueprint's status, it only
+    warns the researcher (and hints the repair round) when the thing they asked about
+    is absent. A missing name is how "the model silently dropped ERK" reaches a user
+    who then reads a plot of something else.
+    """
+    if not isinstance(bp, dict) or bp.get("validation_errors"):
+        return []
+    tokens = []
+    for tok in _NAMED_TOKEN_RE.findall(text or ""):
+        if tok.upper() in _NAMED_TOKEN_STOPWORDS or len(tok) < 2:
+            continue
+        if tok not in tokens:
+            tokens.append(tok)
+    if not tokens:
+        return []
+
+    haystack = []
+    for node in bp.get("nodes") or []:
+        if isinstance(node, dict):
+            haystack += [str(node.get("id", "")), str(node.get("name", ""))]
+    for key in ("parameters", "fluxes", "odes"):
+        d = bp.get(key)
+        if isinstance(d, dict):
+            haystack += [str(k) for k in d.keys()]
+            haystack += [str(v) for v in d.values() if not isinstance(v, (dict, list))]
+    blob = " ".join(haystack).lower()
+
+    missing = [tok for tok in tokens if tok.lower() not in blob]
+    return missing
+
+
+def _llm_text_tokens(text: str) -> List[str]:
+    """Lower-cased alphanumeric chunks of the description, for support matching."""
+    return [t for t in re.split(r"[^A-Za-z0-9]+", (text or "").lower()) if t]
+
+
+def _llm_unrequested_species(text: str, bp: Dict[str, Any]) -> List[str]:
+    """Species the model introduced that the description gives NO basis for.
+
+    Measured defect: for the description "RAS activates RAF. RAF activates MEK." a model
+    returned an entire textbook cascade - EGF, EGFR, RAS, RAF, MEK, ERK plus an 'a'
+    twin of each - so a researcher modelling three species got a model of eleven. The
+    two extra kinases are not an implementation detail: they change every trajectory in
+    the model and appear in the target-species dropdown as if the researcher had asked
+    for them.
+
+    A species counts as SUPPORTED when its id or its display name shares a word stem
+    with the description, or when it is the active twin / binary complex of a supported
+    species (RASa from RAS; EGF_EGFR from EGF and EGFR). Advisory: an LLM may legitimately
+    name an intermediate the text only implies (hexokinase products, a phosphorylated
+    form), so this drives a repair instruction and a user-visible notice, never a refusal.
+    """
+    if not isinstance(bp, dict) or bp.get("validation_errors"):
+        return []
+    nodes = [n for n in (bp.get("nodes") or []) if isinstance(n, dict) and n.get("id")]
+    if not nodes:
+        return []
+    words = _llm_text_tokens(text)
+    if not words:
+        return []
+
+    def _supported_by_text(label: str) -> bool:
+        for chunk in _llm_text_tokens(label):
+            if len(chunk) < 2:
+                continue
+            for w in words:
+                if chunk == w or (len(chunk) >= 3 and chunk in w) or (len(w) >= 3 and w in chunk):
+                    return True
+        return False
+
+    ids = [str(n["id"]) for n in nodes]
+    supported = set()
+    for node in nodes:
+        sid = str(node["id"])
+        if _supported_by_text(sid) or _supported_by_text(str(node.get("name") or "")):
+            supported.add(sid)
+
+    # Derived forms of a supported species are supported too: an active twin, and a
+    # complex whose id is built out of two or more supported ids (EGF_EGFR, Ca_CaM).
+    for _ in range(3):
+        grew = False
+        for sid in ids:
+            if sid in supported:
+                continue
+            base = _llm_twin_base(sid, ids)
+            if base and base in supported:
+                supported.add(sid)
+                grew = True
+                continue
+            parts = [p for p in re.split(r"[^A-Za-z0-9]+", sid) if p]
+            if len(parts) >= 2 and all(
+                    any(p.lower() == other.lower() or p.lower() in other.lower()
+                        for other in supported) for p in parts):
+                supported.add(sid)
+                grew = True
+        if not grew:
+            break
+    return [sid for sid in ids if sid not in supported]
+
+
+# Short tokens that mark an "activated"/"modified" form. Matched with ANY separator and
+# at either end, so no single spelling is hard-coded: 'a' and '_act' have both been
+# observed from the same model for the same description. The set matters, though - a
+# free-for-all "base plus <=5 letters" match makes EGFR look like an active form of EGF,
+# which would merge two genuinely different proteins.
+_ACTIVATION_TOKENS = frozenset({
+    "a", "act", "acti", "active", "activ", "activated", "on", "star",
+    "p", "pp", "ppp", "phos", "phospho", "phosph", "phosphorylated",
+    "i", "inact", "inactive", "free", "bound", "total", "tot", "cyt", "nuc",
+})
+
+
+def _llm_twin_base(twin: str, candidates: List[str]) -> Optional[str]:
+    """If ``twin`` is another species' name plus a short activation token (as a suffix or
+    a prefix), return that other species. The LONGEST matching candidate wins, so 'EGFRa'
+    resolves to 'EGFR' rather than to 'EGF' when both are present."""
+    low = twin.lower()
+    for other in sorted((c for c in candidates if c != twin), key=len, reverse=True):
+        o = other.lower()
+        if len(low) <= len(o):
+            continue
+        if low.startswith(o):
+            tail = low[len(o):].lstrip("_- ")
+            if tail in _ACTIVATION_TOKENS:
+                return other
+        if low.endswith(o):
+            head = low[:len(low) - len(o)].rstrip("_- ")
+            if head in _ACTIVATION_TOKENS:
+                return other
+    return None
+
+
+def _llm_symbol_used_elsewhere(bp: Dict[str, Any], sid: str) -> bool:
+    """True when ``sid`` appears in any rate law other than its own d/dt - i.e. the pool
+    genuinely feeds or gates something, rather than sitting there as a decoy."""
+    pattern = re.compile(r"\b" + re.escape(sid) + r"\b")
+    fluxes = bp.get("fluxes")
+    if isinstance(fluxes, dict):
+        for expr in fluxes.values():
+            if isinstance(expr, str) and pattern.search(expr):
+                return True
+    odes = bp.get("odes")
+    if isinstance(odes, dict):
+        for key, expr in odes.items():
+            if key != sid and isinstance(expr, str) and pattern.search(expr):
+                return True
+    edges = bp.get("edges")
+    if isinstance(edges, list):
+        for e in edges:
+            if isinstance(e, dict) and sid in (e.get("source"), e.get("target")):
+                return True
+    return False
+
+
+def _llm_rename_species(bp: Dict[str, Any], old: str, new: str) -> None:
+    """Rename a species everywhere in the blueprint, on word boundaries."""
+    pattern = re.compile(r"\b" + re.escape(old) + r"\b")
+    for node in bp.get("nodes") or []:
+        if isinstance(node, dict) and str(node.get("id")) == old:
+            node["id"] = new
+            if not node.get("name") or str(node.get("name")) == old:
+                node["name"] = new
+    odes = bp.get("odes")
+    if isinstance(odes, dict):
+        bp["odes"] = {(new if k == old else k):
+                      (pattern.sub(new, v) if isinstance(v, str) else v)
+                      for k, v in odes.items()}
+    fluxes = bp.get("fluxes")
+    if isinstance(fluxes, dict):
+        bp["fluxes"] = {k: (pattern.sub(new, v) if isinstance(v, str) else v)
+                        for k, v in fluxes.items()}
+    for e in bp.get("edges") or []:
+        if isinstance(e, dict):
+            for key in ("source", "target"):
+                if e.get(key) == old:
+                    e[key] = new
+
+
+def _llm_resolve_active_twins(bp: Dict[str, Any]) -> List[str]:
+    """Repair the active-form duplication, in place, and return user-facing notes.
+
+    The defect: the model emits both the species the researcher named (RAF) and an
+    activated twin (RAFa / RAF_act / pRAF), puts every bit of the dynamics in the twin,
+    and leaves the named species a flat pool. A target set on RAF then measures a
+    constant, and a flat trace is indistinguishable from a real result.
+
+    Two outcomes, chosen per pair on evidence rather than by preference:
+
+      (a) COLLAPSE - the flat named pool is referenced by no other rate law, so it is a
+          pure decoy. Delete it and rename the dynamic twin to the researcher's name.
+          The model then contains exactly the species the description named. This is
+          the default because it removes the ambiguity instead of documenting it.
+
+      (b) DISCLOSE - the flat pool IS used by another rate law, so the inactive/active
+          split is part of the mechanism and deleting it would change the model. Keep
+          both and say plainly, in the notice, that the split happened and which species
+          carries the dynamics (that is also the species the target evaluator retargets
+          onto, so the readout and the disclosure agree).
+    """
+    notes: List[str] = []
+    if not isinstance(bp, dict) or bp.get("validation_errors"):
+        return notes
+    if str(bp.get("type", "ODE")).upper() == "PDE":
+        return notes
+    nodes = [n for n in (bp.get("nodes") or []) if isinstance(n, dict) and n.get("id")]
+    if len(nodes) < 2:
+        return notes
+
+    try:
+        model = ODEModel(bp)
+        t_max = float((bp.get("simulation_config") or {}).get("t_max", 50.0) or 50.0)
+        res = model.simulate(min(max(t_max, 1.0), 200.0), num_points=200)
+        traces = {sid: np.asarray(v, dtype=float)
+                  for sid, v in (res.get("species") or {}).items()}
+    except Exception:
+        return notes                       # cannot judge without a trajectory
+    if not traces:
+        return notes
+
+    def _flat(sid: str) -> bool:
+        a = traces.get(sid)
+        if a is None or a.size == 0 or not np.all(np.isfinite(a)):
+            return True
+        span = float(np.nanmax(a) - np.nanmin(a))
+        local = max(abs(float(a[0])), abs(float(np.nanmean(a))), 1e-9)
+        return not (span > 1e-6 and (span / local) > 1e-3)
+
+    ids = [str(n["id"]) for n in nodes]
+    pairs = []
+    for twin in ids:
+        base = _llm_twin_base(twin, ids)
+        if base and _flat(base) and not _flat(twin):
+            pairs.append((base, twin))
+
+    for base, twin in pairs:
+        if base not in [str(n["id"]) for n in bp.get("nodes") or [] if isinstance(n, dict)]:
+            continue                       # already handled by an earlier pair
+        span_twin = float(np.nanmax(traces[twin]) - np.nanmin(traces[twin]))
+        if _llm_symbol_used_elsewhere(bp, base):
+            # (b) the split is load-bearing: keep it, but never leave it undisclosed.
+            notes.append(
+                f"The AI split '{base}' into an inactive pool and an active form '{twin}'. "
+                f"'{base}' stays constant at {float(traces[base][0]):.4g} for the whole run, so "
+                f"'{twin}' is the species that carries the dynamics (it varies over "
+                f"{span_twin:.4g}). Results are being measured on '{twin}': a target on "
+                f"'{base}' would measure a flat line.")
+            continue
+        # (a) the named pool is a decoy: nothing reads it. Collapse the pair.
+        bp["nodes"] = [n for n in bp.get("nodes") or []
+                       if not (isinstance(n, dict) and str(n.get("id")) == base)]
+        odes = bp.get("odes")
+        if isinstance(odes, dict):
+            odes.pop(base, None)
+        _llm_rename_species(bp, twin, base)
+        notes.append(
+            f"The AI produced both '{base}' and an active twin '{twin}', with '{base}' left "
+            f"as an unused flat pool. '{base}' was referenced by no rate law, so the two were "
+            f"merged: the dynamics now live on '{base}', the name your description used.")
+    return notes
+
+
+def _llm_seed_qualitative_sources(bp: Dict[str, Any]) -> List[str]:
+    """Give an edges-mode influence graph a non-zero starting point, in place.
+
+    Measured defect: asked for the qualitative form of "MEK activates ERK.", Bedrock
+    returned the correct graph but with EVERY initial value at 0.0. The Hill activation
+    term is proportional to the source species, so at the all-zero state every derivative
+    is zero: the model is an exact fixed point, the smoke test correctly calls it frozen,
+    and three repair rounds are then spent throwing away a graph whose only flaw was its
+    initial condition. Seed the upstream drivers (a species that is a source but never a
+    target) so the cascade can run; a pure cycle gets its first source seeded instead.
+    """
+    notes: List[str] = []
+    if not isinstance(bp, dict) or bp.get("validation_errors"):
+        return notes
+    if str(bp.get("type", "ODE")).upper() == "PDE":
+        return notes
+    if bp.get("odes"):
+        return notes                       # custom-kinetics mode owns its own initials
+    edges = bp.get("edges")
+    nodes = [n for n in (bp.get("nodes") or []) if isinstance(n, dict) and n.get("id")]
+    if not (isinstance(edges, list) and edges and nodes):
+        return notes
+    try:
+        if any(abs(float(n.get("initial_value", 0.0) or 0.0)) > 1e-12 for n in nodes):
+            return notes                   # something already starts non-zero
+    except (TypeError, ValueError):
+        return notes
+
+    sources = [e.get("source") for e in edges if isinstance(e, dict) and e.get("source")]
+    targets = {e.get("target") for e in edges if isinstance(e, dict) and e.get("target")}
+    drivers = [s for s in dict.fromkeys(sources) if s not in targets]
+    if not drivers:
+        drivers = [sources[0]]             # every node is downstream of something: a cycle
+    seeded = []
+    for node in nodes:
+        if str(node.get("id")) in drivers:
+            node["initial_value"] = 1.0
+            seeded.append(str(node.get("id")))
+    if seeded:
+        notes.append(
+            "The AI produced an influence graph with every species starting at zero, which "
+            "cannot evolve, so " + ", ".join(seeded) +
+            " " + ("were" if len(seeded) > 1 else "was") + " set to 1.0 as the upstream "
+            "input. Adjust the initial values in the Model Summary if that is not the "
+            "starting state you meant.")
+    return notes
+
+
+def _llm_coverage_notices(text: str, bp: Dict[str, Any]) -> List[str]:
+    """User-facing warnings about the gap between what the description named and what the
+    model contains, in both directions: entities dropped, and species invented."""
+    notes: List[str] = []
+    missing = _llm_missing_named_species(text, bp)
+    if missing:
+        notes.append(
+            "Warning: your description names " + ", ".join(missing) +
+            " but the model contains no species, parameter, or rate law for " +
+            ("them" if len(missing) > 1 else "it") +
+            ". Check the Model Summary before reading any result as being about " +
+            ("those" if len(missing) > 1 else "that") + ".")
+    extra = _llm_unrequested_species(text, bp)
+    if extra:
+        notes.append(
+            "Warning: the AI added " + ", ".join(extra) +
+            ", which your description does not mention. " +
+            ("These species affect" if len(extra) > 1 else "This species affects") +
+            " every trajectory in the model - delete " +
+            ("them" if len(extra) > 1 else "it") +
+            " in the Model Summary if you did not want a larger pathway than you described.")
+    return notes
+
+
+def _llm_coverage_repair_hint(text: str, bp: Dict[str, Any]) -> str:
+    """Extra repair instructions naming exactly what the model dropped or invented."""
+    hint = ""
+    missing = _llm_missing_named_species(text, bp)
+    if missing:
+        hint += ("\n\nAlso: the description explicitly names " + ", ".join(missing) +
+                 ", but your model has no species or rate law for " +
+                 ("them" if len(missing) > 1 else "it") +
+                 ". Represent every entity the description names.")
+    extra = _llm_unrequested_species(text, bp)
+    if extra:
+        hint += ("\n\nAlso: you added " + ", ".join(extra) + ", which the description never "
+                 "mentions. Model ONLY what the description states - do not elaborate it into a "
+                 "larger textbook pathway, and do not add upstream or downstream steps the user "
+                 "did not ask for.")
+    return hint
+
+
 def parse_biological_text(text: str, llm: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Translates a natural language description into a structured biological blueprint.
@@ -441,7 +1144,10 @@ def parse_biological_text(text: str, llm: Optional[Dict[str, Any]] = None) -> Di
 
             MAX_ATTEMPTS = 3                 # 1 initial + up to 2 self-repairs
             best_effort = None               # last blueprint that at least runs (imperfect)
+            best_effort_reason = ""          # why that one was only imperfect
+            best_effort_notes: List[str] = []
             last_error = ""
+            declined_as_qualitative = False  # the LLM judged the text a bare sketch
             for attempt in range(MAX_ATTEMPTS):
                 errors = _validation_error_messages(
                     data.get("validation_errors") if isinstance(data, dict) else None
@@ -452,6 +1158,7 @@ def parse_biological_text(text: str, llm: Optional[Dict[str, Any]] = None) -> Di
                         # compiler supply generic kinetics if the LLM supplied no nodes.
                         data = dict(data)
                         data.pop("validation_errors", None)
+                        declined_as_qualitative = True
                     else:
                         # Physical contradictions and impossible models are deliberate
                         # refusals from STEP 1 of the compiler prompt. Never erase them.
@@ -463,33 +1170,74 @@ def parse_biological_text(text: str, llm: Optional[Dict[str, Any]] = None) -> Di
                     last_error = "the model returned no usable species"
                     break                    # -> deterministic fallback below
                 bp = sanitize_blueprint(data)
+                # Repair the two defects that are deterministically fixable, BEFORE
+                # grading: an influence graph frozen at all-zero initial values, and the
+                # active-form duplication where the named species is a flat twin.
+                notes = _llm_seed_qualitative_sources(bp)
+                notes += _llm_resolve_active_twins(bp)
                 status, err = _blueprint_status(bp)
+                # A blueprint that compiles and runs can still be scientifically empty
+                # (named species flat at zero) or physically meaningless (unbounded
+                # growth from mass creation). Both grade "ok" on a compile-and-run smoke
+                # test, so audit every runnable LLM blueprint before accepting it.
+                if status in ("ok", "imperfect"):
+                    integrity, integrity_err = _llm_model_integrity(bp)
+                    if integrity == "broken":
+                        status, err = "broken", integrity_err
+                    elif integrity == "imperfect":
+                        status = "imperfect"
+                        err = f"{err} {integrity_err}".strip() if err else integrity_err
                 if status == "ok":
+                    notices = list(notes)
                     if attempt > 0:
-                        bp["_llm_notice"] = f"Model self-repaired and validated after {attempt} fix round(s)."
+                        notices.append(f"Model self-repaired and validated after {attempt} fix round(s).")
+                    notices.extend(_llm_coverage_notices(text, bp))
+                    if notices:
+                        bp["_llm_notice"] = " ".join(notices)
                     return bp
                 if status == "imperfect":
                     best_effort = bp          # runs but flawed; keep as a fallback candidate
+                    best_effort_reason = err
+                    best_effort_notes = list(notes)
                 last_error = err
                 if attempt < MAX_ATTEMPTS - 1:
                     repair = (_REPAIR_PROMPT
                               .replace("<<<DESCRIPTION>>>", text)
                               .replace("<<<PREVIOUS>>>", json.dumps(data)[:4000])
                               .replace("<<<ERROR>>>", err))
+                    repair += _llm_coverage_repair_hint(text, bp)
                     data = llm_provider.generate_json(client, repair, system=_SYSTEM_COMPILER)
 
             # No fully-valid model after all rounds: prefer a model that at least RUNS
             # (flagged), else build one deterministically from the description.
             if best_effort is not None:
                 best_effort.pop("validation_errors", None)
-                best_effort["_llm_notice"] = f"Model runs but did not fully validate: {last_error}"
+                best_effort["_llm_notice"] = " ".join(best_effort_notes + [
+                    f"Model runs but did not fully validate: {best_effort_reason or last_error}"]
+                    + _llm_coverage_notices(text, best_effort))
                 return best_effort
             fallback = sanitize_blueprint(rule_based_parse(text))
             if fallback.get("validation_errors"):
-                fallback["_llm_notice"] = "The AI output could not be validated; the deterministic parser also needs more detail."
+                fallback["_llm_notice"] = (
+                    f"The AI could not build a model ({last_error}) and the deterministic parser "
+                    f"needs more detail, so no model was built.")
+            elif declined_as_qualitative:
+                # Not a defect: the AI judged the description a bare influence sketch, which
+                # the deterministic Hill compiler is designed to handle. Say what happened
+                # rather than raising an alarm about a normal, supported input.
+                fallback["_llm_notice"] = (
+                    "The AI judged your description a qualitative influence sketch with no rate "
+                    "information, so it was compiled deterministically with generic Hill kinetics. "
+                    "The species and interactions are yours; the rate constants are placeholders - "
+                    "add rates to the description, or use closed-loop refinement, to make them real.")
             else:
-                fallback["_llm_notice"] = ("Built a runnable model from your description. "
-                                           "Use closed-loop refinement or the Model Summary to shape its behavior.")
+                # Every AI attempt was rejected outright. Say so instead of presenting the
+                # deterministic model as though the AI had produced it - a silent swap is how
+                # a researcher ends up trusting a model nobody claimed to have built.
+                fallback["_llm_notice"] = (
+                    f"The AI output was REJECTED as unusable ({last_error}). What you see is the "
+                    f"deterministic parser's model of your description, not the AI's - review it "
+                    f"before trusting any result, and refine it with closed-loop refinement.")
             return fallback
         except Exception as e:
             # Never expose provider response text or credential diagnostics to the UI/log.
