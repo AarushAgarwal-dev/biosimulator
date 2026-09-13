@@ -198,6 +198,15 @@ CAMKII starts at 0.1.`,
         t_max: 100.0,
         blueprint: {
             type: "ODE",
+            // Named for the MECHANISM, not the molecule, and deliberately so. The
+            // species is called CAMKII, but this is a generic cooperative
+            // positive-feedback switch: a Hill autoactivation term against first-order
+            // removal. CaMKII's real bistability (Zhabotinsky 2000; Miller 2005) comes
+            // from SATURABLE PP1 DEPHOSPHORYLATION, which is a different mechanism -- and
+            // this repo implements the real one in PaperModels.zhabotinsky. Two entries,
+            // the same molecule, contradictory mechanisms; without this note a reader
+            // would reasonably assume they agree. Load the Zhabotinsky preset if you want
+            // CaMKII's published mechanism; use this one as the textbook switch motif.
             name: "Cooperative positive-feedback bistable switch",
             nodes: [
                 { id: "STIM", name: "Stimulus", initial_value: 1.0 },
@@ -280,6 +289,13 @@ AKT starts at 1.0.`,
 // These load the real ODE systems from the source papers directly (rate laws +
 // mass-conserving shared fluxes), bypassing the generic Hill compiler. Each is
 // tuned so a single "Run Simulation" reproduces the paper's hallmark behaviour.
+//
+// WITH ONE EXCEPTION, stated because misattributing a model is a citation error, not
+// a cosmetic one: `berridge` and `zhabotinsky` are faithful transcriptions -- the
+// published parameter sets, the published rate laws, and in Zhabotinsky's case total
+// CaMKII conserved to 2.000000 over 350 time units. `lyashenko` is NOT: it is a
+// three-equation reduced model that reproduces the hallmark (fold-change detection)
+// without the paper's receptor-trafficking kinetics. Its own description says so.
 // ==========================================================================
 const PaperModels = {
     berridge: {
@@ -386,7 +402,13 @@ the switch; active CaMKII (A) then stays ON permanently = molecular memory.`,
         title: "Fold-change detection (Lyashenko et al., 2020)",
         hallmark: "equal responses to equal fold-changes, at ANY absolute ligand level",
         description:
-`Published model: Lyashenko et al. (2020) receptor-based relative sensing / cell memory.
+`REDUCED MODEL AFTER Lyashenko et al. (2020) -- not the paper's own ODE system. This is
+a three-equation caricature that captures the IDEA (the receptor pool remembers the
+background, the response tracks L/R) but not the paper's receptor-trafficking kinetics.
+It is a legitimate reduced model and it reproduces the hallmark; it should not be cited
+as the published equations. The Berridge and Zhabotinsky entries above ARE faithful
+transcriptions -- this one is not, and the distinction matters if you publish.
+
 The receptor pool R adapts to (remembers) the ambient ligand background, and the
 downstream response S is driven by the RATIO ligand/background (L/R). So a given
 fold-change gives the SAME response regardless of absolute level = Weber's law / FCD.
@@ -394,7 +416,7 @@ Here ligand climbs an exact 2x staircase (1->2->4->8->16, a full decade); every
 response pulse has identical height, and S re-adapts to baseline after each step.`,
         blueprint: {
             type: "ODE",
-            name: "Lyashenko fold-change detection",
+            name: "Reduced fold-change detection model (after Lyashenko et al., 2020)",
             nodes: [
                 { id: "L", name: "Ligand", initial_value: 1.0 },
                 { id: "R", name: "Adapted background (receptor memory)", initial_value: 1.0 },
@@ -1998,6 +2020,28 @@ function renderCytoscape() {
             }
         });
     });
+
+    // WHEN THE EQUATIONS ARE EXPLICIT, THIS DIAGRAM IS DECORATION. If the blueprint
+    // carries `odes`, ODEModel compiles those rate laws directly and the `edges` array
+    // is never consulted -- so the graph is whatever the preset author drew, and it can
+    // disagree with the mathematics being solved. Berridge shows Z -> Y and Y -> Z
+    // activation for a model whose real structure is a Z-gated pump and calcium-induced
+    // calcium release; Zhabotinsky shows two edges for a 13-state system.
+    //
+    // A biologist reads a network diagram to understand a model's structure, so a
+    // diagram that does not describe the equations has to say so. Deriving the graph
+    // from the ODEs' free symbols would be better and is the real fix; this is the
+    // honest label until then.
+    const badge = document.getElementById("graph-schematic-badge");
+    if (badge) {
+        const explicit = !!(state.blueprint && state.blueprint.odes);
+        badge.hidden = !explicit;
+        badge.textContent = explicit
+            ? "Schematic — this model's equations are written explicitly, so the arrows "
+              + "below are illustrative and are NOT what is being solved. Read the "
+              + "Equations tab for the actual rate laws."
+            : "";
+    }
 
     cyInstance = cytoscape({
         container: container,

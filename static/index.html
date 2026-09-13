@@ -239,6 +239,11 @@
                         <div class="blueprint-grid">
                             <div class="network-card card">
                                 <h3 class="card-title">Interaction Graph</h3>
+                                <!-- Shown only when the blueprint carries explicit
+                                     `odes`, in which case the compiler solves those rate
+                                     laws and never reads the edges below, so the arrows
+                                     can disagree with the mathematics. -->
+                                <p id="graph-schematic-badge" class="graph-schematic-badge" hidden></p>
                                 <div id="cy-container"></div>
                             </div>
                             <div class="json-card card">
