@@ -2085,12 +2085,23 @@ class TargetMetric:
         if self.metric_type == "peak_time":
             peak_idx = np.argmax(y_arr)
             peak_t = t_arr[peak_idx]
-            
+
+            # NO UNIT IS PRINTED HERE. These messages used to append "min" to every peak
+            # time, and the ODE path carries no unit information at all -- species, rate
+            # constants, K_d and time are pure numbers. The Berridge preset makes the cost
+            # concrete: its parameters are the published ones in uM and s^-1 (v0=1, k=10,
+            # VM3=500) and its measured period is 0.6995, which the tool announced as
+            # 0.6995 MINUTES. That is a 60x error presented to a researcher as a
+            # measurement, in the one place they go to read a number off the model.
+            #
+            # Until the ODE path carries real units -- the newer workflow stages do, this
+            # one does not -- the honest thing is to state the number in the model's own
+            # time variable and let the researcher supply the unit.
             if self.min_val is not None and peak_t < self.min_val:
-                return False, f"Peak time for {self.species} was too early: {peak_t:.2f} min (target: {self.min_val}-{self.max_val})"
+                return False, f"Peak time for {self.species} was too early: t = {peak_t:.2f} (target: {self.min_val}-{self.max_val})"
             if self.max_val is not None and peak_t > self.max_val:
-                return False, f"Peak time for {self.species} was too late: {peak_t:.2f} min (target: {self.min_val}-{self.max_val})"
-            return True, f"Peak time {peak_t:.2f} min met requirements."
+                return False, f"Peak time for {self.species} was too late: t = {peak_t:.2f} (target: {self.min_val}-{self.max_val})"
+            return True, f"Peak time t = {peak_t:.2f} met requirements."
             
         elif self.metric_type == "peak_value":
             peak_val = np.max(y_arr)
@@ -2756,9 +2767,33 @@ def bistability_violation(model, species, t_max, cp=None, min_sep=0.5) -> float:
 def fold_change_response(model, input_species, output_species, t_max, cp=None,
                          base_level=1.0, fold=3.0):
     """
-    Response of the output to a `fold`-change of the input, measured at two
-    absolute input levels (base and 4x base). Returns (resp1, resp2) where each
-    is the relative overshoot of the output above its own pre-stimulus baseline.
+    Response of the output to a `fold`-change of the input, measured at two absolute
+    input levels (base and 4x base). Returns (resp1, resp2).
+
+    WHAT THIS ACTUALLY MEASURES, because the previous docstring described something else
+    and the difference matters when reading a result:
+
+    - The baseline is `y[0]`, the output's INITIAL CONDITION -- not a simulated
+      unstimulated control. The old wording said "above its own pre-stimulus baseline",
+      which implies a control run that is never performed. For the shipped fold-change
+      preset the two coincide, because AKT's initial value happens to equal its adapted
+      baseline; for a model where they differ, this number is not what the old docstring
+      promised.
+    - The stimulus is applied by OVERRIDING THE INPUT'S INITIAL VALUE, not as a step
+      during the run. In a generic-Hill model the input then decays at deg = 0.1, so what
+      is measured is an impulse response. Weber's law is a claim about SUSTAINED steps, so
+      a model that passes here has not been shown to obey it under a step input.
+    - Two levels, a single factor of 4 apart. Weber's law is a claim over decades.
+      test_preset_behaviour.FoldChangePresetBehaviourTest does this properly -- 5 levels
+      spanning 100x, baseline read just before t_on, 15% agreement, measured spread 0.11%
+      -- and porting that assay here is the real improvement. It is not done in this
+      commit because it changes what the metric reports, which is a decision rather than
+      a fix.
+
+    It does discriminate, so it is not worthless: the shipped fold-change preset gives
+    r1 = 1.39409 against r2 = 1.39430, a 0.015% mismatch, while a plain Hill edge
+    ("EGF activates AKT") gives a 39% mismatch and fails. Read it as "the response is
+    scale-invariant for this impulse, measured against the initial condition".
     """
     def response(input_start):
         # Pre-stimulus: input at input_start. Stimulus: multiply input by `fold`.

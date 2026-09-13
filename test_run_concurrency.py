@@ -499,16 +499,45 @@ class StubCancellationIsolationTests(_StubCase):
 # =============================================================================
 class PauseResumeEquivalenceTests(_RunCase):
     #: Long enough that a pause always lands with hundreds of checkpoints to go.
-    LONG = 200.0
+    # Wall-clock headroom for the mid-flight pause tests. Raised from 200.0: at 200 the
+    # window between "started" and "finished" was short enough that the full suite's load
+    # could close it before a pause landed, which showed up as a flaky failure in
+    # test_pause_resume_gives_the_same_result_as_an_uninterrupted_run. Longer runs cost a
+    # few seconds and buy a deterministic result.
+    LONG = 500.0
 
     def _pause_mid_run(self, record) -> None:
-        """Pause only once the run is demonstrably in its first half."""
+        """Pause once the run is demonstrably in flight, and confirm the pause landed.
+
+        This polled for `0.02 < progress < 0.45` and then asserted the state was "paused"
+        immediately. Both halves are races, and they only bite under load: this module
+        passes 3/3 in isolation but failed once inside the full 850-test suite, where a
+        busy CPU makes the polling coarse enough to step straight over a narrow window,
+        and makes a short run finish before the pause can be applied.
+
+        A test that fails only when the suite is busy is worse than no test -- it teaches
+        you to re-run rather than to read. So the window is wider (anywhere before the
+        last fifteen percent still proves a mid-flight pause), and the pause is now WAITED
+        for rather than asserted instantaneously, with the two failure modes reported
+        separately: the gate not holding is a product defect, the run outrunning the pause
+        is this harness being too slow, and they should never share one message.
+        """
         self.assertTrue(
-            _wait_for(lambda: record.state == "running" and 0.02 < record.progress < 0.45,
+            _wait_for(lambda: record.state == "running" and 0.02 < record.progress < 0.85,
                       timeout=30),
             msg=f"never observed the run mid-flight (state={record.state!r}, "
                 f"progress={record.progress})")
         self.manager.pause(record.run_id)
+        settled = _wait_for(lambda: record.state in ("paused", "completed"), timeout=15)
+        self.assertTrue(settled,
+                        msg=f"pause() neither paused nor completed the run within 15s "
+                            f"(state={record.state!r}, progress={record.progress})")
+        self.assertNotEqual(
+            record.state, "completed",
+            msg="the run finished before the pause could be applied, so this harness "
+                "is too slow to test the pause gate -- raise LONG rather than relaxing "
+                "the assertion, because a pause that lands after completion proves "
+                "nothing either way")
 
     def test_pause_resume_gives_the_same_result_as_an_uninterrupted_run(self):
         manager = self.manager
