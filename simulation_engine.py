@@ -40,6 +40,11 @@ class ODEModel:
         self.params_dict = {}  # name -> default_value
         self.param_symbols = {}  # name -> sympy_symbol
 
+        # Parameters the UI exposes and this rate law cannot use. Populated during
+        # compilation so a caller can tell the researcher that tuning one does nothing,
+        # rather than letting them move a slider and watch an unchanged plot.
+        self.inert_parameters = []
+
         # Compile expressions. Two modes:
         #  - custom kinetics: explicit rate laws (blueprint["odes"] + optional
         #    shared fluxes) — reproduces exact mechanistic models (mass-conserving
@@ -125,16 +130,79 @@ class ODEModel:
                     term = (k_sym * (src_sym ** n_sym)) / (kd_sym ** n_sym + src_sym ** n_sym)
                     activation_expr += term
             else:
-                # If no activators, but there is basal synthesis, keep it. 
-                # If there are inhibitors, they can inhibit basal synthesis.
-                activation_expr = synthesis
+                # NO ACTIVATORS. This branch used to read `activation_expr = synthesis`,
+                # and `syn_<X>` defaults to 0.0 -- so `total_production` below became
+                # `0 * inhibition_expr`, which is 0 for every possible inhibitor
+                # concentration. The species collapsed to `dX/dt = -deg*X` and THE
+                # INHIBITION EDGE HAD NO EFFECT ON THE TRAJECTORY AT ALL.
+                #
+                # Measured before this fix, for "A activates B. B inhibits A.":
+                # A(40) was 0.018315639 for B(0) in {0, 0.25, 1, 10, 1000} -- identical
+                # to nine significant figures, and equal to the analytic exp(-0.1*40)
+                # of a bare decay. A researcher typing the canonical negative-feedback
+                # loop saw the inhibited species fall and concluded the inhibitor did
+                # it; deleting the inhibitor produced a bit-identical plot.
+                #
+                # An inhibitor needs something to inhibit. When a species is inhibited
+                # but nothing activates it, its own initial value is the only statement
+                # the description makes about its abundance, so treat that as its
+                # unperturbed level and give it the basal production that HOLDS it
+                # there: syn = deg * X0. Then
+                #     X_ss = X0 / (1 + (I/K_d)^n)
+                # which is X0 when the inhibitor is absent and falls as the inhibitor
+                # rises -- the behaviour the description actually described. This is
+                # also what makes the parser's auto-seed of an un-activated species do
+                # the job its own disclosure notice claims it does.
+                #
+                # An explicit non-zero synthesis on the node is always respected; this
+                # only supplies one where the model would otherwise be inert.
+                if inhibitors and float(node.get("synthesis", 0.0) or 0.0) == 0.0:
+                    initial = float(node.get("initial_value", 0.0) or 0.0)
+                    if initial > 0.0:
+                        # `syn_<X>` was already registered above with a default of 0.0,
+                        # and _get_param_symbol keeps the FIRST default it is given --
+                        # so the value has to be written explicitly here. Calling
+                        # _get_param_symbol again with a new default is silently a no-op,
+                        # which is exactly the trap that made the first attempt at this
+                        # fix change nothing while appearing to run.
+                        basal_value = float(node.get("degradation", 0.1)) * initial
+                        self.params_dict[synthesis_param] = basal_value
+                        activation_expr = synthesis
+                    else:
+                        activation_expr = synthesis
+                else:
+                    # If no activators, but there is basal synthesis, keep it.
+                    # If there are inhibitors, they can inhibit basal synthesis.
+                    activation_expr = synthesis
                 
             # Construct inhibition term (multiplier)
+            #
+            # NOTE ON THE EDGE'S `k`. This rate law expresses COMPLETE (non-competitive)
+            # inhibition, Kd^n / (Kd^n + I^n), whose only free parameters are K_d and n.
+            # The edge also carries a `k` -- the LLM schema in agent.py tells the model
+            # to emit {"k":0.5,"K_d":1.0,"n":2.0} on EVERY edge, and the UI exposes it as
+            # a slider -- and it was previously unpacked here and then thrown away. So a
+            # researcher could tune an inhibitor's strength and change nothing, with no
+            # indication why.
+            #
+            # It is not silently dropped any more: it is recorded so the model can say so.
+            # The alternative, reading `k` as a maximum fractional inhibition
+            # (1 - k*I^n/(Kd^n + I^n), partial inhibition), is a defensible and arguably
+            # better rate law, but with the parser's default k=0.5 it would silently halve
+            # the strength of every existing inhibition edge. That is a scientific
+            # semantics change, not a bug fix, so it is deliberately NOT made here.
             inhibition_expr = sp.Integer(1)
             for idx, (src, k, kd, n) in enumerate(inhibitors):
                 kd_sym = self._get_param_symbol(f"inh_{src}_to_{nid}_Kd", kd)
                 n_sym = self._get_param_symbol(f"inh_{src}_to_{nid}_n", n)
-                
+
+                try:
+                    if k is not None and float(k) != 1.0:
+                        self.inert_parameters.append(
+                            f"inh_{src}_to_{nid}_k")
+                except (TypeError, ValueError):
+                    pass
+
                 # Hill inhibition multiplier: Kd^n / (Kd^n + src^n)
                 src_sym = self.vars[src]
                 factor = (kd_sym ** n_sym) / (kd_sym ** n_sym + src_sym ** n_sym)
