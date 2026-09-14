@@ -98,5 +98,54 @@ class BuildspecTests(unittest.TestCase):
             "the Dockerfile copies cc3d_job_runner.py but the file is not in deploy/cc3d")
 
 
+class DeclaredDependencyTests(unittest.TestCase):
+    """The suite's own dependencies must be declared somewhere in the repository.
+
+    CI caught, on its first run, that they were not: starlette.testclient refuses to import
+    without httpx, httpx appeared in no requirements file, and 8 test modules failed at
+    import on a clean runner. The suite had "passed" for a long time only because the
+    development machine happened to have httpx installed for another reason -- so the real
+    requirement was invisible, and a new collaborator, reviewer or grader hit a wall the
+    repository never mentioned.
+
+    This is the local half of that guard. It runs in milliseconds and does not need a clean
+    environment to be meaningful, because what it checks is the DECLARATION, not the
+    installation.
+    """
+
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+
+    def _declared(self):
+        text = ""
+        for name in os.listdir(self.ROOT):
+            if name.startswith("requirements") and name.endswith(".txt"):
+                with open(os.path.join(self.ROOT, name), encoding="utf-8") as handle:
+                    text += handle.read().lower()
+        return text
+
+    def test_the_test_client_dependency_is_declared(self):
+        """Without httpx, every route and contract test fails at import."""
+        self.assertIn("httpx", self._declared(),
+                      "httpx is not declared in any requirements file, but "
+                      "starlette.testclient refuses to import without it -- a clean "
+                      "checkout cannot run the suite")
+
+    def test_the_yaml_dependency_is_declared(self):
+        """Without PyYAML the manifest tests SKIP, and a skip hid a broken buildspec."""
+        self.assertIn("yaml", self._declared(),
+                      "PyYAML is not declared in any requirements file, so the deployment "
+                      "manifest tests would silently skip")
+
+    def test_a_dev_requirements_file_exists_and_explains_itself(self):
+        path = os.path.join(self.ROOT, "requirements-dev.txt")
+        self.assertTrue(os.path.exists(path), "requirements-dev.txt is missing")
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn("httpx", text)
+        self.assertIn("requirements.txt", text,
+                      "requirements-dev.txt does not say how to install it alongside the "
+                      "production requirements")
+
+
 if __name__ == "__main__":
     unittest.main()

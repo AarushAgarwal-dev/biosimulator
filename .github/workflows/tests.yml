@@ -40,11 +40,33 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          # pyyaml is used only by the deployment-manifest tests; without it they skip
-          # rather than fail, and skipping is exactly what let the buildspec break go
-          # unnoticed, so it is installed deliberately.
-          pip install pyyaml
+          pip install -r requirements.txt -r requirements-dev.txt
+          # requirements-dev.txt exists because THIS WORKFLOW's first run proved the suite
+          # could not be installed from requirements.txt alone: starlette.testclient needs
+          # httpx, which was present on the development machine and declared nowhere, so
+          # 8 test modules failed at import on a clean runner. The tests had "passed for
+          # months" only because one environment happened to satisfy an invisible
+          # requirement.
+
+      - name: Verify the suite is installable from the declared dependencies alone
+        # Guards the regression that motivated requirements-dev.txt. If a test module ever
+        # needs a package that no requirements file names, this fails HERE with the module
+        # named, rather than as a confusing wall of import errors, and rather than passing
+        # on someone's laptop and failing for everyone else.
+        run: |
+          python - <<'PY'
+          import sys
+          missing = []
+          for module in ("httpx", "yaml", "fastapi", "numpy", "scipy", "sympy"):
+              try:
+                  __import__(module)
+              except ImportError:
+                  missing.append(module)
+          if missing:
+              print("NOT INSTALLABLE from the requirements files:", ", ".join(missing))
+              sys.exit(1)
+          print("every import the suite needs is satisfied by the requirements files")
+          PY
 
       - name: Run the test suite
         # NO AWS CREDENTIALS AND NO BIOSIM_* CONFIGURATION ARE SET, deliberately. The suite

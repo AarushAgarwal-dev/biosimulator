@@ -1,0 +1,25 @@
+# Test-only dependencies. Install alongside requirements.txt to RUN THE SUITE:
+#
+#     pip install -r requirements.txt -r requirements-dev.txt
+#     python -m unittest discover -p "test_*.py"
+#
+# These are deliberately NOT in requirements.txt, which is what Render installs on a
+# 512 MB instance -- the production image should not carry a test client.
+#
+# WHY THIS FILE EXISTS. It was added after CI caught, on its very first run, that the
+# project's own test suite could not run from the project's own declared dependencies.
+# 900+ tests passed locally for months only because httpx happened to be installed in the
+# development environment; a clean `pip install -r requirements.txt` followed by the test
+# command failed on 8 modules at import. Anyone cloning the repository -- a new
+# collaborator, a reviewer, a grader -- hit that wall, and nothing in the repository said
+# what was missing. That is the same defect shape as the rest of this work: the real
+# requirement was invisible because one environment happened to satisfy it.
+
+# starlette.testclient (used by every route and contract test) refuses to import without
+# it: "The starlette.testclient module requires the httpx package to be installed."
+httpx>=0.27.0
+
+# Used by test_deploy_manifests.py to parse deploy/cc3d/buildspec.yml. Those tests SKIP
+# when it is absent, and a skipped check is what let a broken buildspec sit unnoticed
+# while the image could not be built at all -- so it is declared rather than left to luck.
+PyYAML>=6.0
