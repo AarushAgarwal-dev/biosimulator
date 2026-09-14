@@ -234,3 +234,97 @@ class OscillatorWorksAtBiologicalCooperativityTests(unittest.TestCase):
             "Km", joined,
             f"removal is no longer saturable, so the loop is back to needing n > 8: "
             f"{joined}")
+
+
+
+class GeneratedParameterDefaultsTests(unittest.TestCase):
+    """The defaults a generated model gets must be defensible, and must be disclosed.
+
+    Every edge used to be given n = 2.0 and K_d = 1.0 regardless of the description. Both
+    are consequential:
+
+      - A Hill function's 10-90% response spans an 81^(1/n)-fold change in the regulator:
+        81x at n=1, 9x at n=2, 3x at n=4. Defaulting to 2 made every edge roughly nine
+        times more switch-like than mass action, and it compounds multiplicatively down a
+        cascade. Ligand-receptor binding, a monomeric transcription factor and a
+        Michaelis-Menten step are all n = 1.
+      - K_d = 1.0 alongside starting values near 1.0 placed every regulator exactly AT its
+        half-saturation point, which for n > 1 is the point of maximum logarithmic gain --
+        the default parameterisation was the maximum-sensitivity parameterisation. For a
+        species whose scale is 250 it was simply wrong, because K_d only means anything
+        relative to the concentration it is compared against.
+    """
+
+    def _parse(self, text):
+        import agent
+        return agent.rule_based_parse(text)
+
+    def _first_edge(self, text):
+        blueprint = self._parse(text)
+        edges = blueprint.get("edges") or []
+        self.assertTrue(edges, f"no edges parsed from {text!r}")
+        return blueprint, edges[0]
+
+    def test_mass_action_is_the_default(self):
+        _bp, edge = self._first_edge("LIGAND activates RECEPTOR. LIGAND starts at 2.0.")
+        self.assertEqual(float(edge["parameters"]["n"]), 1.0,
+                         "a description implying no cooperativity still got a cooperative "
+                         "Hill exponent")
+
+    def test_cooperativity_is_raised_only_when_the_text_says_so(self):
+        for text, expected in (
+            ("A dimer of TF activates GENE. TF starts at 2.0.", 2.0),
+            ("CAM cooperatively activates KIN. CAM starts at 2.0.", 2.0),
+            ("X ultrasensitively activates Y. X starts at 2.0.", 2.0),
+            ("A tetramer of HB represses GENE. HB starts at 2.0.", 4.0),
+            ("A activates B. A starts at 2.0.", 1.0),
+        ):
+            with self.subTest(text=text):
+                _bp, edge = self._first_edge(text)
+                self.assertEqual(float(edge["parameters"]["n"]), expected,
+                                 f"wrong cooperativity inferred from {text!r}")
+
+    def test_inflected_forms_are_recognised(self):
+        """"cooperatively" and "ultrasensitively" are how people actually write.
+
+        An earlier version anchored the pattern with a trailing \\b, so every inflected
+        form scored n = 1 -- which is most real writing.
+        """
+        for text in ("CAM cooperatively activates KIN. CAM starts at 1.0.",
+                     "X ultrasensitively activates Y. X starts at 1.0."):
+            with self.subTest(text=text):
+                _bp, edge = self._first_edge(text)
+                self.assertEqual(float(edge["parameters"]["n"]), 2.0,
+                                 f"an inflected cooperativity word was missed in {text!r}")
+
+    def test_half_saturation_follows_the_regulator_scale(self):
+        """K_d = 1.0 is meaningless for a species that lives at 250."""
+        blueprint = self._parse(
+            "GLUCOSE activates INSULIN. INSULIN inhibits GLUCOSE. "
+            "GLUCOSE starts at 250.0.")
+        levels = {n["id"]: float(n["initial_value"]) for n in blueprint["nodes"]}
+        self.assertEqual(levels["GLUCOSE"], 250.0)
+        for edge in blueprint["edges"]:
+            if edge["source"] == "GLUCOSE":
+                self.assertAlmostEqual(
+                    float(edge["parameters"]["K_d"]), 250.0, places=3,
+                    msg="K_d was not scaled to the regulator's own level, so the "
+                        "interaction sits far from its half-saturation point")
+
+    def test_a_regulator_starting_at_zero_borrows_an_upstream_scale(self):
+        """It has no scale of its own yet; inventing 1.0 would be arbitrary."""
+        blueprint = self._parse(
+            "LIGAND activates RECEPTOR. RECEPTOR activates KINASE. LIGAND starts at 80.0.")
+        for edge in blueprint["edges"]:
+            kd = float(edge["parameters"]["K_d"])
+            self.assertGreater(kd, 1.0,
+                               f"{edge['source']} -> {edge['target']} kept K_d = {kd} "
+                               f"despite a model whose scale is 80")
+
+    def test_the_parameterisation_is_disclosed(self):
+        blueprint = self._parse("A activates B. A starts at 3.0.")
+        notice = str(blueprint.get("_llm_notice") or "")
+        self.assertIn("NOT fitted", notice,
+                      "the model does not say its parameters were never fitted")
+        self.assertIn("half-saturation", notice,
+                      "the notice does not explain how K_d was chosen")

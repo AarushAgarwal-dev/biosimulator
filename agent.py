@@ -1493,6 +1493,28 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
             return None, None
         return source, target
 
+    # HILL EXPONENT: 1 UNLESS THE DESCRIPTION IMPLIES COOPERATIVITY.
+    #
+    # Every generated edge used to get n = 2. A Hill function's 10-90% response spans an
+    # 81^(1/n)-fold change in the regulator -- 81x at n=1, 9x at n=2, 3x at n=4 -- so
+    # defaulting to 2 made every edge roughly nine times more switch-like than mass
+    # action, and it compounds multiplicatively down a cascade. Ligand-receptor binding, a
+    # monomeric transcription factor and a Michaelis-Menten step are all n = 1. n = 2
+    # belongs to a STATED dimer or cooperative mechanism, so it is now inferred from the
+    # text rather than assumed of everything.
+    # The trailing \b is deliberately absent: these are PREFIXES, so "cooperatively",
+    # "ultrasensitively", "dimerises" and "tetrameric" all match. An earlier version
+    # anchored the end and therefore missed every inflected form, which is most real
+    # writing -- "CAM cooperatively activates KIN" scored n=1.
+    cooperativity = 1.0
+    if re.search(r"\b(tetramer|four\s+subunits)", text_lower):
+        cooperativity = 4.0
+    elif re.search(r"\b(dimer|two\s+subunits)", text_lower):
+        cooperativity = 2.0
+    elif re.search(r"\b(cooperativ|ultrasensitiv|sigmoid|switch-like|all-or-none)",
+                   text_lower):
+        cooperativity = 2.0
+
     # 1. Detect PDE vs ODE
     is_pde = any(w in text_lower for w in ["pde", "reaction-diffusion", "turing", "spatial", "pattern", "diffusion"])
     
@@ -1732,7 +1754,7 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
                         "source": src,
                         "target": tgt,
                         "type": "activation",
-                        "parameters": {"k": 0.5, "K_d": 1.0, "n": 2.0}
+                        "parameters": {"k": 0.5, "K_d": 1.0, "n": cooperativity}
                     })
         
         # Skip individual activation/inhibition matching if compound already handled
@@ -1766,7 +1788,7 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
                     "source": src,
                     "target": tgt,
                     "type": "activation",
-                    "parameters": {"k": 0.5, "K_d": 1.0, "n": 2.0}
+                    "parameters": {"k": 0.5, "K_d": 1.0, "n": cooperativity}
                 })
                 
         # Parse inhibitions
@@ -1796,7 +1818,7 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
                     "source": src,
                     "target": tgt,
                     "type": "inhibition",
-                    "parameters": {"k": 0.5, "K_d": 1.0, "n": 2.0}
+                    "parameters": {"k": 0.5, "K_d": 1.0, "n": cooperativity}
                 })
 
     # No species could be identified. DO NOT substitute a canned network.
@@ -1929,16 +1951,51 @@ def rule_based_parse(text: str) -> Dict[str, Any]:
     if nodes and edges:
         _defaults_note = (
             "Rate constants were NOT fitted to anything: every interaction was given "
-            "k=0.5, K_d=1.0, n=2.0, and every species a decay of 0.1. Two things follow. "
-            "n=2 is cooperative -- it makes each step roughly nine times more switch-like "
-            "than simple mass action -- so use n=1 unless you mean a dimer or a genuinely "
-            "cooperative step. And with K_d=1.0 alongside starting values near 1.0, each "
-            "regulator sits at its half-saturation point, where the response is most "
-            "sensitive. Treat this as a sketch of your topology, not a prediction, and "
-            "set the parameters you know."
+            "k=0.5 and a decay of 0.1. The Hill exponent is n=%g -- %s -- and each "
+            "interaction's half-saturation K_d was set to its regulator's own starting "
+            "level rather than a fixed 1.0, since K_d only means something relative to "
+            "the concentration it is compared against. Treat this as a sketch of your "
+            "topology, not a prediction, and set the parameters you know."
+            % (cooperativity,
+               "mass action, because nothing in your description implied cooperativity"
+               if cooperativity <= 1.0 else
+               "raised above 1 because your description mentions a cooperative or "
+               "multimeric mechanism")
         )
         existing = blueprint.get("_llm_notice", "")
         blueprint["_llm_notice"] = (existing + " " if existing else "") + _defaults_note
+
+    # HALF-SATURATION SCALED TO THE REGULATOR, not fixed at 1.0.
+    #
+    # K_d = 1.0 alongside starting values near 1.0 placed every regulator exactly AT its
+    # half-saturation point, which for n > 1 is the point of maximum logarithmic gain --
+    # so the default parameterisation was the maximum-sensitivity parameterisation. For a
+    # species whose scale is 100 or 0.01 it was simply wrong: K_d only means anything
+    # relative to the concentration it is compared against, so it is taken from the source
+    # species' own level.
+    #
+    # This runs LAST, after the seeding above has settled every initial value, because the
+    # edges are built before those are known: a regulator seeded to 1.0 and one the
+    # researcher set to 250 need different half-saturation points.
+    if nodes and edges:
+        levels = {}
+        for node_id, node in nodes.items():
+            try:
+                levels[node_id] = abs(float(node.get("initial_value") or 0.0))
+            except (TypeError, ValueError):
+                levels[node_id] = 0.0
+        for edge in edges:
+            source = str(edge.get("source"))
+            level = levels.get(source, 0.0)
+            if level <= 0.0:
+                # A regulator starting at zero has no scale of its own yet -- it gets
+                # produced by something upstream -- so borrow that scale rather than
+                # inventing one.
+                upstream = [levels.get(str(e.get("source")), 0.0) for e in edges
+                            if str(e.get("target")) == source]
+                upstream = [v for v in upstream if v > 0.0]
+                level = (sum(upstream) / len(upstream)) if upstream else 1.0
+            edge.setdefault("parameters", {})["K_d"] = round(float(level), 6)
 
     return blueprint
 
