@@ -138,10 +138,35 @@ class FrontendContractTests(unittest.TestCase):
                 expected, found,
                 f"the {expected.upper()} approach is not offered; the three approaches "
                 f"are meant to be independently selectable. Got: {sorted(found)}")
-            self.assertTrue(
-                found[expected].get("available"),
-                f"{expected.upper()} is listed but unavailable: "
-                f"{found[expected].get('unavailable_reason')!r}")
+            # NOT `assertTrue(available)`. This used to assert every approach is available,
+            # which is a claim about the MACHINE, not about the product -- it passed here
+            # only because this developer's .env configures AWS Batch, and CI failed it on
+            # a bare runner where CompuCell3D is legitimately absent. The product was
+            # behaving correctly and saying so precisely; the test was wrong, and it was
+            # also hiding the requirement that genuinely matters. What must hold everywhere
+            # is that an unavailable approach is still OFFERED and EXPLAINS ITSELF, because
+            # silently dropping it is how a researcher ends up picking a different engine
+            # without noticing.
+            entry = found[expected]
+            if not entry.get("available"):
+                reason = str(entry.get("unavailable_reason") or "").strip()
+                self.assertTrue(
+                    reason,
+                    f"{expected.upper()} is unavailable and gives NO reason; the "
+                    f"researcher is told nothing about why they cannot run it")
+                self.assertGreater(
+                    len(reason), 40,
+                    f"{expected.upper()}'s unavailability reason is too terse to act on: "
+                    f"{reason!r}")
+                # A refusal must never point at a different engine as a substitute.
+                others = {"abm": ("compucell", "cc3d", "mpc"),
+                          "cc3d": ("in-tree abm", "falls back to abm", "use mpc"),
+                          "mpc": ("compucell", "cc3d", "in-tree abm")}[expected]
+                for forbidden in others:
+                    self.assertNotIn(
+                        forbidden, reason.lower(),
+                        f"{expected.upper()}'s refusal offers {forbidden!r} as a "
+                        f"substitute; approaches must never silently swap")
         self.assertFalse(
             body.get("load_errors"),
             f"an approach failed to load and would be silently missing from the "
