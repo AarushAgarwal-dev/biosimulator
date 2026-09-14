@@ -237,17 +237,26 @@ class CompuCell3DAdapter(ApproachAdapter):
         # the stage-5 boundary conditions are not consumed either. A researcher who
         # wrote a logistic reaction R = r*u*(1 - u/K) in stage 4 gets pure diffusion
         # with linear decay, and nothing tells them.
+        #
+        # BOTH HALVES OF THAT ARE NOW CLOSED, local and remote, and this note is kept
+        # because it records what the defect was. The remote half was verified on real
+        # AWS rather than argued: run_9b2b37cb624f logged "registered reaction steppable
+        # for: u" and completed all twelve steps. Since the applier RAISES on any eval or
+        # write failure, completing every step is what establishes the rate law was
+        # evaluated and written to the field inside real CompuCell3D. Advection and the
+        # stage-5 boundary conditions are still genuinely unconsumed.
         stage_use = (" USES: the cell types, lattice and field diffusion/decay "
-                     "constants configured here. A stage-4 field's REACTION term is now "
-                     "exported as a runnable Python steppable "
-                     "(Simulation/reaction_steppables.py), because DiffusionSolverFE has "
-                     "no field for a general rate law -- register it as the README shows "
-                     "and the reaction is applied once per Monte Carlo step. IGNORES: "
-                     "advection expressions, the stage-5 boundary conditions, and the "
-                     "reaction on a REMOTE run -- the AWS job registers only the "
-                     "measurement steppable, so a dispatched run is still pure diffusion "
-                     "with linear decay. Export the project and run it locally if you "
-                     "need the reaction applied.")
+                     "constants configured here, and a stage-4 field's REACTION term. "
+                     "DiffusionSolverFE has no field for a general rate law, so the "
+                     "reaction is applied by a separate steppable once per Monte Carlo "
+                     "step -- exported as Simulation/reaction_steppables.py for a local "
+                     "run, and registered by the job runner on a REMOTE AWS run "
+                     "(verified end to end on AWS Batch, not merely intended). Transport "
+                     "and reaction advance separately within a step, which is operator "
+                     "splitting: accurate when the reaction is slow relative to the "
+                     "diffusive step, approximate when it is not. IGNORES: advection "
+                     "expressions and the stage-5 boundary conditions -- neither is "
+                     "consumed by any backend, local or remote.")
 
         notes = ("Backend: " + backend + ". Four backends are supported, tried in this "
                  "order: the 'cc3d' Python package, " + RUNSCRIPT_ENV + ", a runScript "

@@ -111,17 +111,47 @@ class ReactionIsCarriedTests(unittest.TestCase):
 
 
 class RemoteRunIsHonestTests(unittest.TestCase):
-    def test_the_notes_say_a_remote_run_does_not_apply_the_reaction(self):
-        """The AWS job registers only the measurement steppable.
+    """The notes must match what a remote run actually does -- in either direction.
 
-        Claiming the reaction is simulated everywhere would be the same class of
-        overstatement this codebase has been shedding.
-        """
+    This test used to assert the OPPOSITE: that the notes say a remote run does not apply
+    the reaction. That was true and worth guarding until the job runner registered the
+    reaction steppable, and then the guard became the thing keeping a false statement in
+    front of researchers. Understating what the product does is a smaller sin than
+    overstating it, but it is still wrong, and a test that pins an understatement is not a
+    safety net -- it is a lock on stale information.
+
+    What replaced it is not a weaker claim, it is a checked one: verified on real AWS by
+    run_9b2b37cb624f, which logged "registered reaction steppable for: u" and completed
+    all twelve steps. The applier raises on any eval or write failure, so completing every
+    step is what establishes the rate law reached the field inside real CompuCell3D.
+    """
+
+    def test_the_notes_say_the_reaction_is_applied_on_a_remote_run(self):
         notes = str(cc3d.CC3D_ADAPTER.get_capabilities().notes or "")
         self.assertIn("REMOTE", notes.upper(),
                       "the notes do not distinguish a remote run from a local one")
         self.assertIn("reaction_steppables.py", notes,
-                      "the notes do not name the file that carries the reaction")
+                      "the notes do not name the file that carries the reaction locally")
+        stale = ("still pure diffusion", "registers only the measurement",
+                 "run it locally if you need the reaction")
+        for phrase in stale:
+            self.assertNotIn(phrase, notes,
+                             f"the notes still carry the obsolete caveat {phrase!r}")
+
+    def test_the_notes_disclose_operator_splitting_rather_than_implying_exactness(self):
+        """Applying transport and reaction in separate sub-steps is an approximation."""
+        notes = str(cc3d.CC3D_ADAPTER.get_capabilities().notes or "")
+        self.assertIn("splitting", notes.lower(),
+                      "the notes do not disclose that this is operator splitting")
+
+    def test_the_notes_still_name_what_no_backend_consumes(self):
+        """Advection and the stage-5 boundary conditions are genuinely unconsumed."""
+        notes = str(cc3d.CC3D_ADAPTER.get_capabilities().notes or "")
+        self.assertIn("IGNORES", notes, "the notes no longer state what is ignored")
+        ignored = notes.split("IGNORES", 1)[1].lower()
+        self.assertIn("advection", ignored, "advection is no longer disclosed as ignored")
+        self.assertIn("boundary", ignored,
+                      "the stage-5 boundary conditions are no longer disclosed as ignored")
 
 
 if __name__ == "__main__":

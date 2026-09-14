@@ -667,14 +667,29 @@
 
     <!-- Custom Application Logic -->
     <!--
-        BUMP ?v= ON EVERY app.js CHANGE. The browser caches per URL, so a stale ?v=
-        serves an OLD app.js while the file on disk is new, and nothing warns you.
-        This sat at v=2 across a large number of JS changes: the page kept running
-        superseded code, which produced contradictory behaviour depending on what the
-        cache happened to hold, and cost hours of debugging a defect that did not exist.
-        A returning user would get the same stale bundle after a deploy.
-        If this keeps being forgotten, derive the token from the file's mtime or a
-        content hash at serve time instead of maintaining it by hand.
+        THE ?v= TOKEN IS NOT LOAD-BEARING HERE, and an earlier version of this comment
+        said the opposite. main.py serves every static asset through NoCacheStaticFiles,
+        and the response headers were MEASURED, not assumed:
+
+            Cache-Control: no-cache, no-store, must-revalidate
+            Pragma: no-cache
+
+        With no-store the browser is not permitted to reuse the response at all, so the
+        token cannot be what decides which app.js runs, and bumping it changes nothing.
+        That handler predates the whole line of JS changes this comment used to blame.
+
+        The real cause of those "contradictory readings" was measurement, not caching:
+        accessibility snapshots of this page TRUNCATE before the right-hand panel, so an
+        element that was present read as absent, and a stale reading was mistaken for
+        stale code. Two defect reports were filed against working code that way. What
+        actually resolved it was routing a diagnostic into document.title, which appears
+        in every snapshot however truncated.
+
+        The token is kept only because it still does real work if these files are ever
+        served by something that is NOT this app -- a CDN, or a static host with its own
+        caching -- where no-store would not be in play. Bump it when you change the file
+        if you like; just do not spend debugging time on it, and do not trust a snapshot
+        that shows less of the page than the page has.
     -->
     <script src="app.js?v=5"></script>
 </body>
