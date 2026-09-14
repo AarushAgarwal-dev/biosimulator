@@ -238,12 +238,16 @@ class CompuCell3DAdapter(ApproachAdapter):
         # wrote a logistic reaction R = r*u*(1 - u/K) in stage 4 gets pure diffusion
         # with linear decay, and nothing tells them.
         stage_use = (" USES: the cell types, lattice and field diffusion/decay "
-                     "constants configured here. IGNORES: a stage-4 field's reaction "
-                     "and advection expressions and the stage-5 boundary conditions -- "
-                     "the generated CC3DML carries each field's diffusion constant and "
-                     "decay rate only, so a reaction term you wrote in stage 4 is NOT "
-                     "simulated here. Export the runnable project and add it as a "
-                     "steppable if you need it.")
+                     "constants configured here. A stage-4 field's REACTION term is now "
+                     "exported as a runnable Python steppable "
+                     "(Simulation/reaction_steppables.py), because DiffusionSolverFE has "
+                     "no field for a general rate law -- register it as the README shows "
+                     "and the reaction is applied once per Monte Carlo step. IGNORES: "
+                     "advection expressions, the stage-5 boundary conditions, and the "
+                     "reaction on a REMOTE run -- the AWS job registers only the "
+                     "measurement steppable, so a dispatched run is still pure diffusion "
+                     "with linear decay. Export the project and run it locally if you "
+                     "need the reaction applied.")
 
         notes = ("Backend: " + backend + ". Four backends are supported, tried in this "
                  "order: the 'cc3d' Python package, " + RUNSCRIPT_ENV + ", a runScript "
@@ -595,6 +599,109 @@ class CompuCell3DAdapter(ApproachAdapter):
         return ET.tostring(root, encoding="unicode")
 
     @staticmethod
+    def build_reaction_steppable(config: Dict[str, Any],
+                                 model: Optional[Dict[str, Any]] = None) -> str:
+        """A steppable that applies the STAGE-4 REACTION TERMS to each field.
+
+        Why this exists. The generated CC3DML carries a field's name,
+        GlobalDiffusionConstant and GlobalDecayConstant and nothing else -- verified by
+        search, 'reaction' and 'advection' appear nowhere else in this module's code. So a
+        researcher who wrote a logistic reaction r*u*(1 - u/K) on the PDE-model stage got
+        pure diffusion with linear decay, and the run said nothing about it.
+        DiffusionSolverFE has no field for a general rate law, so the reaction has to be
+        applied from Python each step; that is the standard CC3D idiom, and making it
+        possible is what the runnable-project export is for.
+
+        SAFETY. The expression is parsed with pde_model.parse_safe FIRST, which permits
+        only the declared field names, the model's own parameters and a fixed set of
+        mathematical functions, and only the re-printed sympy expression is emitted. A
+        reaction string is user input that ends up inside generated Python, so parsing
+        before printing is what stops that being an execution path -- the raw text is never
+        interpolated.
+
+        Numerics: explicit Euler on the field arrays, once per Monte Carlo step, vectorised
+        through the numpy view rather than looped per voxel. This runs ON TOP of
+        DiffusionSolverFE's transport, which is operator splitting -- accurate when the
+        reaction is slow relative to the diffusive step, approximate when it is not, and
+        said so in the generated file rather than left for someone to assume.
+
+        Returns "" when no field carries a reaction, so a plain diffusion model does not
+        get a pointless file.
+        """
+        import pde_model
+        import sympy as sp
+
+        fields = [f for f in ((model or {}).get("fields") or []) if f.get("name")]
+        parameters = dict((model or {}).get("parameters") or {})
+        names = [str(f["name"]) for f in fields]
+        allowed = names + list(parameters.keys())
+
+        blocks = []
+        for field in fields:
+            raw = str(field.get("reaction", "") or "").strip()
+            if not raw or raw in ("0", "0.0"):
+                continue
+            try:
+                expr = pde_model.parse_safe(raw, allowed)
+                expr = expr.subs({sp.Symbol(k): v for k, v in parameters.items()})
+                code = sp.pycode(expr)
+            except Exception:
+                # An unparseable reaction is SKIPPED and named, never guessed at: silently
+                # applying a misread rate law is worse than omitting it.
+                blocks.append(
+                    "        # SKIPPED %s: its reaction could not be parsed safely."
+                    % field["name"])
+                continue
+            name = field["name"]
+            blocks.append(
+                "        # d%s/dt reaction term, from the stage-4 model\n"
+                "        _rate = %s\n"
+                "        self.field.%s[:, :, :] = %s + self.dt * _rate"
+                % (name, code, name, name))
+
+        if not blocks:
+            return ""
+
+        # Every field must be readable as an array, even one whose own reaction is zero, or
+        # a cross-term referencing it would raise NameError inside the run.
+        reads = "\n".join(
+            "        %s = numpy.asarray(self.field.%s[:, :, :], dtype=float)" % (n, n)
+            for n in names)
+        body = "\n".join(blocks)
+
+        dt = 1.0
+        for field in fields:
+            try:
+                candidate = float(field.get("dt") or 0.0)
+                if candidate > 0:
+                    dt = candidate
+                    break
+            except (TypeError, ValueError):
+                continue
+
+        header = ('"""Generated by BioSimulateAI. Applies the stage-4 reaction terms.\n'
+                  '\n'
+                  'DiffusionSolverFE handles transport (diffusion and linear decay) and\n'
+                  'has no field for a general rate law, so the reaction written on the\n'
+                  'PDE-model stage is applied here, once per Monte Carlo step, on the\n'
+                  'field arrays.\n'
+                  '\n'
+                  'This is OPERATOR SPLITTING: transport and reaction advance separately\n'
+                  'within a step. That is accurate when the reaction is slow relative to\n'
+                  'the diffusive step and approximate when it is not -- if a reaction is\n'
+                  'fast, shorten the step or solve the two together.\n'
+                  '"""\n')
+        return (header
+                + "\nimport numpy\n"
+                + "\nfrom cc3d.core.PySteppables import SteppableBasePy\n"
+                + "\n\nclass ReactionSteppable(SteppableBasePy):\n"
+                + "    def __init__(self, frequency=1):\n"
+                + "        SteppableBasePy.__init__(self, frequency=frequency)\n"
+                + "        self.dt = %r\n" % dt
+                + "\n    def step(self, mcs):\n"
+                + reads + "\n" + body + "\n")
+
+    @staticmethod
     def build_steppable(config: Dict[str, Any]) -> str:
         """A CC3D Python steppable that writes per-step cell measurements as CSV.
 
@@ -933,23 +1040,42 @@ class MeasurementSteppable(SteppableBasePy):
     def export_configuration(self, project: Dict[str, Any]) -> Dict[str, Any]:
         config = _merged(self.approach_config(project))
         detected = detect_cc3d()
+        # The stage-4 REACTION TERMS, as runnable code. Empty when no field carries a
+        # reaction, in which case the file is omitted rather than shipped blank.
+        reaction = self.build_reaction_steppable(config, (project or {}).get("model"))
+        files = {
+            "Simulation/model.xml": self.build_cc3dml(config),
+            "Simulation/steppables.py": self.build_steppable(config),
+        }
+        if reaction:
+            files["Simulation/reaction_steppables.py"] = reaction
+        files["README.txt"] = (
+            "CompuCell3D project exported by BioSimulateAI.\n\n"
+            "Run with:\n"
+            "    runScript.sh -i Simulation/model.xml\n\n"
+            "steppables.py writes cells.csv, which BioSimulateAI can import.\n"
+            + ("\nreaction_steppables.py carries the REACTION TERMS from the PDE-model\n"
+               "stage. DiffusionSolverFE has no field for a general rate law, so it\n"
+               "applies diffusion and linear decay only; the reaction is applied from\n"
+               "Python, once per Monte Carlo step, on the field arrays.\n\n"
+               "IT IS NOT REGISTERED AUTOMATICALLY -- register it alongside the\n"
+               "measurement steppable:\n\n"
+               "    from reaction_steppables import ReactionSteppable\n"
+               "    CompuCellSetup.register_steppable(steppable=ReactionSteppable(1))\n\n"
+               "Transport and reaction advance separately within a step (operator\n"
+               "splitting): accurate when the reaction is slow relative to the\n"
+               "diffusive step, approximate when it is not.\n"
+               if reaction else
+               "\nNo field on the PDE-model stage carries a reaction term, so this run\n"
+               "is pure diffusion with linear decay.\n")
+        )
         return {
             "approach": self.approach_id,
             "label": self.label,
             "available": bool(detected["available"]),
             "unavailable_reason": detected.get("reason", ""),
             "configuration": config,
-            "files": {
-                "Simulation/model.xml": self.build_cc3dml(config),
-                "Simulation/steppables.py": self.build_steppable(config),
-                "README.txt": (
-                    "CompuCell3D project exported by BioSimulateAI.\n\n"
-                    "Run with:\n"
-                    "    runScript.sh -i Simulation/model.xml\n\n"
-                    "steppables.py writes cells.csv, which BioSimulateAI can import.\n"
-                ),
-            },
+            "files": files,
         }
-
 
 CC3D_ADAPTER = register_approach(CompuCell3DAdapter())
