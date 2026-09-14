@@ -112,7 +112,16 @@ phases:
       # this image -- reference it from the job definition when you need a run to be
       # reproducible months later.
       - BUILD_TAG="build-${CODEBUILD_BUILD_NUMBER:-0}-$(echo "${CODEBUILD_RESOLVED_SOURCE_VERSION:-nosrc}" | cut -c1-12)"
-      - echo "Immutable tag: $BUILD_TAG"
+      # Quoted as a whole because of YAML, not style: an unquoted list item is a PLAIN
+      # scalar, and a plain scalar containing ": " is parsed as a mapping. Written bare,
+      # `echo "Immutable tag: $BUILD_TAG"` made YAML see a key named `tag` with an empty
+      # value, and CodeBuild rejected the whole file --
+      #   YAML_FILE_ERROR: Expected Commands[3] to be of string type: found subkeys
+      #   instead at line 115, value of the key tag on line 114 might be empty
+      # The image could not be rebuilt AT ALL from the moment this line was added, and it
+      # went unnoticed because nothing rebuilt afterwards. The inner quotes are not enough:
+      # they start after `echo `, so the scalar is still plain.
+      - 'echo "Immutable tag: $BUILD_TAG"'
       - docker tag "$IMAGE_REPO_NAME:$IMAGE_TAG" "$ECR_REGISTRY/$IMAGE_REPO_NAME:$BUILD_TAG"
       - docker push "$ECR_REGISTRY/$IMAGE_REPO_NAME:$BUILD_TAG"
       - echo "Pushed $ECR_REGISTRY/$IMAGE_REPO_NAME:$IMAGE_TAG and :$BUILD_TAG"
