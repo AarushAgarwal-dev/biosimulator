@@ -146,3 +146,91 @@ class InhibitionHasAnEffectTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OscillatorWorksAtBiologicalCooperativityTests(unittest.TestCase):
+    """The showcase oscillator must not require impossible cooperativity.
+
+    The Goodwin loop with FIRST-ORDER removal has a limit cycle only for Hill n > 8
+    (Griffith 1968), and the preset relied on exactly that: n = 16. Measured on this
+    engine, nothing in the biological range oscillated at all --
+
+        n         | 2     3     4     6     8     9     10    16
+        amplitude | 0.000 0.000 0.000 0.000 0.015 0.161 0.686 1.977
+
+    -- while measured Hill coefficients for cooperative transcriptional repression are
+    1-5. So a biologist's correct conclusion was that the tool cannot build a
+    physiological oscillator, and the optimizer could not find one either, because the
+    _param_bounds cap for *_n is (1.0, 8.0), BELOW the old Hopf point.
+
+    The fix was mechanistic, not a retune: saturable removal, -d*X/(Km + X), after Bliss,
+    Painter & Marr (1982). Near saturation that is zero-order in X, and the resulting
+    ultrasensitivity supplies what high cooperativity was standing in for.
+
+    These tests exist because a future retune could silently walk the preset back into
+    needing n > 8, and the shipped oscillation target would still pass.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import agent
+        import preset_loader
+        cls.agent = agent
+        cls.preset = preset_loader.load_presets()["oscillator"]
+        cls.blueprint = preset_loader.load_blueprints(
+            text_compiler=agent.rule_based_parse)["oscillator"]
+        cls.readout = None
+        for target in (cls.preset.get("targets") or []):
+            if target.get("type") == "oscillation":
+                cls.readout = target.get("species")
+
+    def _measure(self, n=None, t_max=300.0, points=4000):
+        import copy
+        import numpy as np
+        blueprint = copy.deepcopy(self.blueprint)
+        if n is not None:
+            blueprint.setdefault("parameters", {})["n"] = float(n)
+        result = ODEModel(blueprint).simulate(t_max=t_max, num_points=points)
+        y = np.asarray(result["species"][self.readout], dtype=float)
+        return (float(self.agent.sustained_oscillation_amplitude(y)),
+                int(self.agent.count_sustained_peaks(y)))
+
+    def test_the_shipped_cooperativity_is_biologically_attainable(self):
+        n = float((self.blueprint.get("parameters") or {}).get("n", 0))
+        self.assertLessEqual(
+            n, 5.0,
+            f"the oscillator ships n = {n}, which implies {int(n)} cooperative binding "
+            f"sites. Measured Hill coefficients for cooperative transcriptional "
+            f"repression are 1-5, so this is not a physiological oscillator.")
+
+    def test_it_oscillates_across_the_biological_range(self):
+        for n in (1.0, 2.0, 3.0, 4.0):
+            with self.subTest(n=n):
+                amplitude, peaks = self._measure(n=n)
+                self.assertGreater(
+                    amplitude, 0.3,
+                    f"no sustained oscillation at n = {n} (amplitude {amplitude:.4f}); "
+                    f"the loop still needs cooperativity no molecule provides")
+                self.assertGreaterEqual(
+                    peaks, 4,
+                    f"only {peaks} sustained peaks at n = {n}")
+
+    def test_the_amplitude_survives_a_ten_times_horizon(self):
+        """A limit cycle, not a slow transient that happens to look periodic."""
+        short, _ = self._measure(t_max=300.0)
+        long, _ = self._measure(t_max=3000.0, points=6000)
+        self.assertGreater(long, 0.3, "the oscillation died out over a longer run")
+        self.assertLess(
+            abs(long - short) / max(short, 1e-9), 0.25,
+            f"the amplitude moved from {short:.4f} to {long:.4f} over a 10x horizon, so "
+            f"this is a transient rather than a limit cycle")
+
+    def test_removal_is_saturable_not_first_order(self):
+        """The mechanism is the fix; a linear-removal retune would regress silently."""
+        odes = self.blueprint.get("odes") or {}
+        self.assertTrue(odes, "the oscillator lost its explicit rate laws")
+        joined = " ".join(str(v) for v in odes.values())
+        self.assertIn(
+            "Km", joined,
+            f"removal is no longer saturable, so the loop is back to needing n > 8: "
+            f"{joined}")

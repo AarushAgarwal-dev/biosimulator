@@ -134,31 +134,57 @@ U diffuses slowly, V diffuses quickly.`,
         ]
     },
     oscillator: {
-        // Goodwin (1965) three-stage negative-feedback loop: GENA -> GENB -> GENC -| GENA.
-        // The three stages ARE the delay that a negative-feedback oscillator needs.
-        // Griffith (1968) proved this loop has a limit cycle only for Hill n > 8 when
-        // removal is first-order, so n is a structural requirement here, not a fitted
-        // knob: n = 16 sits well past the Hopf bifurcation (measured at n ~ 10), giving
-        // an amplitude constant to 1 part in 10^4 over 115 cycles. Initial values are a
-        // point ON the limit cycle, so the very first cycle already looks like the rest.
-        // Shipped tuned, so ONE "Run Simulation" oscillates with no refine round.
+        // Goodwin (1965) three-stage negative-feedback loop: GENA -> GENB -> GENC -| GENA,
+        // in the Bliss, Painter & Marr (1982) form -- removal is SATURABLE,
+        // -d*X/(Km + X), not first-order.
+        //
+        // Why the mechanism changed. Griffith (1968) proved that this loop with
+        // FIRST-ORDER removal has a limit cycle only for Hill n > 8, and that is exactly
+        // what the previous version of this preset relied on: n = 16. Measured on this
+        // engine, the Hopf point was n ~ 9-10 and NOTHING in the biological range
+        // oscillated at all:
+        //
+        //     n         | 2     3     4     6     8     9     10    16
+        //     amplitude | 0.000 0.000 0.000 0.000 0.015 0.161 0.686 1.977
+        //
+        // n = 16 implies sixteen cooperative binding sites. Measured Hill coefficients
+        // for cooperative transcriptional repression are 1-5. So the showcase read as
+        // "this tool can oscillate if you assume impossible cooperativity", and a
+        // biologist's correct conclusion was that it cannot build a physiological
+        // oscillator. The optimizer could not rescue it either: the _param_bounds cap for
+        // *_n is (1.0, 8.0), BELOW the old Hopf point, so no search in this topology could
+        // ever have found a limit cycle.
+        //
+        // Operated near saturation (Km << X) the removal is zero-order in X, and that
+        // ultrasensitivity supplies what high cooperativity was standing in for. Measured
+        // with the parameters below:
+        //
+        //     n         | 1     2     3     4     8
+        //     amplitude | 2.93  3.87  4.39  4.69  5.14
+        //     peaks/300 | 24    25    24    24    24
+        //
+        // It oscillates at n = 1 -- simple mass-action repression, no cooperativity
+        // assumed -- and everywhere above it. It is a genuine limit cycle, not a slow
+        // transient: the amplitude is 2.9291 at t_max 300, 2.9396 at 1000 and 2.9321 at
+        // 3000, constant to 0.4% over 240 cycles. Initial values are a point ON the cycle,
+        // so the first cycle already looks like the rest.
         text: `GENA activates GENB.
 GENB activates GENC.
 GENC inhibits GENA.
-GENA starts at 2.851.
-GENB starts at 1.495.
-GENC starts at 1.024.`,
+GENA starts at 0.589.
+GENB starts at 0.548.
+GENC starts at 0.268.`,
         targets: [
             { species: "GENA", type: "oscillation", min: 0.3 }
         ],
         t_max: 300.0,
         blueprint: {
             type: "ODE",
-            name: "Goodwin three-stage negative-feedback oscillator",
+            name: "Goodwin oscillator with saturable removal (Bliss-Painter-Marr)",
             nodes: [
-                { id: "GENA", name: "Gene A product", initial_value: 2.851 },
-                { id: "GENB", name: "Gene B product", initial_value: 1.495 },
-                { id: "GENC", name: "Gene C product (repressor)", initial_value: 1.024 }
+                { id: "GENA", name: "Gene A product", initial_value: 0.5885 },
+                { id: "GENB", name: "Gene B product", initial_value: 0.5482 },
+                { id: "GENC", name: "Gene C product (repressor)", initial_value: 0.2677 }
             ],
             edges: [
                 { id: "e1", source: "GENA", target: "GENB", type: "activation" },
@@ -166,14 +192,18 @@ GENC starts at 1.024.`,
                 { id: "e3", source: "GENC", target: "GENA", type: "inhibition" }
             ],
             parameters: {
-                v1: 1.0, K1: 1.0, n: 16.0,
-                d1: 0.15, k3: 0.15, d2: 0.15, k5: 0.15, d3: 0.15
+                v1: 1.5, K1: 0.3, n: 1.0,
+                k3: 2.5, k5: 2.5,
+                d1: 0.9, d2: 0.9, d3: 0.9,
+                Km: 0.08
             },
             odes: {
                 // GENC represses GENA's synthesis; each downstream step adds phase lag.
-                GENA: "v1*K1**n/(K1**n + GENC**n) - d1*GENA",
-                GENB: "k3*GENA - d2*GENB",
-                GENC: "k5*GENB - d3*GENC"
+                // Removal is Michaelis-Menten in every stage: near saturation it is
+                // zero-order, which is the ultrasensitivity that replaces high n.
+                GENA: "v1*K1**n/(K1**n + GENC**n) - d1*GENA/(Km + GENA)",
+                GENB: "k3*GENA - d2*GENB/(Km + GENB)",
+                GENC: "k5*GENB - d3*GENC/(Km + GENC)"
             },
             plot_species: ["GENA", "GENB", "GENC"],
             simulation_config: { t_max: 300.0 }
