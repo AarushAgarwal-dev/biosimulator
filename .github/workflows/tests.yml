@@ -1,0 +1,78 @@
+name: tests
+
+# Why this exists. Until now nothing ran the test suite except a person remembering to.
+# That is how deploy/cc3d/buildspec.yml stayed broken for hours -- the worker image could
+# not be rebuilt at all, and every local test was green because none of them read a
+# deployment manifest. A suite that only runs when someone chooses to run it is not a
+# safety net for the times it matters most: a hurried change, or a contributor who does not
+# know the local setup.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push supersedes an in-flight run on the same ref, so the queue reflects HEAD.
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Matches the development interpreter (3.13.7). The suite is pure Python plus
+          # prebuilt wheels, so no compiler is needed.
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+          # requirements-dev.txt exists because THIS WORKFLOW's first run proved the suite
+          # could not be installed from requirements.txt alone: starlette.testclient needs
+          # httpx, which was present on the development machine and declared nowhere, so
+          # 8 test modules failed at import on a clean runner. The tests had "passed for
+          # months" only because one environment happened to satisfy an invisible
+          # requirement.
+
+      - name: Verify the suite is installable from the declared dependencies alone
+        # Guards the regression that motivated requirements-dev.txt. If a test module ever
+        # needs a package that no requirements file names, this fails HERE with the module
+        # named, rather than as a confusing wall of import errors, and rather than passing
+        # on someone's laptop and failing for everyone else.
+        run: |
+          python - <<'PY'
+          import sys
+          missing = []
+          for module in ("httpx", "yaml", "fastapi", "numpy", "scipy", "sympy"):
+              try:
+                  __import__(module)
+              except ImportError:
+                  missing.append(module)
+          if missing:
+              print("NOT INSTALLABLE from the requirements files:", ", ".join(missing))
+              sys.exit(1)
+          print("every import the suite needs is satisfied by the requirements files")
+          PY
+
+      - name: Run the test suite
+        # NO AWS CREDENTIALS AND NO BIOSIM_* CONFIGURATION ARE SET, deliberately. The suite
+        # is expected to pass on a bare runner: CompuCell3D reports itself unavailable, the
+        # remote backend is unconfigured, and the live Bedrock test skips unless
+        # BIOSIM_LIVE_BEDROCK is set. Verified locally with all of those stripped: 901
+        # tests, 1 skipped. If a test starts needing credentials to pass, that is a defect
+        # in the test, not a reason to add secrets here.
+        run: python -m unittest discover -p "test_*.py" -v

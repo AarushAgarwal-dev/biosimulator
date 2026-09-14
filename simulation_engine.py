@@ -18,6 +18,173 @@ _trapz = getattr(np, "trapezoid", getattr(np, "trapz", None))
 # 1. ODE COMPILER & SOLVER
 # ==========================================
 
+def derive_edges_from_odes(blueprint: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    """Derive the interaction graph FROM THE EQUATIONS, so the diagram cannot lie.
+
+    When a blueprint carries explicit ``odes``, ODEModel integrates those rate laws and
+    never reads the ``edges`` array -- so the arrows on screen are whatever the preset
+    author drew by hand, and they can disagree with the mathematics being solved.
+    Measured across the shipped presets, they do:
+
+        preset         ode lines   edges drawn
+        zhabotinsky           13             2
+        egfr                   6             6
+        berridge               2             2
+
+    Zhabotinsky is the plain case: thirteen coupled equations displayed as two arrows.
+    Berridge showed Z -> Y and Y -> Z activation for a model whose real structure is a
+    Z-gated pump plus calcium-induced calcium release. A biologist opens a network
+    diagram to learn a model's structure, so a diagram that disagrees with the equations
+    is worse than no diagram -- it invites conclusions about topology the solver never
+    saw.
+
+    The dependency structure is already in the equations, so it does not need to be
+    asserted separately: species Y regulates species X exactly when Y appears in dX/dt,
+    and the SIGN of the interaction is the sign of the partial derivative
+    d(dX/dt)/dY. That is the Jacobian, evaluated at the model's own initial state.
+
+    Sign convention:
+      positive partial -> activation   (more Y raises X's rate of change)
+      negative partial -> inhibition
+      exactly zero     -> no edge (Y cancels out of X's equation)
+      non-constant     -> association, drawn without a sign, because a regulator whose
+                          effect changes sign over the state space is genuinely both and
+                          claiming one would be a different kind of lie.
+
+    A SELF-EDGE is emitted only where the self-dependence is POSITIVE, i.e. autocatalysis
+    outweighs the species' own turnover. Every species has a -deg*X term, so drawing a
+    self-inhibition on all of them would bury the real autoregulation -- which is the
+    motif that matters, and which the parser used to discard entirely.
+
+    Returns None when the blueprint has no explicit rate laws; the hand-drawn edges are
+    then the actual compiled topology and are already true.
+    """
+    if not (blueprint or {}).get("odes"):
+        return None
+    try:
+        model = ODEModel(blueprint)
+    except Exception:
+        return None
+
+    # Evaluate the Jacobian at the model's own starting point. A species sitting at zero
+    # makes many partials vanish (a term k*X*Y is flat in Y when X = 0), which would hide
+    # a real interaction, so a zero initial value is probed slightly off the origin.
+    point = {}
+    for nid in model.node_ids:
+        value = 0.0
+        for node in (blueprint.get("nodes") or []):
+            if str(node.get("id")) == nid:
+                try:
+                    value = float(node.get("initial_value") or 0.0)
+                except (TypeError, ValueError):
+                    value = 0.0
+                break
+        point[model.vars[nid]] = value if abs(value) > 1e-12 else 0.1
+    for name, default in (model.params_dict or {}).items():
+        try:
+            point[sp.Symbol(name)] = float(default)
+        except (TypeError, ValueError):
+            continue
+
+    def _production_part(expr, own):
+        """The equation with the species' own first-order turnover removed.
+
+        A REGULATORY ARROW DESCRIBES INFLUENCE ON PRODUCTION. Turnover is not an arrow:
+        every species carries a -deg*X term, and including it poisons the derivation in
+        two ways at once. Judging a self-edge by the NET derivative reports
+        "CAMKII inhibits itself" for the bistable preset -- the exact opposite of the
+        mechanism the model exists to show -- because at the starting value the -0.5*C
+        decay outweighs the autocatalytic Hill term. And the same decay term dominates
+        the magnitude comparison, pushing genuine regulators below the significance
+        cutoff: STIM -> CAMKII disappeared entirely.
+
+        Removing the pure linear loss in the target first fixes both, because what is
+        left is what BUILDS the species. For CaMKII that leaves
+        kbas*STIM + kfb*C**4/(1 + C**4), whose partials are positive in both STIM and C
+        -- an activation and a self-activation, which is the published mechanism.
+
+        A term is only dropped when it is c*X with c free of X and negative, i.e.
+        unambiguous first-order removal. Saturable removal (-k*X/(Km + X)) is a
+        mechanism, not turnover, so it stays and shows up as a self-inhibition, which is
+        true of it.
+        """
+        try:
+            kept = []
+            for term in sp.Add.make_args(sp.expand(expr)):
+                if own in term.free_symbols:
+                    try:
+                        coeff = sp.simplify(term / own)
+                        if own not in coeff.free_symbols:
+                            value = coeff
+                            try:
+                                value = float(coeff.subs(point).evalf())
+                            except Exception:
+                                value = -1.0        # symbolic: assume a decay constant
+                            if value < 0:
+                                continue            # pure first-order loss -- not an arrow
+                    except Exception:
+                        pass
+                kept.append(term)
+            return sp.Add(*kept) if kept else sp.Integer(0)
+        except Exception:
+            return expr
+
+    edges: List[Dict[str, Any]] = []
+    for target in model.node_ids:
+        raw = model.deriv_exprs.get(target)
+        if raw is None:
+            continue
+        expr = _production_part(raw, model.vars[target])
+
+        candidates = []
+        for source in model.node_ids:
+            symbol = model.vars[source]
+            if symbol not in expr.free_symbols:
+                continue
+            try:
+                partial = sp.diff(expr, symbol)
+            except Exception:
+                continue
+            if partial == 0:
+                continue
+            try:
+                value = float(partial.subs(point).evalf())
+            except Exception:
+                value = float("nan")
+            candidates.append((source, value))
+
+        if not candidates:
+            continue
+
+        # KEEP THE REGULATORS THAT MATTER. A literal Jacobian is true and unreadable:
+        # zhabotinsky's shared flux v3 = k2*ep/(K_M + Ssum) puts every one of its 13
+        # states into every equation, deriving 122 edges -- a hairball that communicates
+        # less than the two hand-drawn arrows it replaced. Mass conservation genuinely
+        # couples them, but a diagram is for reading, so keep each target's dominant
+        # influences and record how many were folded away.
+        finite = [abs(v) for _s, v in candidates if v == v and abs(v) > 0]
+        cutoff = (max(finite) * 0.05) if finite else 0.0
+        kept, dropped = [], 0
+        for source, value in candidates:
+            if value == value and abs(value) < cutoff:
+                dropped += 1
+                continue
+            kept.append((source, value))
+
+        for source, value in kept:
+            if value != value or abs(value) < 1e-12:
+                kind = "association"        # present in the equation, sign not fixed here
+            elif value > 0:
+                kind = "activation"
+            else:
+                kind = "inhibition"
+            edge = {"source": source, "target": target, "type": kind, "derived": True}
+            if dropped:
+                edge["minor_influences_omitted"] = dropped
+            edges.append(edge)
+    return edges
+
+
 class ODEModel:
     def __init__(self, blueprint: Dict[str, Any]):
         """

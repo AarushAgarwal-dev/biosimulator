@@ -300,6 +300,45 @@ class MPCRunTests(unittest.TestCase):
         self.assertIn("target", csv_text.splitlines()[0])
 
 
+def _write_fake_runscript(directory, behaviour):
+    """Create an executable stand-in for CompuCell3D's runScript, for THIS platform.
+
+    Both callers used to write a Windows batch file unconditionally -- '@echo off',
+    'ping -n 60 127.0.0.1', 'exit /b 0' -- and CI found the consequence on its first run:
+    on Linux the file has no execute bit, so the launch failed with
+
+        [Errno 13] Permission denied: '/tmp/hang_cc3d_.../runScript.cmd'
+
+    and the tests asserting a TIMEOUT and a MISSING-OUTPUT error saw a launch error
+    instead. Both then failed for a reason unrelated to what they were testing. Setting the
+    execute bit alone would not have been enough either: batch syntax is not shell syntax,
+    so the script has to be written for the platform, not merely made runnable on it.
+
+    ``behaviour`` is 'immediate' (start, print, exit 0) or 'hang' (sleep past any timeout).
+    """
+    import os
+    import stat
+    import sys
+
+    hanging = behaviour == "hang"
+    if sys.platform == "win32":
+        path = os.path.join(directory, "runScript.cmd")
+        body = ("@echo off\r\nping -n 60 127.0.0.1 >nul\r\nexit /b 0\r\n" if hanging
+                else "@echo off\r\necho fake CompuCell3D starting\r\nexit /b 0\r\n")
+        with open(path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(body)
+        return path
+
+    path = os.path.join(directory, "runScript.sh")
+    body = ("#!/bin/sh\nsleep 60\nexit 0\n" if hanging
+            else "#!/bin/sh\necho fake CompuCell3D starting\nexit 0\n")
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(body)
+    # The execute bit is the whole point on POSIX; without it the launch cannot happen.
+    os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return path
+
+
 class CompuCell3DRunTests(unittest.TestCase):
     def test_missing_cc3d_produces_an_honest_unavailable_state(self):
         project = _project("cc3d", cc3d=_CC3D_CONFIG)
@@ -339,9 +378,7 @@ class CompuCell3DRunTests(unittest.TestCase):
 
         project = _project("cc3d", cc3d=_CC3D_CONFIG)
         directory = tempfile.mkdtemp(prefix="fake_cc3d_")
-        script = os.path.join(directory, "runScript.cmd")
-        with open(script, "w", encoding="utf-8") as handle:
-            handle.write("@echo off\r\necho fake CompuCell3D starting\r\nexit /b 0\r\n")
+        script = _write_fake_runscript(directory, "immediate")
 
         with patch.object(cc3d_mod, "detect_cc3d",
                           return_value={"available": True, "method": "runscript-path",
@@ -362,10 +399,8 @@ class CompuCell3DRunTests(unittest.TestCase):
 
         project = _project("cc3d", cc3d={**_CC3D_CONFIG, "timeout_secs": 2.0})
         directory = tempfile.mkdtemp(prefix="hang_cc3d_")
-        script = os.path.join(directory, "runScript.cmd")
         # Sleeps well past the timeout without printing anything.
-        with open(script, "w", encoding="utf-8") as handle:
-            handle.write("@echo off\r\nping -n 60 127.0.0.1 >nul\r\nexit /b 0\r\n")
+        script = _write_fake_runscript(directory, "hang")
 
         with patch.object(cc3d_mod, "detect_cc3d",
                           return_value={"available": True, "method": "runscript-path",

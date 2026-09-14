@@ -642,6 +642,33 @@ def run_engine_python_api(model_path, workdir, max_minutes):
     probe = SteppableBasePy()
     sim.register_steppable(steppable=probe)
 
+    # THE STAGE-4 REACTION TERMS. DiffusionSolverFE applies diffusion and linear decay and
+    # has no field for a general rate law, so a reaction written on the PDE-model stage was
+    # simply absent from a dispatched run -- the job produced pure diffusion and said
+    # nothing about it. `reactions` carries one entry per field, already parsed with
+    # pde_model.parse_safe on the server and re-printed from the parsed expression with
+    # parameters substituted numerically, so what arrives here contains only field names,
+    # numbers and arithmetic. The researcher's raw string never travels.
+    reactions = config.get("reactions") or {}
+    reaction_probe = None
+    if reactions:
+        field_names = [str(f.get("name")) for f in (config.get("fields") or [])
+                       if f.get("name")]
+        unknown = [name for name in reactions if name not in field_names]
+        if unknown:
+            # Refuse rather than apply a rate law to a field that does not exist: a silent
+            # skip would look like a successful run of the wrong model.
+            raise RuntimeError(
+                "cc3d_config.json carries reactions for fields this simulation does not "
+                "define: %s (fields: %s)" % (", ".join(sorted(unknown)),
+                                             ", ".join(field_names) or "none"))
+        applier_cls = _make_reaction_applier(SteppableBasePy)
+        reaction_probe = applier_cls(reactions, field_names, _reaction_dt(config))
+        sim.register_steppable(steppable=reaction_probe)
+        log("registered reaction steppable for: %s" % ", ".join(sorted(reactions)))
+    else:
+        log("no reaction terms in the config; diffusion and decay only")
+
     sim.run()
     sim.init()
     sim.start()
@@ -941,6 +968,93 @@ def run_engine(command, workdir, max_minutes):
 
     reader.join(timeout=OUTPUT_DRAIN_SECS)
     return process.returncode, "\n".join(recent)
+
+
+def _reaction_dt(config):
+    """Integration step for the reaction terms: the model's own dt when it states one."""
+    for field in (config.get("fields") or []):
+        try:
+            value = float(field.get("dt") or 0.0)
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            continue
+    return 1.0
+
+
+def _make_reaction_applier(base):
+    """Build the reaction steppable class against ``base`` at call time.
+
+    SteppableBasePy is imported INSIDE the run function, because cc3d only exists in the
+    container -- so a module-level `class _ReactionApplier(SteppableBasePy)` would be
+    evaluated at import and raise NameError everywhere else, including in the test suite.
+    py_compile does not catch that, since a base class is not evaluated during compilation.
+    Hence a factory: the class is created where the import is in scope.
+    """
+
+    class _ReactionApplier(base):
+        """Applies the stage-4 reaction terms to the fields, once per Monte Carlo step.
+
+        DiffusionSolverFE handles transport -- diffusion and linear decay -- and has no
+        field for a general rate law, so a reaction written on the PDE-model stage never
+        reached a dispatched run: the job produced pure diffusion and reported success.
+        This closes that, so a remote run applies the same mathematics as an exported
+        project.
+
+        OPERATOR SPLITTING. Transport and reaction advance separately within a step:
+        accurate when the reaction is slow relative to the diffusive step, approximate when
+        it is not, and recorded in the run's log rather than left to be assumed.
+
+        ON THE eval. The expressions arrive already parsed by pde_model.parse_safe on the
+        server -- which admits only the declared field names, the model's own parameters and
+        a fixed set of mathematical functions -- and re-printed from the parsed expression
+        with parameters substituted numerically. What is evaluated here therefore contains
+        field names, numbers and arithmetic and nothing else; the researcher's raw string
+        never travels. Builtins are stripped from the namespace as a second barrier, so a
+        string that somehow reached this point still could not reach the interpreter's own
+        functions.
+        """
+
+        def __init__(self, reactions, field_names, dt, frequency=1):
+            base.__init__(self, frequency=frequency)
+            self.reactions = dict(reactions)
+            self.field_names = list(field_names)
+            self.dt = float(dt)
+            self.applied = 0
+            self.failures = []
+
+        def step(self, mcs):
+            import numpy
+
+            arrays = {}
+            for name in self.field_names:
+                try:
+                    view = getattr(self.field, name)
+                    arrays[name] = numpy.asarray(view[:, :, :], dtype=float)
+                except Exception as error:        # a field the solver did not create
+                    self.failures.append("read %s: %s" % (name, error))
+                    return
+
+            namespace = {"__builtins__": {}, "numpy": numpy}
+            namespace.update(arrays)
+
+            for name, expression in self.reactions.items():
+                try:
+                    rate = eval(expression, namespace, {})   # noqa: S307 - see docstring
+                except Exception as error:
+                    # Recorded AND re-raised: a reaction that cannot be evaluated must not
+                    # let the run finish looking successful while modelling nothing.
+                    self.failures.append("eval %s: %s" % (name, error))
+                    raise
+                try:
+                    view = getattr(self.field, name)
+                    view[:, :, :] = arrays[name] + self.dt * rate
+                except Exception as error:
+                    self.failures.append("write %s: %s" % (name, error))
+                    raise
+            self.applied += 1
+
+    return _ReactionApplier
 
 
 def main():

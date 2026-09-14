@@ -159,11 +159,25 @@ class ApproachDisclosureTests(unittest.TestCase):
                 f"{approach_id}'s notes do not state which prepared stages it ignores. "
                 f"A researcher picking it would assume their stage-4 model is run.")
 
-    def test_mpc_admits_its_plant_is_not_the_prepared_model(self):
+    def test_mpc_explains_both_of_its_plants(self):
+        """MPC can now control the prepared model, so the notes must distinguish the two.
+
+        This test previously asserted that MPC ADMITS its plant is not the prepared model,
+        which was the right assertion while that was the only option. It can now use the
+        stage-4 reaction network as its plant, so the honest requirement changed: the notes
+        must say which mode does what, because a researcher reading "MPC" needs to know
+        whether the result concerns their biology or a first-order demonstration.
+        """
         notes = str(approach_base.get_approach("mpc").get_capabilities().notes or "")
-        self.assertIn(
-            "stage-4", notes,
-            "MPC does not mention the stage-4 model it does not use")
+        lowered = notes.lower()
+        self.assertIn("stage-4", lowered,
+                      "MPC does not mention the stage-4 model at all")
+        self.assertIn("reaction_network", notes,
+                      "the notes do not name the plant kind that controls the prepared "
+                      "model, so a researcher cannot discover it")
+        self.assertIn("first_order", notes,
+                      "the notes do not say what the default plant is, so a researcher "
+                      "cannot tell a biological result from a controller demonstration")
 
     def test_cc3d_admits_reaction_terms_are_not_simulated(self):
         notes = str(approach_base.get_approach("cc3d").get_capabilities().notes or "")
