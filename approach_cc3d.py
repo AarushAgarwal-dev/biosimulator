@@ -442,6 +442,18 @@ class CompuCell3DAdapter(ApproachAdapter):
                              "; ".join(i.message for i in errors))
         config = _merged(self.approach_config(project))
         detected = detect_cc3d()
+
+        # THE STAGE-4 REACTIONS TRAVEL WITH THE CONFIG, so a remote run can apply them
+        # too rather than silently running pure diffusion. Each entry is the sympy-printed
+        # expression with parameters already substituted numerically -- e.g.
+        # "0.4*u*(1 - 0.5*u)" -- because r and K do not exist in the container.
+        #
+        # What reaches the container has therefore been through pde_model.parse_safe,
+        # which admits only the declared field names, the model's own parameters and a
+        # fixed set of mathematical functions, and then been re-printed from the parsed
+        # expression. The researcher's raw string never travels.
+        config["reactions"] = self.reaction_expressions((project or {}).get("model"))
+
         return {
             "approach": self.approach_id,
             "config": config,
@@ -599,6 +611,45 @@ class CompuCell3DAdapter(ApproachAdapter):
         return ET.tostring(root, encoding="unicode")
 
     @staticmethod
+    def reaction_expressions(model: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+        """Field name -> a safe, numeric, re-printed reaction expression.
+
+        ONE implementation feeds both consumers -- the exported steppable and the remote
+        config -- so the local project and a dispatched job cannot drift into applying
+        different mathematics.
+
+        Every expression goes through pde_model.parse_safe, which admits only the declared
+        field names, the model's own parameters and a fixed set of mathematical functions.
+        Parameters are then substituted NUMERICALLY, because names like r and K do not
+        exist wherever this is finally evaluated, and the result is re-printed from the
+        parsed expression. The researcher's raw string is never passed on: it is user input
+        that ends up in a position where it would otherwise be executed.
+
+        A field whose reaction cannot be parsed is OMITTED rather than guessed at, and its
+        absence is visible to the caller, because applying a misread rate law is worse than
+        applying none.
+        """
+        import pde_model
+        import sympy as sp
+
+        fields = [f for f in ((model or {}).get("fields") or []) if f.get("name")]
+        parameters = dict((model or {}).get("parameters") or {})
+        allowed = [str(f["name"]) for f in fields] + list(parameters.keys())
+
+        out: Dict[str, str] = {}
+        for field in fields:
+            raw = str(field.get("reaction", "") or "").strip()
+            if not raw or raw in ("0", "0.0"):
+                continue
+            try:
+                expr = pde_model.parse_safe(raw, allowed)
+                expr = expr.subs({sp.Symbol(k): v for k, v in parameters.items()})
+                out[str(field["name"])] = sp.pycode(expr)
+            except Exception:
+                continue
+        return out
+
+    @staticmethod
     def build_reaction_steppable(config: Dict[str, Any],
                                  model: Optional[Dict[str, Any]] = None) -> str:
         """A steppable that applies the STAGE-4 REACTION TERMS to each field.
@@ -632,27 +683,25 @@ class CompuCell3DAdapter(ApproachAdapter):
         import sympy as sp
 
         fields = [f for f in ((model or {}).get("fields") or []) if f.get("name")]
-        parameters = dict((model or {}).get("parameters") or {})
         names = [str(f["name"]) for f in fields]
-        allowed = names + list(parameters.keys())
+
+        # ONE parsing implementation, shared with the remote path, so an exported project
+        # and a dispatched job cannot apply different mathematics.
+        safe = CompuCell3DAdapter.reaction_expressions(model)
 
         blocks = []
         for field in fields:
+            name = str(field["name"])
             raw = str(field.get("reaction", "") or "").strip()
             if not raw or raw in ("0", "0.0"):
                 continue
-            try:
-                expr = pde_model.parse_safe(raw, allowed)
-                expr = expr.subs({sp.Symbol(k): v for k, v in parameters.items()})
-                code = sp.pycode(expr)
-            except Exception:
+            code = safe.get(name)
+            if not code:
                 # An unparseable reaction is SKIPPED and named, never guessed at: silently
                 # applying a misread rate law is worse than omitting it.
                 blocks.append(
-                    "        # SKIPPED %s: its reaction could not be parsed safely."
-                    % field["name"])
+                    "        # SKIPPED %s: its reaction could not be parsed safely." % name)
                 continue
-            name = field["name"]
             blocks.append(
                 "        # d%s/dt reaction term, from the stage-4 model\n"
                 "        _rate = %s\n"
