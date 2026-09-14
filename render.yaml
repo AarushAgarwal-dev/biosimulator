@@ -1,0 +1,122 @@
+# Render configuration for BioSimulateAI.
+#
+# ---------------------------------------------------------------------------------------
+# A RENDER SERVICE FOR THIS APP ALREADY EXISTS. It was created through the Render
+# dashboard before this file, so Render is NOT reading this file today, and the running
+# service's real settings live in its dashboard, not here.
+#
+# DO NOT connect this as a new Blueprint expecting it to update that service. Render would
+# create a SECOND, separate service named below, and you would have two deployments of the
+# same app -- the old one still serving traffic on the URL people have.
+#
+# What this file is FOR:
+#   * A written record of the settings the app actually requires, so the existing service
+#     can be checked against it (the two worth verifying are the start command and the
+#     health-check path -- /api/health did not exist until this branch).
+#   * A correct starting point if the service is ever recreated or moved.
+#
+# TO SHIP NEW CODE to the existing service: push to the branch that service tracks. Its
+# autoDeploy setting, not this file, decides whether a push goes live.
+# ---------------------------------------------------------------------------------------
+#
+# Nothing secret is in this file, and nothing secret should ever be added -- it is
+# committed to git. Every credential below is marked `sync: false`, which means Render
+# prompts for the value instead of reading it from here.
+#
+# ---------------------------------------------------------------------------------------
+# READ THIS BEFORE EXPOSING THE URL: THE SERVICE IS PUBLIC AND UNAUTHENTICATED.
+#
+# A Render web service is reachable by anyone who has the URL. This application has NO
+# login, NO API key and NO rate limiting, so every endpoint is open to the internet. Two
+# of those endpoints spend real money on YOUR accounts:
+#
+#   * Selecting CompuCell3D dispatches an AWS Batch job. Each run costs a few cents of
+#     Spot capacity, and there is nothing stopping a stranger from starting many.
+#   * The natural-language compiler, when an LLM engine is configured, calls AWS Bedrock
+#     and is billed per token.
+#
+# The ODE, PDE and ABM paths are bounded -- execution budgets are enforced inside the
+# solver and step counts have no defaults to abuse -- so those cost only Render CPU you
+# have already paid for. The two above are the ones that can run up a bill.
+#
+# IF THE EXISTING SERVICE ALREADY HAS THE AWS VARIABLES SET, that money-spending path is
+# already public. Check its environment tab. To close it without losing the rest of the
+# app, remove the four BIOSIM_CC3D_* / BIOSIM_AWS_REGION values: CompuCell3D then reports
+# itself honestly unavailable and dispatches nothing, and every other approach still works.
+# ---------------------------------------------------------------------------------------
+
+services:
+  - type: web
+    # Deliberately NOT the existing service's name, so that connecting this file by mistake
+    # produces an obviously-separate service rather than something that looks like the
+    # real one.
+    name: biosimulateai-from-blueprint
+    runtime: python
+    # The free plan is $0 and fits: the dependency set is all prebuilt wheels, so the
+    # build does no compiling, and the app's own memory use is modest. Two trade-offs to
+    # know rather than discover -- a free service SPINS DOWN after about 15 minutes of
+    # inactivity, so the next visitor waits through a cold start of roughly a minute, and
+    # it has 512 MB of RAM. Move to `starter` if a demo must respond instantly.
+    plan: free
+    branch: master
+    autoDeploy: true
+
+    # No compiler is needed: every dependency in requirements.txt ships a manylinux wheel,
+    # which is exactly why CompuCell3D itself is NOT installed here (Conda-only, ~2-3 GB,
+    # needs VTK) and runs as an on-demand AWS Batch job instead.
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+
+    # 0.0.0.0 is REQUIRED here and is the one place it belongs: Render routes external
+    # traffic to the container's $PORT, and a process bound to 127.0.0.1 receives none of
+    # it, so the deploy fails its health check while the logs look healthy. The app's own
+    # __main__ defaults to 127.0.0.1 precisely so that this exposure is a decision made in
+    # this file rather than a default inherited everywhere.
+    #
+    # One worker on purpose. Run history lives IN MEMORY, so a second worker would answer
+    # "where is my run?" with a different answer depending on which process took the
+    # request -- runs would appear to vanish at random.
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+
+    healthCheckPath: /api/health
+
+    envVars:
+      # Matches the interpreter the test suite is verified against. If Render cannot
+      # resolve this exact patch release, any 3.13.x is fine -- CI installs this same
+      # requirements.txt on Python 3.13 for Linux on every push.
+      - key: PYTHON_VERSION
+        value: 3.13.7
+
+      # ---------------------------------------------------------------------------
+      # OPTIONAL: natural-language model compilation through AWS Bedrock.
+      # Leave unset to run the deterministic parser only -- it handles prose, passive
+      # voice, arrow notation and nominalizations, and needs no credentials or network.
+      # Set LLM_ENGINE to 'bedrock' AND provide a token to enable the LLM path.
+      # BILLED PER TOKEN, on a public URL. See the warning at the top of this file.
+      # ---------------------------------------------------------------------------
+      - key: LLM_ENGINE
+        value: "off"
+      - key: AWS_BEARER_TOKEN_BEDROCK
+        sync: false
+      - key: BEDROCK_REGION
+        value: us-east-2
+
+      # ---------------------------------------------------------------------------
+      # OPTIONAL: on-demand CompuCell3D on AWS Batch.
+      # LEAVE ALL FIVE UNSET unless you have read the warning at the top of this file.
+      # Unset, the CompuCell3D approach reports itself unavailable with a reason the
+      # researcher can act on, and never silently substitutes ABM or MPC.
+      # The values are in deploy/cc3d/aws_resources.json after provisioning; the two
+      # credentials belong to the scoped biosim-cc3d-deployer user, never to root.
+      # ---------------------------------------------------------------------------
+      - key: BIOSIM_AWS_REGION
+        sync: false
+      - key: BIOSIM_CC3D_JOB_QUEUE
+        sync: false
+      - key: BIOSIM_CC3D_JOB_DEFINITION
+        sync: false
+      - key: BIOSIM_CC3D_BUCKET
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false

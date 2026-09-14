@@ -1628,6 +1628,55 @@ def export_run_metadata_endpoint(run_id: str):
 # Serve Static files - must be loaded after api routes
 os.makedirs("static", exist_ok=True)
 
+@app.get("/api/health")
+def health():
+    """Liveness plus a truthful summary of what this deployment can actually do.
+
+    Render needs a health-check path, but a bare {"ok": true} would waste the request. A
+    deployed instance differs from a laptop in ways that decide whether the science works --
+    whether an LLM engine is reachable, whether CompuCell3D has any usable backend -- and
+    those are exactly the things that fail silently. So this reports them, reusing the SAME
+    calls /api/approaches uses so the two can never disagree.
+
+    It deliberately exposes NO secret values: the LLM entry says whether a credential is
+    PRESENT, never what it is. `unavailable_reason` is already written for a researcher and
+    carries no credentials.
+
+    RUNS ARE IN MEMORY. A Render restart or redeploy loses run history, stated here rather
+    than left for someone to discover when their results vanish.
+    """
+    approaches = []
+    load_errors = []
+    try:
+        for entry in (approach_base.list_approaches() or []):
+            approaches.append({
+                "approach_id": entry.get("approach_id"),
+                "available": bool(entry.get("available")),
+                "reason": str(entry.get("unavailable_reason") or ""),
+            })
+        load_errors = list(approach_base.load_errors() or [])
+    except Exception as error:                    # a broken registry must be visible
+        load_errors = [f"approach registry failed to load: {error}"]
+
+    try:
+        # Presence of a credential, never its value.
+        bedrock_ready = bool(llm_provider.bedrock_env_ready())
+    except Exception:
+        # Never let a misconfigured LLM make the service look DOWN. The modelling paths that
+        # do not use it still work, and a health check failing for the wrong reason causes a
+        # redeploy loop on Render.
+        bedrock_ready = False
+
+    return {
+        "status": "ok",
+        "llm_engine": os.environ.get("LLM_ENGINE", "off") or "off",
+        "bedrock_configured": bedrock_ready,
+        "approaches": approaches,
+        "load_errors": load_errors,
+        "run_storage": "in-memory; runs do not survive a restart or redeploy",
+    }
+
+
 class NoCacheStaticFiles(StaticFiles):
     """Serve static assets with no-cache headers so edits to app.js/index.html/style.css
     are picked up on the next reload instead of being served from the browser cache."""
@@ -1642,4 +1691,17 @@ app.mount("/", NoCacheStaticFiles(directory="static", html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
+    # Render (and most PaaS) assign the port at runtime through $PORT and route external
+    # traffic to it, so a hardcoded 8000 receives nothing and the deploy fails its health
+    # check. HOST stays 127.0.0.1 BY DEFAULT so running this file on a laptop does not
+    # quietly expose the service on the local network -- Render's start command passes
+    # 0.0.0.0 explicitly, which is a deliberate choice recorded in render.yaml rather than
+    # an accident of the default.
+    #
+    # `reload` is off when a PORT is supplied: the reloader spawns a child process, which on
+    # a 512 MB instance roughly doubles memory for no benefit in a deployment.
+    port_env = os.environ.get("PORT")
+    port = int(port_env) if port_env and port_env.isdigit() else 8000
+    host = os.environ.get("HOST", "127.0.0.1")
+    uvicorn.run("main:app", host=host, port=port, reload=not port_env)
