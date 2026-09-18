@@ -24,25 +24,22 @@
 # prompts for the value instead of reading it from here.
 #
 # ---------------------------------------------------------------------------------------
-# READ THIS BEFORE EXPOSING THE URL: THE SERVICE IS PUBLIC AND UNAUTHENTICATED.
+# READ THIS BEFORE EXPOSING THE URL: THE SITE IS PUBLIC; PAID OPERATIONS ARE TOKEN-GATED.
 #
-# A Render web service is reachable by anyone who has the URL. This application has NO
-# login, NO API key and NO rate limiting, so every endpoint is open to the internet. Two
-# of those endpoints spend real money on YOUR accounts:
+# Anyone can use bounded, local ODE/PDE/ABM/MPC work. AWS Batch CompuCell3D and
+# server-funded Bedrock calls are different: every one requires
+# `Authorization: Bearer <BIOSIM_PAID_ACCESS_TOKEN>`. The UI asks the researcher for this
+# app-level token and keeps it only in sessionStorage, so it clears with the browser tab.
+# AWS credentials never reach the browser.
 #
-#   * Selecting CompuCell3D dispatches an AWS Batch job. Each run costs a few cents of
-#     Spot capacity, and there is nothing stopping a stranger from starting many.
-#   * The natural-language compiler, when an LLM engine is configured, calls AWS Bedrock
-#     and is billed per token.
+# BIOSIM_REQUIRE_PAID_ACCESS_TOKEN=1 makes this FAIL CLOSED. If the operator forgets the
+# token, paid operations return 503; if a visitor omits or mistypes it, they return 401.
+# Neither case submits a job or calls Bedrock. Do not remove that flag on a public service.
 #
-# The ODE, PDE and ABM paths are bounded -- execution budgets are enforced inside the
-# solver and step counts have no defaults to abuse -- so those cost only Render CPU you
-# have already paid for. The two above are the ones that can run up a bill.
-#
-# IF THE EXISTING SERVICE ALREADY HAS THE AWS VARIABLES SET, that money-spending path is
-# already public. Check its environment tab. To close it without losing the rest of the
-# app, remove the four BIOSIM_CC3D_* / BIOSIM_AWS_REGION values: CompuCell3D then reports
-# itself honestly unavailable and dispatches nothing, and every other approach still works.
+# The token controls spend, not the whole site. It is not user accounts, per-person
+# authorization, or a substitute for protecting sensitive research data. Run state is
+# shared in memory and disappears on a restart; use a real identity layer and persistent
+# store before treating this as a multi-user production service.
 # ---------------------------------------------------------------------------------------
 
 services:
@@ -86,36 +83,42 @@ services:
       - key: PYTHON_VERSION
         value: 3.13.7
 
+      # Paid operations fail closed. Generate a random 32-byte-or-longer value for the
+      # secret and give it only to trusted researchers; this is NOT an AWS credential.
+      - key: BIOSIM_REQUIRE_PAID_ACCESS_TOKEN
+        value: "1"
+      - key: BIOSIM_PAID_ACCESS_TOKEN
+        sync: false
+
       # ---------------------------------------------------------------------------
-      # OPTIONAL: natural-language model compilation through AWS Bedrock.
-      # Leave unset to run the deterministic parser only -- it handles prose, passive
-      # voice, arrow notation and nominalizations, and needs no credentials or network.
-      # Set LLM_ENGINE to 'bedrock' AND provide a token to enable the LLM path.
-      # BILLED PER TOKEN, on a public URL. See the warning at the top of this file.
+      # Natural-language model compilation through AWS Bedrock. The bearer credential
+      # stays server-side; requests also need the app-level token above.
       # ---------------------------------------------------------------------------
       - key: LLM_ENGINE
-        value: "off"
+        value: "bedrock"
       - key: AWS_BEARER_TOKEN_BEDROCK
         sync: false
       - key: BEDROCK_REGION
         value: us-east-2
 
       # ---------------------------------------------------------------------------
-      # OPTIONAL: on-demand CompuCell3D on AWS Batch.
-      # LEAVE ALL FIVE UNSET unless you have read the warning at the top of this file.
-      # Unset, the CompuCell3D approach reports itself unavailable with a reason the
-      # researcher can act on, and never silently substitutes ABM or MPC.
-      # The values are in deploy/cc3d/aws_resources.json after provisioning; the two
-      # credentials belong to the scoped biosim-cc3d-deployer user, never to root.
+      # On-demand CompuCell3D on AWS Batch. These four names are non-secret and identify
+      # the already-provisioned queue, definition and bucket. AWS_ACCESS_KEY_ID and
+      # AWS_SECRET_ACCESS_KEY must belong to the dedicated `biosim-cc3d-render` IAM user
+      # with ONLY the `biosim-cc3d-render-app` policy -- never the broader deployer user.
       # ---------------------------------------------------------------------------
       - key: BIOSIM_AWS_REGION
-        sync: false
+        value: us-east-2
       - key: BIOSIM_CC3D_JOB_QUEUE
-        sync: false
+        value: biosim-cc3d-queue
       - key: BIOSIM_CC3D_JOB_DEFINITION
-        sync: false
+        value: biosim-cc3d-job
       - key: BIOSIM_CC3D_BUCKET
-        sync: false
+        value: biosim-cc3d-333308931113-us-east-2
+      - key: BIOSIM_CC3D_PREFIX
+        value: cc3d-runs
+      - key: BIOSIM_CC3D_REMOTE_TIMEOUT
+        value: "5400"
       - key: AWS_ACCESS_KEY_ID
         sync: false
       - key: AWS_SECRET_ACCESS_KEY

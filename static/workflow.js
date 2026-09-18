@@ -131,11 +131,40 @@ function setStatus(text, colour = "green") {
     $("wf-status-dot").className = `status-dot ${colour}`;
 }
 
+const PAID_ACCESS_SESSION_KEY = "biosim_paid_access_token";
+let inMemoryPaidAccessToken = "";
+
+function paidAccessToken() {
+    try {
+        const stored = String(sessionStorage.getItem(PAID_ACCESS_SESSION_KEY) || "").trim();
+        return stored || inMemoryPaidAccessToken;
+    } catch { return inMemoryPaidAccessToken; }
+}
+
+function rememberPaidAccessToken(value) {
+    const token = String(value || "").trim();
+    inMemoryPaidAccessToken = token;
+    try {
+        if (token) sessionStorage.setItem(PAID_ACCESS_SESSION_KEY, token);
+        else sessionStorage.removeItem(PAID_ACCESS_SESSION_KEY);
+    } catch { /* memory still carries it for this page */ }
+}
+
+function paidAccessHeaders(existing) {
+    const headers = Object.assign({}, existing || {});
+    const token = paidAccessToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return headers;
+}
+
 /** Single network path, so every failure is surfaced the same way. */
-async function api(path, options) {
+async function api(path, options = {}) {
     let response;
     try {
-        response = await fetch(path, options);
+        const requestOptions = Object.assign({}, options, {
+            headers: paidAccessHeaders(options.headers)
+        });
+        response = await fetch(path, requestOptions);
     } catch (error) {
         throw new Error(`Could not reach the server: ${error.message}`);
     }
@@ -4858,6 +4887,12 @@ function bindControls() {
     on("results-canvas", "click", handleResultsCanvasClick);
 
     // Stage 8/9
+    const paidTokenInput = $("paid-access-token");
+    if (paidTokenInput) {
+        paidTokenInput.value = paidAccessToken();
+        paidTokenInput.addEventListener("input", () =>
+            rememberPaidAccessToken(paidTokenInput.value));
+    }
     on("run-validate", "click", validateEverything);
     on("run-start", "click", startRun);
     on("run-pause", "click", () => controlRun("pause"));

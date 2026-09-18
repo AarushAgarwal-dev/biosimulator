@@ -571,6 +571,17 @@
             </div>
 
             <div class="modal-body llm-body">
+                <div class="field">
+                    <label for="paid-access-token">Deployment access token
+                        <span class="muted">(required for AWS Batch and server-funded Bedrock)</span></label>
+                    <input type="password" id="paid-access-token"
+                        placeholder="Enter the token supplied by the deployment operator"
+                        autocomplete="off" spellcheck="false">
+                    <p class="hint-text">This is an app-level spending guard, not an AWS key. It is kept
+                        only for this browser tab and sent as a Bearer header to this BioSimulateAI
+                        server. Closing the tab clears it. Never paste an AWS secret here.</p>
+                </div>
+
                 <div class="seg-control llm-engine-tabs" id="llm-engine-tabs">
                     <button class="seg-btn active" data-engine="off" type="button">Rule-based (offline)</button>
                     <button class="seg-btn" data-engine="local" type="button">Local model</button>

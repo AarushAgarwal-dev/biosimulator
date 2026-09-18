@@ -117,5 +117,49 @@ class DerivedGraphTests(unittest.TestCase):
         self.assertIn(("A", "B"), pairs, "the real interaction A -> B is missing")
 
 
+class EmptyDerivedGraphTests(unittest.TestCase):
+    def test_independent_explicit_equations_derive_an_empty_graph_not_failure(self):
+        """No regulatory interactions is a valid scientific result, represented by []."""
+        blueprint = {
+            "type": "ODE",
+            "nodes": [
+                {"id": "A", "initial_value": 1.0},
+                {"id": "B", "initial_value": 2.0},
+            ],
+            "parameters": {"dA": 0.1, "dB": 0.2},
+            "odes": {"A": "-dA*A", "B": "-dB*B"},
+            # Deliberately wrong decoration: the frontend must not resurrect it when the
+            # authoritative derived result is an empty list.
+            "edges": [{"source": "A", "target": "B", "type": "activation"}],
+        }
+        self.assertEqual(se.derive_edges_from_odes(blueprint), [])
+
+    def test_frontend_redraws_after_compile_returns_the_edges(self):
+        """The first pre-compile draw showed the warning forever until this repaint."""
+        import os
+        path = os.path.join(os.path.dirname(__file__), "static", "app.js")
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read()
+        function = source.split("async function compileBlueprint()", 1)[1].split(
+            "// Render sliders for ODE parameters", 1)[0]
+        assigned = function.index("state.derivedEdges =")
+        redrawn = function.index("renderCytoscape();", assigned)
+        self.assertGreater(redrawn, assigned,
+                           "the graph is not repainted after derived edges arrive")
+
+    def test_frontend_treats_an_empty_list_as_authoritative(self):
+        """Null means derivation failed; [] means it succeeded and found no arrows."""
+        import os
+        path = os.path.join(os.path.dirname(__file__), "static", "app.js")
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("const hasDerivedGraph = Array.isArray(state.derivedEdges)", source)
+        self.assertIn("hasDerivedGraph ? derived", source)
+        self.assertIn("graph has no arrows", source)
+        self.assertNotIn(
+            "Array.isArray(state.derivedEdges) && state.derivedEdges.length > 0", source,
+            "an empty successful derivation is still being called a failure")
+
+
 if __name__ == "__main__":
     unittest.main()

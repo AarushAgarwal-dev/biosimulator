@@ -351,9 +351,10 @@ the Batch instance role and the job role scoped to that one bucket, a **SPOT**
 compute environment (`m7i.xlarge`, `minvCpus=0`, `desiredvCpus=0`,
 `maxvCpus=16`), the job queue, the job definition (`attemptDurationSeconds=5400`,
 `retryStrategy.attempts=2`), a CloudWatch Logs retention policy of **14 days** on
-`/aws/batch/job`, the IAM user for Render with the scoped policy from §4, and the
-**$20/month budget alert**. It prints the four environment variable values at the
-end.
+`/aws/batch/job`, the least-privilege **managed policy** for the Render runtime, and the
+**$20/month budget alert**. It deliberately creates **no Render IAM user and no access
+key**: long-lived credentials require an explicit operator action after the policy has
+been reviewed. It prints the four non-secret environment variable values at the end.
 
 Verify before spending anything:
 
@@ -367,35 +368,68 @@ aws batch describe-job-queues --region us-east-2 `
 # Expect min = 0 and desired = 0 — that is the no-idle-charge invariant.
 ```
 
-### 6.3 Set the four environment variables on Render
+### 6.3 Create the dedicated runtime identity and configure Render
 
-In the Render dashboard → the web service → **Environment**:
+Do **not** put the `biosim-cc3d-deployer` key in Render. That identity can modify the
+stack, images and budget. The runtime needs only the managed policy provisioning already
+created: `biosim-cc3d-render-app`.
 
-```
-BIOSIM_AWS_REGION         = us-east-2
-BIOSIM_CC3D_JOB_QUEUE     = biosim-cc3d-queue
-BIOSIM_CC3D_JOB_DEFINITION= biosim-cc3d-job
-BIOSIM_CC3D_BUCKET        = biosim-cc3d-<ACCOUNT_ID>
-```
+The operator performs these once from an AWS-admin terminal. The app and provisioning
+script intentionally never create or print a long-lived secret:
 
-Plus the credentials, as environment variables only, never in the repo:
+```powershell
+aws iam create-user --user-name biosim-cc3d-render `
+  --tags Key=Project,Value=BioSimulateAI Key=Component,Value=CompuCell3D
 
-```
-AWS_ACCESS_KEY_ID         = <from provision_aws.ps1 output>
-AWS_SECRET_ACCESS_KEY     = <from provision_aws.ps1 output>
-```
+aws iam attach-user-policy --user-name biosim-cc3d-render `
+  --policy-arn arn:aws:iam::333308931113:policy/biosim-cc3d-render-app
 
-Optional:
+# AWS prints SecretAccessKey ONCE. Copy both values directly into Render; never the repo.
+aws iam create-access-key --user-name biosim-cc3d-render
 
-```
-BIOSIM_CC3D_PREFIX          = cc3d-runs      # default
-BIOSIM_CC3D_REMOTE_TIMEOUT  = 5400           # match the 90-minute cap
+# Generate the separate app-level spending token. It is not an AWS credential.
+python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-All four required variables must be set or `configuration_status()` reports
-`available: False` and names exactly which are missing. Redeploy, then confirm the
-CompuCell3D approach reports `engine_name: "CompuCell3D (AWS Batch)"` and
-`method: "aws-batch"`.
+In Render → **biosimulator** → **Environment**, add exactly:
+
+```text
+BIOSIM_REQUIRE_PAID_ACCESS_TOKEN = 1
+BIOSIM_PAID_ACCESS_TOKEN         = <the random token generated above>
+
+BIOSIM_AWS_REGION                = us-east-2
+BIOSIM_CC3D_JOB_QUEUE            = biosim-cc3d-queue
+BIOSIM_CC3D_JOB_DEFINITION       = biosim-cc3d-job
+BIOSIM_CC3D_BUCKET               = biosim-cc3d-333308931113-us-east-2
+BIOSIM_CC3D_PREFIX               = cc3d-runs
+BIOSIM_CC3D_REMOTE_TIMEOUT       = 5400
+
+AWS_ACCESS_KEY_ID                = <AccessKeyId for biosim-cc3d-render>
+AWS_SECRET_ACCESS_KEY            = <SecretAccessKey for biosim-cc3d-render>
+```
+
+To enable the server-funded natural-language compiler too, keep the existing
+`AWS_BEARER_TOKEN_BEDROCK` and set:
+
+```text
+LLM_ENGINE                       = bedrock
+BEDROCK_REGION                   = us-east-2
+```
+
+Save changes and redeploy. `/api/health` must then report:
+
+```json
+{
+  "status": "ok",
+  "paid_access": {"required": true, "configured": true},
+  "approaches": [{"approach_id": "cc3d", "available": true}]
+}
+```
+
+The browser asks trusted researchers for `BIOSIM_PAID_ACCESS_TOKEN`; it keeps the value
+only in that tab's session storage and sends it as a Bearer header. AWS credentials remain
+server-side. A missing token returns 401, and a missing server configuration returns 503;
+neither submits a job or calls Bedrock.
 
 ### 6.4 Submit a test run
 

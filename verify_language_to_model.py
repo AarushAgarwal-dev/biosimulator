@@ -9,8 +9,6 @@ Every check asserts a NUMBER, not merely the absence of an exception.
 """
 import sys
 
-sys.path.insert(0, r"D:\SURF\biosimulator")
-
 import numpy as np
 
 import agent

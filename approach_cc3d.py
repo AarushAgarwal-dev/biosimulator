@@ -44,6 +44,7 @@ The remote backend additionally enforces a run-length cap
 import json
 import os
 import shutil
+import signal
 import subprocess
 import time
 import xml.etree.ElementTree as ET
@@ -84,6 +85,75 @@ REMOTE_DEFAULT_MEMORY_MIB = cc3d_remote.DEFAULT_MEMORY_MIB
 #: Wall-clock ceiling for one external CompuCell3D process. An external simulator that
 #: hangs must not hold a worker thread forever; 0 disables the bound.
 DEFAULT_TIMEOUT_SECS = 3600.0
+
+
+def _process_group_options() -> Dict[str, Any]:
+    """Start the simulator in a group that can be stopped as one unit.
+
+    A runScript is a wrapper: on Linux ``runScript.sh`` starts Python/CC3D children, and
+    on Windows a batch file does the same. Killing only the wrapper leaves those children
+    alive. The Linux CI test made this concrete: the shell running ``sleep 60`` was
+    terminated after two seconds, but its child kept the stdout pipe open, so the run was
+    still nonterminal after the test's full 60-second deadline.
+    """
+    if os.name == "posix":
+        return {"start_new_session": True}
+    if os.name == "nt":
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {}
+
+
+def _stop_process_tree(process: subprocess.Popen, grace_seconds: float = 10.0) -> None:
+    """Stop ``process`` and every child it launched; return only after the wrapper exits."""
+    if process.poll() is not None:
+        return
+
+    if os.name == "posix":
+        # start_new_session makes the wrapper pid the process-group id. Use that recorded
+        # id directly rather than os.getpgid: the wrapper can exit between poll() and this
+        # call while children in its group still hold stdout open.
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=grace_seconds)
+            return
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=grace_seconds)
+            return
+
+    if os.name == "nt":
+        # terminate() addresses only the wrapper. taskkill /T walks its child tree; /F is
+        # appropriate because this path runs only after the user cancelled or the declared
+        # wall-clock limit expired. Output is suppressed so it cannot be mistaken for CC3D
+        # simulation output.
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=grace_seconds, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            process.kill()
+        try:
+            process.wait(timeout=grace_seconds)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=grace_seconds)
+        return
+
+    process.terminate()
+    try:
+        process.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=grace_seconds)
+
 
 DEFAULTS: Dict[str, Any] = {
     "lattice": {"x": 60, "y": 60, "z": 1},
@@ -838,7 +908,7 @@ class MeasurementSteppable(SteppableBasePy):
         try:
             process = subprocess.Popen(
                 command, cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
+                text=True, bufsize=1, **_process_group_options(),
             )
         except OSError as exc:
             raise ApproachUnavailable(
@@ -883,12 +953,7 @@ class MeasurementSteppable(SteppableBasePy):
                     break
         finally:
             if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=10)
+                _stop_process_tree(process)
             reader.join(timeout=5)
             # Close the stdout pipe explicitly. Popen(stdout=PIPE) hands back a
             # TextIOWrapper that nothing else owns: the drain thread only iterates
