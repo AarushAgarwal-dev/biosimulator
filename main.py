@@ -10,6 +10,8 @@ except Exception:
     pass  # dotenv optional; real env vars / ~/.aws still work without it
 
 import contextlib
+import hashlib
+import hmac
 import math
 import time
 import traceback
@@ -37,6 +39,85 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# --- Access control for operations that can spend the operator's money ---------
+#
+# The Render deployment is a public URL. ODE/PDE/ABM/MPC work is bounded local compute,
+# but two paths reach metered services owned by the operator: AWS Batch for CompuCell3D
+# and AWS Bedrock for LLM-backed compilation. Those paths require a bearer token when
+# BIOSIM_REQUIRE_PAID_ACCESS_TOKEN is true OR when a token is configured. Everything
+# else remains public, including deterministic parsing, model compilation and free runs.
+#
+# The actual AWS credentials NEVER reach the browser. The browser gets only this app-level
+# token, whose sole authority is to ask this service to perform a paid operation.
+PAID_ACCESS_TOKEN_ENV = "BIOSIM_PAID_ACCESS_TOKEN"
+PAID_ACCESS_REQUIRED_ENV = "BIOSIM_REQUIRE_PAID_ACCESS_TOKEN"
+PAID_ACCESS_MIN_CHARS = 24
+
+
+def _env_truthy(name: str) -> bool:
+    return str(os.environ.get(name, "") or "").strip().lower() in {
+        "1", "true", "yes", "on", "required",
+    }
+
+
+def _paid_access_status() -> Dict[str, bool]:
+    token = str(os.environ.get(PAID_ACCESS_TOKEN_ENV, "") or "").strip()
+    configured = len(token) >= PAID_ACCESS_MIN_CHARS
+    return {
+        "required": _env_truthy(PAID_ACCESS_REQUIRED_ENV) or bool(token),
+        "configured": configured,
+    }
+
+
+def _bearer_token(request: Request) -> str:
+    value = str(request.headers.get("authorization", "") or "").strip()
+    scheme, separator, token = value.partition(" ")
+    if not separator or scheme.lower() != "bearer":
+        return ""
+    return token.strip()
+
+
+def _require_paid_access(request: Request, operation: str) -> None:
+    """Authorize one metered operation without leaking token length or value.
+
+    Both values are hashed before ``compare_digest`` so its inputs always have the same
+    length. Error messages say what the user must do, but never echo a supplied token.
+    """
+    status = _paid_access_status()
+    if not status["required"]:
+        return                              # local/backward-compatible deployment
+
+    expected = str(os.environ.get(PAID_ACCESS_TOKEN_ENV, "") or "").strip()
+    if len(expected) < PAID_ACCESS_MIN_CHARS:
+        raise HTTPException(
+            status_code=503,
+            detail=(f"{operation} is disabled because paid-service access is required "
+                    f"but {PAID_ACCESS_TOKEN_ENV} is missing or shorter than "
+                    f"{PAID_ACCESS_MIN_CHARS} characters. The deployment operator must "
+                    f"configure a strong random token before this operation can run."),
+        )
+
+    supplied = _bearer_token(request)
+    expected_digest = hashlib.sha256(expected.encode("utf-8")).digest()
+    supplied_digest = hashlib.sha256(supplied.encode("utf-8")).digest()
+    if not supplied or not hmac.compare_digest(supplied_digest, expected_digest):
+        raise HTTPException(
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+            detail=(f"{operation} uses a paid service and requires the deployment access "
+                    f"token. Enter it in BioSimulateAI's access-token field and retry."),
+        )
+
+
+def _paid_llm_requested(config: Optional[Dict[str, Any]]) -> bool:
+    """True only for the operator-billed Bedrock path, not local or caller-hosted LLMs."""
+    return str((config or {}).get("engine") or "off").strip().lower() == "bedrock"
+
+
+def _run_approach(project: Dict[str, Any], explicit: Optional[str]) -> str:
+    return str(explicit or (project or {}).get("selected_approach") or "").strip().lower()
 
 
 # --- Safety net: no endpoint may ever crash the client with a bare 500 ----------
@@ -473,8 +554,10 @@ def _validated_monte_carlo(num_mcs: Any, save_every: Any, where: str) -> Dict[st
 # --- Existing Endpoints ---
 
 @app.post("/api/blueprint")
-def generate_blueprint(req: ParseRequest):
-    """Generates structured blueprint from natural language text."""
+def generate_blueprint(req: ParseRequest, request: Request):
+    """Generate a blueprint; require access only when this request selects Bedrock."""
+    if _paid_llm_requested(req.llm):
+        _require_paid_access(request, "Bedrock-backed model compilation")
     try:
         blueprint = agent.parse_biological_text(req.text, req.llm)
         return blueprint
@@ -492,9 +575,9 @@ def equations_to_model(req: EquationsRequest):
 
 
 @app.post("/api/extract-equations")
-def extract_equations(req: ExtractEquationsRequest):
-    """Read hand-written / printed equations from an uploaded photo and return a
-    compiled, validated blueprint (same schema as /api/blueprint)."""
+def extract_equations(req: ExtractEquationsRequest, request: Request):
+    """Read equations from an image through Bedrock, which is a metered operation."""
+    _require_paid_access(request, "Bedrock equation extraction")
     import base64, re as _re
     data = (req.image or "").strip()
     fmt = req.format
@@ -678,8 +761,10 @@ def optimize_parameters(req: OptimizeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/refine")
-def refine_model_endpoint(req: RefineRequest):
-    """Closed loop feedback to evaluate targets and refine blueprint."""
+def refine_model_endpoint(req: RefineRequest, request: Request):
+    """Closed-loop refinement; Bedrock use requires the deployment access token."""
+    if _paid_llm_requested(req.llm):
+        _require_paid_access(request, "Bedrock-backed model refinement")
     try:
         refined_bp, logs, success = agent.refine_model(
             blueprint=req.blueprint,
@@ -809,8 +894,10 @@ def simulate_abm(req: ABMSimulateRequest):
 # --- NEW: MAPLE Calibration Endpoints ---
 
 @app.post("/api/maple/extract")
-def maple_extract(req: MAPLEExtractRequest):
-    """Run MAPLE parameter extraction using LLM with structured validation."""
+def maple_extract(req: MAPLEExtractRequest, request: Request):
+    """Run MAPLE extraction; Bedrock use requires the deployment access token."""
+    if _paid_llm_requested(req.llm):
+        _require_paid_access(request, "Bedrock-backed MAPLE extraction")
     try:
         from maple_extractor import MAPLEExtractor
         from maple_schemas import submodel_target_to_dict, validation_report_to_dict
@@ -993,8 +1080,9 @@ def llm_models():
     return llm_provider.list_models()
 
 @app.post("/api/llm/download")
-def llm_download(req: LLMDownloadRequest):
-    """Start downloading a model's weights from HuggingFace (runs in background)."""
+def llm_download(req: LLMDownloadRequest, request: Request):
+    """Start a large server-side download; protected like other metered operations."""
+    _require_paid_access(request, "Server-side language-model download")
     try:
         return llm_provider.start_download(req.model)
     except llm_provider.LLMError as e:
@@ -1493,8 +1581,10 @@ def solve_pde_1d(req: Solve1DRequest):
 
 # --- stage 6-10: runs ------------------------------------------------------
 @app.post("/api/runs")
-def create_run(req: CreateRunRequest):
-    """Validate, compile and (by default) start a run of the selected approach."""
+def create_run(req: CreateRunRequest, request: Request):
+    """Validate, compile and start a run; CompuCell3D is a metered AWS operation."""
+    if _run_approach(req.project, req.approach) == "cc3d":
+        _require_paid_access(request, "Remote CompuCell3D simulation")
     try:
         record = RUNS.create_run(req.project, req.approach, seed=req.seed)
     except KeyError as e:
@@ -1544,8 +1634,19 @@ def get_run_logs(run_id: str, limit: int = 500):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+def _require_paid_run_access(run_id: str, request: Request) -> None:
+    """Protect controls for an existing CC3D run; leave free approaches public."""
+    try:
+        status = RUNS.status(run_id)
+    except KeyError:
+        return                              # the route below returns the normal 404
+    if str(status.get("approach") or "").lower() == "cc3d":
+        _require_paid_access(request, "Remote CompuCell3D run control")
+
+
 @app.post("/api/runs/{run_id}/start")
-def start_run(run_id: str):
+def start_run(run_id: str, request: Request):
+    _require_paid_run_access(run_id, request)
     try:
         RUNS.start(run_id)
     except KeyError as e:
@@ -1556,7 +1657,8 @@ def start_run(run_id: str):
 
 
 @app.post("/api/runs/{run_id}/pause")
-def pause_run(run_id: str):
+def pause_run(run_id: str, request: Request):
+    _require_paid_run_access(run_id, request)
     try:
         RUNS.pause(run_id)
     except KeyError as e:
@@ -1567,7 +1669,8 @@ def pause_run(run_id: str):
 
 
 @app.post("/api/runs/{run_id}/resume")
-def resume_run(run_id: str):
+def resume_run(run_id: str, request: Request):
+    _require_paid_run_access(run_id, request)
     try:
         RUNS.resume(run_id)
     except KeyError as e:
@@ -1578,7 +1681,8 @@ def resume_run(run_id: str):
 
 
 @app.post("/api/runs/{run_id}/cancel")
-def cancel_run(run_id: str):
+def cancel_run(run_id: str, request: Request):
+    _require_paid_run_access(run_id, request)
     try:
         RUNS.cancel(run_id)
     except KeyError as e:
@@ -1671,6 +1775,8 @@ def health():
         "status": "ok",
         "llm_engine": os.environ.get("LLM_ENGINE", "off") or "off",
         "bedrock_configured": bedrock_ready,
+        # Booleans only. The token and even its length never leave the process.
+        "paid_access": _paid_access_status(),
         "approaches": approaches,
         "load_errors": load_errors,
         "run_storage": "in-memory; runs do not survive a restart or redeploy",

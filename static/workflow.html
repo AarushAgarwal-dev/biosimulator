@@ -452,6 +452,15 @@
                         <label class="wf-field wf-inline-field"><span>Seed</span>
                             <input type="number" id="run-seed" value="1" step="1"></label>
                     </div>
+                    <label class="wf-field">
+                        <span>Deployment access token
+                            <span class="muted">— required only for protected AWS Batch runs</span></span>
+                        <input type="password" id="paid-access-token"
+                            placeholder="Token supplied by the deployment operator"
+                            autocomplete="off" spellcheck="false">
+                        <span class="wf-hint">This is not an AWS key. It stays in this browser tab,
+                            is sent only to this BioSimulateAI server, and clears when the tab closes.</span>
+                    </label>
                     <div class="wf-run-state">
                         <span class="wf-run-badge" id="run-state-badge">draft</span>
                         <div class="wf-progress"><div class="wf-progress-bar" id="run-progress"></div></div>

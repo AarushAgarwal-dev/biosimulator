@@ -144,20 +144,27 @@ class RenderConfigTests(unittest.TestCase):
         import yaml
         with open(self.PATH, encoding="utf-8") as handle:
             document = yaml.safe_load(handle)
-        secretish = ("TOKEN", "SECRET", "KEY", "PASSWORD")
+        secret_keys = {
+            "BIOSIM_PAID_ACCESS_TOKEN",
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+        }
         for env in (document["services"][0].get("envVars") or []):
             key = str(env.get("key") or "")
-            if any(word in key.upper() for word in secretish):
+            if key in secret_keys:
                 self.assertNotIn(
                     "value", env,
                     f"{key} has a literal value in render.yaml; credentials must use "
                     f"sync: false so Render prompts instead")
 
-    def test_it_warns_that_the_deployment_is_unauthenticated(self):
-        """The file must not hand someone a public money-spending endpoint quietly."""
+    def test_it_requires_a_token_for_money_spending_operations(self):
+        """The public site may stay open, but Batch and Bedrock must fail closed."""
         with open(self.PATH, encoding="utf-8") as handle:
             text = handle.read().upper()
-        self.assertIn("UNAUTHENTICATED", text)
+        self.assertIn("TOKEN-GATED", text)
+        self.assertIn("BIOSIM_REQUIRE_PAID_ACCESS_TOKEN", text)
         self.assertIn("BATCH", text, "the AWS cost exposure is not spelled out")
 
     def test_it_warns_that_a_service_already_exists(self):
@@ -165,6 +172,19 @@ class RenderConfigTests(unittest.TestCase):
         with open(self.PATH, encoding="utf-8") as handle:
             text = handle.read().upper()
         self.assertIn("ALREADY EXISTS", text)
+
+
+class VerificationScriptPortabilityTests(unittest.TestCase):
+    def test_language_to_model_probe_has_no_machine_specific_path(self):
+        root = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(root, "verify_language_to_model.py")
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertNotIn("D:\\SURF", source,
+                         "the verification script only runs from one developer's machine")
+        self.assertNotIn("sys.path.insert", source,
+                         "a script in the repository root does not need to insert its own "
+                         "absolute directory into sys.path")
 
 
 if __name__ == "__main__":

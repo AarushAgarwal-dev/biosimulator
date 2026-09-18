@@ -758,12 +758,41 @@ function ensureSimulationConfig(blueprint) {
 }
 
 // Parse JSON exactly once and surface FastAPI's useful `detail`/`error` message.
+const PAID_ACCESS_SESSION_KEY = "biosim_paid_access_token";
+let inMemoryPaidAccessToken = "";
+
+function paidAccessToken() {
+    try {
+        const stored = String(sessionStorage.getItem(PAID_ACCESS_SESSION_KEY) || "").trim();
+        return stored || inMemoryPaidAccessToken;
+    } catch { return inMemoryPaidAccessToken; }
+}
+
+function rememberPaidAccessToken(value) {
+    const token = String(value || "").trim();
+    inMemoryPaidAccessToken = token;
+    try {
+        if (token) sessionStorage.setItem(PAID_ACCESS_SESSION_KEY, token);
+        else sessionStorage.removeItem(PAID_ACCESS_SESSION_KEY);
+    } catch { /* memory still carries it for this page */ }
+}
+
+function paidAccessHeaders(existing) {
+    const headers = Object.assign({}, existing || {});
+    const token = paidAccessToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return headers;
+}
+
 // This also turns true network failures into a clear connection error instead of
 // secondary messages such as "results.map is not a function".
 async function apiJson(url, options = {}) {
     let response;
     try {
-        response = await fetch(url, options);
+        const requestOptions = Object.assign({}, options, {
+            headers: paidAccessHeaders(options.headers)
+        });
+        response = await fetch(url, requestOptions);
     } catch (error) {
         throw new Error(`Could not connect to the BioSimulateAI server: ${error.message || error}`);
     }
@@ -1110,6 +1139,13 @@ async function compileBlueprint() {
         // The interaction graph derived from these equations. Null for a generic-Hill
         // model, where the blueprint's own edges are the compiled topology.
         state.derivedEdges = Array.isArray(data.derived_edges) ? data.derived_edges : null;
+
+        // loadBlueprintIntoUI draws once BEFORE this request so the user is not staring
+        // at an empty panel while compilation runs. That first draw necessarily has no
+        // derived edges and shows the schematic fallback. It used to be the LAST draw too,
+        // so the warning stayed forever even though the backend had returned the real
+        // equation-derived graph. Repaint now that the authoritative edges exist.
+        renderCytoscape();
 
         // Render Equations via KaTeX
         renderEquations();
@@ -2040,13 +2076,19 @@ function renderCytoscape() {
     // PRODUCTION terms, so an arrow means "this species appears in that one's rate of
     // change, with this sign". It is null for a generic-Hill model, where the edges are
     // the compiled topology and are already true.
+    const hasDerivedGraph = Array.isArray(state.derivedEdges);
     const derived = (state.derivedEdges || []).filter(
         e => nodeIds.has(e.source) && nodeIds.has(e.target));
-    let edgesToDraw = derived.length ? derived : (state.blueprint.edges || []).filter(
+    // An EMPTY derived list is authoritative too: equations containing only independent
+    // production and first-order turnover genuinely have no regulatory arrows. The old
+    // truthiness check treated [] as failure and resurrected hand-drawn decoration, then
+    // told the researcher derivation had failed. Null means failure/not attempted; []
+    // means success, no interactions.
+    let edgesToDraw = hasDerivedGraph ? derived : (state.blueprint.edges || []).filter(
         e => nodeIds.has(e.source) && nodeIds.has(e.target));
     const hasImplicitEdges = state.blueprint.odes ||
         (state.blueprint.spatial && state.blueprint.spatial.reactions);
-    if (edgesToDraw.length === 0 && hasImplicitEdges) {
+    if (edgesToDraw.length === 0 && hasImplicitEdges && !hasDerivedGraph) {
         edgesToDraw = deriveEdgesFromOdes(state.blueprint).filter(
             e => nodeIds.has(e.source) && nodeIds.has(e.target));
     }
@@ -2067,17 +2109,15 @@ function renderCytoscape() {
         });
     });
 
-    // WHEN THE EQUATIONS ARE EXPLICIT, THIS DIAGRAM IS DECORATION. If the blueprint
-    // carries `odes`, ODEModel compiles those rate laws directly and the `edges` array
-    // is never consulted -- so the graph is whatever the preset author drew, and it can
-    // disagree with the mathematics being solved. Berridge shows Z -> Y and Y -> Z
-    // activation for a model whose real structure is a Z-gated pump and calcium-induced
-    // calcium release; Zhabotinsky shows two edges for a 13-state system.
+    // The badge distinguishes three scientifically different states:
+    //   * no explicit ODEs: the blueprint edge list is the compiled topology;
+    //   * derived_edges is an array (including []): the backend successfully inspected
+    //     the explicit equations and this diagram is authoritative;
+    //   * derived_edges is null: derivation failed, so any shown edge is only schematic.
     //
-    // A biologist reads a network diagram to understand a model's structure, so a
-    // diagram that does not describe the equations has to say so. Deriving the graph
-    // from the ODEs' free symbols would be better and is the real fix; this is the
-    // honest label until then.
+    // Keeping [] distinct from null matters: independent production/turnover equations
+    // correctly derive NO arrows. Calling that a failure resurrects decorative edges and
+    // creates exactly the misleading schematic the derivation exists to remove.
     const badge = document.getElementById("graph-schematic-badge");
     if (badge) {
         // Report WHICH graph this is, rather than warning that it is decoration. When the
@@ -2086,7 +2126,9 @@ function renderCytoscape() {
         // is the sign of the partial derivative. The old wording described the hand-drawn
         // case, which now survives only as a fallback when derivation was not possible.
         const explicit = !!(state.blueprint && state.blueprint.odes);
-        const isDerived = Array.isArray(state.derivedEdges) && state.derivedEdges.length > 0;
+        // [] is a successful derivation with no regulatory interactions; only null means
+        // the backend could not derive a graph.
+        const isDerived = Array.isArray(state.derivedEdges);
         let omitted = 0;
         if (isDerived) {
             state.derivedEdges.forEach(function (e) {
@@ -2097,14 +2139,17 @@ function renderCytoscape() {
         if (!explicit) {
             badge.textContent = "";
         } else if (isDerived) {
-            badge.textContent =
-                "Derived from the equations: an arrow means that species appears in the "
-                + "other's rate of change, and its direction is the sign of the partial "
-                + "derivative. A self-arrow is autoregulation, not turnover."
-                + (omitted
-                    ? " Up to " + omitted + " weak influences per species are folded away"
-                      + " to keep this readable; the Equations tab is complete."
-                    : "");
+            badge.textContent = state.derivedEdges.length === 0
+                ? "Derived from the equations: these rate laws contain no cross-species "
+                  + "regulatory interactions or positive autoregulation, so the correct "
+                  + "graph has no arrows. First-order turnover is intentionally not drawn."
+                : "Derived from the equations: an arrow means that species appears in the "
+                  + "other's rate of change, and its direction is the sign of the partial "
+                  + "derivative. A self-arrow is autoregulation, not turnover."
+                  + (omitted
+                      ? " Up to " + omitted + " weak influences per species are folded away"
+                        + " to keep this readable; the Equations tab is complete."
+                      : "");
         } else {
             badge.textContent =
                 "Schematic - this model's equations are written explicitly and a graph "
@@ -3694,7 +3739,13 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
-    // --- AI language model settings
+    // --- AI language model and paid-service access settings
+    const paidTokenInput = document.getElementById("paid-access-token");
+    if (paidTokenInput) {
+        paidTokenInput.value = paidAccessToken();
+        paidTokenInput.addEventListener("input", () =>
+            rememberPaidAccessToken(paidTokenInput.value));
+    }
     loadLlmSettings();
     const aiBtn = document.getElementById("btn-ai-settings");
     if (aiBtn) aiBtn.addEventListener("click", openLlmModal);
