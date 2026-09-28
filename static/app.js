@@ -3145,6 +3145,17 @@ async function extractMapleParameters() {
 
         const resContainer = document.getElementById("maple-results-container");
         resContainer.innerHTML = "";
+        // When the language model fails every retry, MAPLE returns a demonstration target.
+        // It must not read as an extraction from the literature.
+        const isDemo = String((result.target && result.target.target_id) || "").startsWith("demo_")
+            || (Array.isArray(result.logs) && result.logs.some(l => /Returning demo/i.test(String(l))));
+        if (isDemo) {
+            const warn = document.createElement("p");
+            warn.className = "placeholder-text warn";
+            warn.textContent = "No extraction: the language model did not return a valid target, so this is MAPLE's demonstration target, not a value from the literature.";
+            resContainer.appendChild(warn);
+            showToast("MAPLE returned its demonstration target: the extraction did not succeed.", "warn", 9000);
+        }
         const targetView = document.createElement("pre");
         targetView.className = "maple-target-viewer";
         targetView.textContent = JSON.stringify(result.target || {}, null, 2);
