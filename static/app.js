@@ -446,8 +446,9 @@ subunits) = molecular memory. Without the step it stays OFF (A ≈ 0.14 µM).`,
 a three-equation caricature that captures the IDEA (the receptor pool remembers the
 background, the response tracks L/R) but not the paper's receptor-trafficking kinetics.
 It is a legitimate reduced model and it reproduces the hallmark; it should not be cited
-as the published equations. The Berridge and Zhabotinsky entries above ARE faithful
-transcriptions -- this one is not, and the distinction matters if you publish.
+as the published equations. The Ca²⁺ (Goldbeter, Dupont & Berridge 1990) and Zhabotinsky
+entries above ARE faithful transcriptions, checked against their papers' figures -- this one
+is not, and the distinction matters if you publish.
 
 The receptor pool R adapts to (remembers) the ambient ligand background, and the
 downstream response S is driven by the RATIO ligand/background (L/R). So a given
