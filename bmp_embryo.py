@@ -11,6 +11,8 @@ WHAT IS EXACT
   BMP-binding protein, SBP), written term for term in ``_reaction``.
 * Every rate constant, diffusivity, production rate and fitted feedback parameter printed in
   Tables S1, S2, S3 and S8 (diffusivities converted from um^2/s to um^2/min).
+* The paper's refit of the SBP model for the symmetric ellipsoid (Table S11, Case 1), available
+  as the ``umulis2010_ellipse`` set. Table S8 is the refit for the reconstructed embryo.
 * The scale-invariance conservation conditions, Supplemental Eqs 95-104.
 
 WHAT THE PAPER DID NOT PUBLISH, AND HOW IT IS RESOLVED (each is listed in ASSUMPTIONS)
@@ -58,7 +60,7 @@ CITATION_2006 = (
     "doi:10.1073/pnas.0510398103 (Supporting Information)"
 )
 MECHANISMS = ("sbp", "none", "receptor")
-PARAMETER_SETS = ("umulis2010", "umulis2010_as_printed", "umulis2006")
+PARAMETER_SETS = ("umulis2010", "umulis2010_ellipse", "umulis2010_as_printed", "umulis2006")
 DEFAULT_PARAMETER_SET = "umulis2010"
 SPECIES = ("B", "S", "T", "I", "IB", "C", "BC", "BCR", "BR")
 DIFFUSING = ("B", "S", "T", "I", "IB")
@@ -81,6 +83,7 @@ _S1 = "Umulis 2010 Table S1 (Supplemental p.7)"
 _S2 = "Umulis 2010 Table S2 (Supplemental p.8)"
 _S3 = "Umulis 2010 Table S3 (Supplemental p.8)"
 _S8 = "Umulis 2010 Table S8 (Supplemental p.12)"
+_S11 = "Umulis 2010 Table S11 (Supplemental p.15), elliptical geometry, Case 1"
 _T06 = "Umulis 2006 PNAS Supporting Information, Table 1 (p.28)"
 
 PHI_S_NOTE = (
@@ -128,6 +131,16 @@ MECH_2010 = {
             "km4": _entry(4.0, "min^-1", _S8), "k6": _entry(1.0, "nM^-1 min^-1", _S8, "SBP/BMP + receptor"),
             "km6": _entry(20.0, "min^-1", _S8), "k7": _entry(0.25, "nM^-1 min^-1", _S8, "BMP/receptor + SBP"),
             "km7": _entry(20.0, "min^-1", _S8)},
+}
+
+# The paper re-optimised the SBP model for each geometry (main text p.264: "we allowed the
+# parameters for the 'winning' positive-feedback mechanism to be reoptimized"). Table S8 matches
+# Table S12 Case 1 (the reconstructed embryo: 31.36 min^-1, 392.6 nM); Table S11 Case 1 is the
+# refit for the symmetric ellipsoid this module solves (uniform Tkv and Tld, Supp. Eqs 83-84 with
+# g = h = 0 and Tld_frac = Tkv_frac = 1). Only these two values differ.
+ELLIPSE_2010 = {
+    "lambda_Tld": _entry(24.48, "min^-1", _S11, "Tld_conc*lambda (Supp. Eq. 83 with g = 0, Tld_frac = 1)"),
+    "Rtot": _entry(480.5, "nM", _S11, "R_conc (Supp. Eq. 84 with h = 0, Tkv_frac = 1)"),
 }
 
 PREPATTERN_2010 = {
@@ -205,6 +218,12 @@ ASSUMPTIONS = [
     "(plus the termini on the surface), Tsg in a central AP block spanning the DV height, Sog in the "
     "lateral neuroectoderm (40%-80% of the DM->VM arc). Boundaries are tanh-smoothed over ~5 um.",
     "Case 1 of the paper: uniform Tkv (receptor) and uniform Tld (p.266).",
+    "Two published parameter sets fit the same data: Table S8 (= Table S12 Case 1, the reconstructed embryo, "
+    "used by the paper for the mechanism comparison and the scaling predictions) is the default; Table S11 "
+    "Case 1 is the paper's refit for the symmetric ellipsoid (lambda*Tld 24.48 min^-1, Rtot 480.5 nM) and is "
+    "offered as 'umulis2010_ellipse'. On this ellipsoid neither set reproduces every published result: the "
+    "ellipse refit matches the 60-min Fig. 4F level, Table S8 reproduces the 750-um split and the conserved "
+    "large-embryo profile.",
     "Initial conditions: all species zero except free receptor = total receptor (the 2010 image-derived "
     "initial conditions were not published; the 2006 predecessor used the same zero start).",
     "The 1D cross-section is the AP midline (x/L = 0.5) with the circular approximation "
@@ -249,6 +268,8 @@ def _flat_table() -> dict[str, dict[str, Any]]:
     for mech, block in MECH_2010.items():
         for key, value in block.items():
             table[f"{mech}.{key}"] = value
+    for key, value in ELLIPSE_2010.items():
+        table[f"ellipse.{key}"] = value
     for key, value in PREPATTERN_2010.items():
         table[f"prepattern.{key}"] = value
     for key, value in TABLE_2006.items():
@@ -303,6 +324,10 @@ def _base_params(mechanism: str, perturbation: str, overrides: Mapping[str, floa
         if param_set == "umulis2010_as_printed":
             p["phi_S"] = float(PHI_S_AS_PRINTED["value"])
         p.update(_values(MECH_2010[mechanism]))
+        if param_set == "umulis2010_ellipse":
+            if mechanism != "sbp":
+                raise ValueError("the umulis2010_ellipse set (Table S11) refits the SBP model only")
+            p.update(_values(ELLIPSE_2010))
         if mechanism == "none":
             p.update(Lambda=0.0, K_h=1.0, nu=2.0, **zero_sbp)
         elif mechanism == "receptor":
@@ -759,6 +784,11 @@ def _rel(model: float, paper: float) -> float:
     return (model - paper) / paper
 
 
+# Surface resolution used by every organism-scale validation check. Measured between 40x24 and
+# 64x40: the 60-min dorsal-midline BR changes by ~1%, the no-feedback stripe FWHM by ~6%.
+SURFACE_GRID = {"nu": 48, "nv": 32}
+
+
 def validate(include_surface: bool = False) -> dict[str, Any]:
     """Check the implementation against published curves and claims. Nothing here is tuned."""
     started = time.perf_counter()
@@ -815,22 +845,60 @@ def validate(include_surface: bool = False) -> dict[str, Any]:
     w30, w60 = r30["widths_own_max"]["0.5"]["um"], r60["widths_own_max"]["0.5"]["um"]
 
     f4f = PAPER_DATA["umulis2010_fig4F"]
-    model_dm = [float(frames[t][0]) for t in (15.0, 30.0, 45.0, 60.0)]
+    f_times = (15.0, 30.0, 45.0, 60.0)
+    f_keys = ["15", "30", "45", "60"]
+    cs_dm = [float(frames[t][0]) for t in f_times]
     ne_60 = float(np.interp(0.6 * s[-1], s, frames[60.0]))
+    # Fig. 4F plots BR at x/Lx = 0.5 of the paper's 3D model; with the surface available the
+    # comparison is made there (like for like), otherwise on the 1D cross-section.
+    mid = SURFACE_GRID["nu"] // 2
+
+    def surface_dm(res: dict[str, Any]) -> list[float]:
+        return [float(res["fields"]["BR"][res["times"].index(t)][mid][0]) for t in f_times]
+
+    surf_dm = surface_dm(simulate_surface(save_times=list(f_times), t_end=60.0, **SURFACE_GRID)) if include_surface else None
+    model_dm = surf_dm if surf_dm is not None else cs_dm
+    where = (f"embryo surface at x/L = 0.5 ({SURFACE_GRID['nu']}x{SURFACE_GRID['nv']}), as Fig. 4F"
+             if include_surface else "1D cross-section at the AP midline")
+    both = {"cross_section_model_nM": dict(zip(f_keys, cs_dm)),
+            **({"surface_model_nM": dict(zip(f_keys, surf_dm))} if surf_dm is not None else {})}
     rows.append(_row(
         "F1", "Dorsal-midline BR level at 60 min (Fig. 4F: 37.9 nM)", "Umulis 2010 Fig. 4F",
-        "Model DM BR at 60 min vs the digitised figure (pass: within 25%)",
-        {"model_nM": model_dm[3], "paper_nM": f4f["dm_BR_nM"][3], "relative_error": _rel(model_dm[3], f4f["dm_BR_nM"][3])},
+        f"Model DM BR at 60 min on the {where} vs the digitised figure (pass: within 25%)",
+        {"model_nM": model_dm[3], "paper_nM": f4f["dm_BR_nM"][3], "relative_error": _rel(model_dm[3], f4f["dm_BR_nM"][3]),
+         "evaluated_on": where, **both},
         abs(_rel(model_dm[3], f4f["dm_BR_nM"][3])) <= 0.25, kind="paper_figure"))
     rel_all = [_rel(mv, pv) for mv, pv in zip(model_dm, f4f["dm_BR_nM"])]
     rows.append(_row(
         "F2", "Dorsal-midline BR time course (Fig. 4F: 16.8, 30.1, 35.3, 37.9 nM at 15-60 min)", "Umulis 2010 Fig. 4F",
-        "Each time point within 25% (depends on the unpublished Sog field and initial conditions)",
-        {"model_nM": dict(zip(["15", "30", "45", "60"], model_dm)),
-         "paper_nM": dict(zip(["15", "30", "45", "60"], f4f["dm_BR_nM"])),
-         "relative_error": dict(zip(["15", "30", "45", "60"], rel_all)),
-         "model_ne_BR_60_nM": ne_60, "paper_ne_floor_nM": f4f["ne_floor_BR_nM"]},
+        f"Each time point within 25% on the {where} (depends on the unpublished Sog field and initial conditions)",
+        {"model_nM": dict(zip(f_keys, model_dm)),
+         "paper_nM": dict(zip(f_keys, f4f["dm_BR_nM"])),
+         "relative_error": dict(zip(f_keys, rel_all)),
+         "model_ne_BR_60_nM": ne_60, "paper_ne_floor_nM": f4f["ne_floor_BR_nM"], "evaluated_on": where, **both,
+         "why": "For the first ~20 min, Sog/Tsg secreted in the lateral neuroectoderm floods the dorsal side and "
+                "holds free BMP - and so BR - near zero until Tld has cleared it; the paper's curve already reads "
+                "16.8 nM at 15 min. That needs less Sog on the dorsal side early (the FISH-derived Sog field, "
+                "Supp. Eq. 82, whose coefficients were not published) or a non-zero, image-derived initial state "
+                "(p.266, not published)."},
         all(abs(e) <= 0.25 for e in rel_all), kind="paper_figure"))
+    if include_surface:
+        ell_dm = surface_dm(simulate_surface(parameter_set="umulis2010_ellipse", save_times=list(f_times),
+                                             t_end=60.0, **SURFACE_GRID))
+    else:
+        ell = simulate_cross_section(parameter_set="umulis2010_ellipse", save_times=list(f_times))
+        ell_dm = [float(ell["fields"]["BR"][ell["times"].index(t)][0]) for t in f_times]
+    ell_rel = [_rel(mv, pv) for mv, pv in zip(ell_dm, f4f["dm_BR_nM"])]
+    rows.append(_row(
+        "F3", "The paper's refit for the ellipsoidal geometry (Table S11) reproduces the 60-min dorsal-midline BR of Fig. 4F",
+        "Umulis 2010 Table S11 (Supplemental p.15) and Fig. 4F",
+        f"Table S11 Case 1 (lambda*Tld 24.48 min^-1, Rtot 480.5 nM; all else as the default set) on the {where}: "
+        "60-min DM BR vs the digitised figure (pass: within 10%)",
+        {"model_nM": dict(zip(f_keys, ell_dm)), "paper_nM": dict(zip(f_keys, f4f["dm_BR_nM"])),
+         "relative_error": dict(zip(f_keys, ell_rel)), "evaluated_on": where,
+         "note": "Only the 60-min level is scored. Before 60 min this set lags the figure for the same reason as F2 "
+                 "(the early Sog/Tsg flood)."},
+        abs(ell_rel[3]) <= 0.10, kind="paper_figure"))
     flank = {t: float(np.interp(60.0, s, frames[t])) for t in (30.0, 45.0, 60.0)}
     flank_peak = max(flank.values())
     rows.append(_row(
@@ -903,17 +971,30 @@ def validate(include_surface: bool = False) -> dict[str, Any]:
         nf_frames[60.0][0] < frames[60.0][0] and nf_flank[60.0] > flank[60.0]))
     nf = simulate_cross_section(mechanism="none", save_times=[30.0, 60.0])
     rn60 = _profile_readout(s, np.asarray(nf["fields"]["BR"][-1]), circumference=circ)
+    m1 = {"cross_section_fwhm_percent_circumference": rn60["fwhm_percent_circumference"],
+          "cross_section_peak_BR_nM": rn60["peak"],
+          "explanation": "Tsg is secreted only in a central AP block (Fig. 4A). On the embryo surface it diffuses out "
+                         "along the AP axis, so less Sog/Tsg forms at mid-embryo and the Table S2 set localises; the "
+                         "paper compared the mechanisms in this full model (Fig. 4B). The 1D cross-section treats the "
+                         "block as if it covered the whole AP axis, over-supplies Tsg and stays flat, so it is shown "
+                         "for reference and not scored."}
+    m1_pass = None
+    if include_surface:
+        fin = simulate_surface(mechanism="none", save_times=[60.0], t_end=60.0, **SURFACE_GRID)["readouts"]["final"]
+        first_cell_um = math.pi * 90.0 / SURFACE_GRID["nv"]
+        m1.update(fwhm_percent_circumference=fin["fwhm_percent_circumference"], peak_BR_nM=fin["peak"],
+                  peak_location_um_from_dm=fin["peak_location_um_from_dm"], first_cell_um=first_cell_um)
+        m1_pass = fin["fwhm_percent_circumference"] < 50.0 and fin["peak_location_um_from_dm"] <= first_cell_um
     rows.append(_row(
         "M1", "The fitted no-feedback set (Table S2) also forms a dorsal stripe with the shared Sog source",
         "Umulis 2010 Fig. 4B (every mechanism fits the wt data comparably, RMSD/mu 0.35-0.40)",
-        "Table S2 parameters with the default Sog source: 60-min FWHM as % of circumference (pass < 50%)",
-        {"fwhm_percent_circumference": rn60["fwhm_percent_circumference"], "peak_BR_nM": rn60["peak"],
-         "explanation": "Table S2's receptor level (2386 nM) and Tld rate were fitted against the unpublished FISH Sog field; "
-                        "with the 2006 Sog secretion rate this set stays flat (it localises only for phi_S <~ 300 nM/min)."},
-        rn60["fwhm_percent_circumference"] < 50.0, kind="reproduction_gap"))
+        f"Table S2 parameters with the default Sog source on the embryo surface at x/L = 0.5 "
+        f"({SURFACE_GRID['nu']}x{SURFACE_GRID['nv']}): 60-min FWHM (pass < 50% of the circumference, maximum in the "
+        "dorsal-midline cell). Needs the surface model, so the 1D-only report does not score it.",
+        m1, m1_pass))
 
     if include_surface:
-        grid = dict(nu=48, nv=32)
+        grid = dict(SURFACE_GRID)
         split_times = [60.0, 90.0, 120.0]
         s400 = simulate_surface(save_times=split_times, t_end=120.0, **grid)
         s750 = simulate_surface(length_ap=750.0, save_times=split_times, t_end=120.0, **grid)
@@ -937,7 +1018,12 @@ def validate(include_surface: bool = False) -> dict[str, Any]:
 
         splits400 = {str(t): split_positions(s400, t) for t in split_times}
         splits750 = {str(t): split_positions(s750, t) for t in split_times}
-        first_split = next((t for t in split_times if splits750[str(t)]), None)
+
+        def interior(fracs): return [f for f in fracs if 0.05 <= f <= 0.95]
+
+        # Cells within 5% of the poles are excluded (the DV direction degenerates there), so the
+        # first split time is the first time with an INTERIOR split.
+        first_split = next((t for t in split_times if interior(splits750[str(t)])), None)
         k60 = s400["times"].index(60.0)
         p400 = norm(np.asarray(s400["fields"]["BR"][k60])[mid])
         p750 = norm(np.asarray(s750["fields"]["BR"][s750["times"].index(60.0)])[mid])
@@ -945,7 +1031,7 @@ def validate(include_surface: bool = False) -> dict[str, Any]:
         rms_unc = float(np.sqrt(np.mean((p750 - p400) ** 2)))
         rms_con = float(np.sqrt(np.mean((p750c - p400) ** 2)))
         label = f"{grid['nu']}x{grid['nv']}"
-        span750 = [f for f in (splits750[str(first_split)] if first_split else []) if 0.05 <= f <= 0.95]
+        span750 = interior(splits750[str(first_split)]) if first_split else []
         rows.append(_row(
             "V8", "A 750-um embryo with fixed production/receptor concentrations (shuttling only) splits into two stripes",
             "Umulis 2010 Fig. 7, p.271-272 ('splits at ~25% embryo length ... two parallel stripes')",

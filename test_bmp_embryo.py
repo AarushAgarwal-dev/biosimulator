@@ -104,8 +104,32 @@ class TestModel(unittest.TestCase):
     def test_reproduction_gaps_stay_reported(self):
         # These depend on inputs the paper did not publish. They must remain visible failures
         # unless the model genuinely changes; flipping one needs a deliberate test update.
-        for key in ("F2", "V3b", "M1"):
+        for key in ("F2", "V3b"):
             self.assertIs(self.by_id[key]["pass"], False, key)
+        # M1 is a claim about the paper's 3D model; the 1D-only report does not score it.
+        self.assertIsNone(self.by_id["M1"]["pass"])
+        self.assertIn("cross_section_fwhm_percent_circumference", self.by_id["M1"]["measured"])
+
+    def test_ellipse_refit_reproduces_the_60_min_level(self):
+        row = self.by_id["F3"]
+        self.assertTrue(row["pass"], row["measured"])
+        self.assertLess(abs(row["measured"]["relative_error"]["60"]), 0.10)
+
+    def test_ellipse_parameter_set_is_table_s11(self):
+        p = bmp._base_params("sbp", "wt", None, 400.0, False, "umulis2010_ellipse")
+        self.assertEqual(p["lambda_Tld"], 24.48)
+        self.assertEqual(p["Rtot"], 480.5)
+        default = bmp._base_params("sbp", "wt", None, 400.0, False)
+        for key in ("k3", "phi_S", "Lambda", "K_h", "k4", "k6", "k7"):
+            self.assertEqual(p[key], default[key], key)
+        with self.assertRaisesRegex(ValueError, "SBP model only"):
+            bmp._base_params("none", "wt", None, 400.0, False, "umulis2010_ellipse")
+
+    def test_no_feedback_set_localises_on_the_embryo_surface(self):
+        res = bmp.simulate_surface(mechanism="none", nu=24, nv=16, save_times=[60.0])
+        fin = res["readouts"]["final"]
+        self.assertLess(fin["fwhm_percent_circumference"], 50.0)
+        self.assertLessEqual(fin["peak_location_um_from_dm"], math.pi * 90.0 / 16)
 
     def test_pass_flags_match_their_criteria(self):
         v1 = self.by_id["V1"]["measured"]

@@ -356,6 +356,7 @@
         const pick = (...names) => { for (const n of names) if (T[n]) return Number(T[n].value); return null; };
         if (pset === "umulis2006") return pick(`umulis2006.${key}`);
         if (key === "phi_S" && pset === "umulis2010_as_printed") return pick("phi_S_as_printed");
+        if (pset === "umulis2010_ellipse" && (key === "Rtot" || key === "lambda_Tld")) return pick(`ellipse.${key}`);
         if (key === "Rtot" && mech === "receptor") return pick("receptor.R_basal");
         return pick(`${mech}.${key}`, key);
     }
@@ -371,8 +372,9 @@
         });
         const refresh = () => {
             const pset = $("embryo-pset").value;
-            if (pset === "umulis2006") $("embryo-mech").value = "sbp";
-            $("embryo-mech").disabled = pset === "umulis2006";
+            const sbpOnly = pset === "umulis2006" || pset === "umulis2010_ellipse";
+            if (sbpOnly) $("embryo-mech").value = "sbp";
+            $("embryo-mech").disabled = sbpOnly;
             renderSliders();
         };
         ["embryo-mech", "embryo-pset"].forEach(id => $(id).addEventListener("change", refresh));

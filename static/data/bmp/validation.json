@@ -77,11 +77,24 @@
       "kind": "paper_figure",
       "claim": "Dorsal-midline BR level at 60 min (Fig. 4F: 37.9 nM)",
       "citation": "Umulis 2010 Fig. 4F",
-      "how_measured": "Model DM BR at 60 min vs the digitised figure (pass: within 25%)",
+      "how_measured": "Model DM BR at 60 min on the embryo surface at x/L = 0.5 (48x32), as Fig. 4F vs the digitised figure (pass: within 25%)",
       "measured": {
-        "model_nM": 30.657658742690412,
+        "model_nM": 29.47991588463637,
         "paper_nM": 37.9,
-        "relative_error": -0.1910907983458994
+        "relative_error": -0.2221658077932356,
+        "evaluated_on": "embryo surface at x/L = 0.5 (48x32), as Fig. 4F",
+        "cross_section_model_nM": {
+          "15": 0.12059157988789618,
+          "30": 15.178158238168816,
+          "45": 23.684639997735076,
+          "60": 30.657658742690412
+        },
+        "surface_model_nM": {
+          "15": 0.31340661616379306,
+          "30": 15.858945406693692,
+          "45": 23.542840576856356,
+          "60": 29.47991588463637
+        }
       },
       "pass": true
     },
@@ -90,13 +103,13 @@
       "kind": "paper_figure",
       "claim": "Dorsal-midline BR time course (Fig. 4F: 16.8, 30.1, 35.3, 37.9 nM at 15-60 min)",
       "citation": "Umulis 2010 Fig. 4F",
-      "how_measured": "Each time point within 25% (depends on the unpublished Sog field and initial conditions)",
+      "how_measured": "Each time point within 25% on the embryo surface at x/L = 0.5 (48x32), as Fig. 4F (depends on the unpublished Sog field and initial conditions)",
       "measured": {
         "model_nM": {
-          "15": 0.12059157988789618,
-          "30": 15.178158238168816,
-          "45": 23.684639997735076,
-          "60": 30.657658742690412
+          "15": 0.31340661616379306,
+          "30": 15.858945406693692,
+          "45": 23.542840576856356,
+          "60": 29.47991588463637
         },
         "paper_nM": {
           "15": 16.8,
@@ -105,15 +118,59 @@
           "60": 37.9
         },
         "relative_error": {
-          "15": -0.9928219297685775,
-          "30": -0.4957422512236274,
-          "45": -0.32904702555991283,
-          "60": -0.1910907983458994
+          "15": -0.9813448442759647,
+          "30": -0.47312473731914645,
+          "45": -0.33306400632134964,
+          "60": -0.2221658077932356
         },
         "model_ne_BR_60_nM": 0.1888033287683481,
-        "paper_ne_floor_nM": 2.5
+        "paper_ne_floor_nM": 2.5,
+        "evaluated_on": "embryo surface at x/L = 0.5 (48x32), as Fig. 4F",
+        "cross_section_model_nM": {
+          "15": 0.12059157988789618,
+          "30": 15.178158238168816,
+          "45": 23.684639997735076,
+          "60": 30.657658742690412
+        },
+        "surface_model_nM": {
+          "15": 0.31340661616379306,
+          "30": 15.858945406693692,
+          "45": 23.542840576856356,
+          "60": 29.47991588463637
+        },
+        "why": "For the first ~20 min, Sog/Tsg secreted in the lateral neuroectoderm floods the dorsal side and holds free BMP - and so BR - near zero until Tld has cleared it; the paper's curve already reads 16.8 nM at 15 min. That needs less Sog on the dorsal side early (the FISH-derived Sog field, Supp. Eq. 82, whose coefficients were not published) or a non-zero, image-derived initial state (p.266, not published)."
       },
       "pass": false
+    },
+    {
+      "id": "F3",
+      "kind": "paper_figure",
+      "claim": "The paper's refit for the ellipsoidal geometry (Table S11) reproduces the 60-min dorsal-midline BR of Fig. 4F",
+      "citation": "Umulis 2010 Table S11 (Supplemental p.15) and Fig. 4F",
+      "how_measured": "Table S11 Case 1 (lambda*Tld 24.48 min^-1, Rtot 480.5 nM; all else as the default set) on the embryo surface at x/L = 0.5 (48x32), as Fig. 4F: 60-min DM BR vs the digitised figure (pass: within 10%)",
+      "measured": {
+        "model_nM": {
+          "15": 0.21705577508773502,
+          "30": 17.98424932955412,
+          "45": 28.832316531362153,
+          "60": 37.83268951347836
+        },
+        "paper_nM": {
+          "15": 16.8,
+          "30": 30.1,
+          "45": 35.3,
+          "60": 37.9
+        },
+        "relative_error": {
+          "15": -0.9870800133876347,
+          "30": -0.4025166335696306,
+          "45": -0.18322049486226188,
+          "60": -0.0017760022828929188
+        },
+        "evaluated_on": "embryo surface at x/L = 0.5 (48x32), as Fig. 4F",
+        "note": "Only the 60-min level is scored. Before 60 min this set lags the figure for the same reason as F2 (the early Sog/Tsg flood)."
+      },
+      "pass": true
     },
     {
       "id": "V1",
@@ -246,16 +303,20 @@
     },
     {
       "id": "M1",
-      "kind": "reproduction_gap",
+      "kind": "paper_claim",
       "claim": "The fitted no-feedback set (Table S2) also forms a dorsal stripe with the shared Sog source",
       "citation": "Umulis 2010 Fig. 4B (every mechanism fits the wt data comparably, RMSD/mu 0.35-0.40)",
-      "how_measured": "Table S2 parameters with the default Sog source: 60-min FWHM as % of circumference (pass < 50%)",
+      "how_measured": "Table S2 parameters with the default Sog source on the embryo surface at x/L = 0.5 (48x32): 60-min FWHM (pass < 50% of the circumference, maximum in the dorsal-midline cell). Needs the surface model, so the 1D-only report does not score it.",
       "measured": {
-        "fwhm_percent_circumference": 100.0,
-        "peak_BR_nM": 0.2337935975794995,
-        "explanation": "Table S2's receptor level (2386 nM) and Tld rate were fitted against the unpublished FISH Sog field; with the 2006 Sog secretion rate this set stays flat (it localises only for phi_S <~ 300 nM/min)."
+        "cross_section_fwhm_percent_circumference": 100.0,
+        "cross_section_peak_BR_nM": 0.2337935975794995,
+        "explanation": "Tsg is secreted only in a central AP block (Fig. 4A). On the embryo surface it diffuses out along the AP axis, so less Sog/Tsg forms at mid-embryo and the Table S2 set localises; the paper compared the mechanisms in this full model (Fig. 4B). The 1D cross-section treats the block as if it covered the whole AP axis, over-supplies Tsg and stays flat, so it is shown for reference and not scored.",
+        "fwhm_percent_circumference": 12.592059223194477,
+        "peak_BR_nM": 65.56225877033661,
+        "peak_location_um_from_dm": 4.415499289039083,
+        "first_cell_um": 8.835729338221293
       },
-      "pass": false
+      "pass": true
     },
     {
       "id": "V8",
@@ -385,8 +446,8 @@
       "pass": true
     }
   ],
-  "passed": 13,
-  "total": 16,
+  "passed": 15,
+  "total": 17,
   "required_ids": [
     "S1",
     "D1",
@@ -397,12 +458,13 @@
     "V7"
   ],
   "required_pass": true,
-  "wall_time_s": 25.43306150000717,
+  "wall_time_s": 36.875842499997816,
   "assumptions": [
     "Equations and Tables S1/S2/S3/S8 are used exactly; diffusivities converted from um^2/s to um^2/min.",
     "Table S1 prints 'phi_S 1.36 uM*min^1'. Used literally (1360 nM/min) with the 2010 Sog equation (no Sog decay term) it floods the PV space with Sog/Tsg and abolishes the dorsal BMP stripe entirely (validation D1). The 2010 Sog source was a FISH-derived field (Supplemental Eq. 82) whose coefficients were not published, so the Sog secretion rate the same authors published for the predecessor model is used.",
     "Source domains follow Umulis 2010 p.260 and Fig. 4A: BMP in the dorsal-most 40% of the circumference (plus the termini on the surface), Tsg in a central AP block spanning the DV height, Sog in the lateral neuroectoderm (40%-80% of the DM->VM arc). Boundaries are tanh-smoothed over ~5 um.",
     "Case 1 of the paper: uniform Tkv (receptor) and uniform Tld (p.266).",
+    "Two published parameter sets fit the same data: Table S8 (= Table S12 Case 1, the reconstructed embryo, used by the paper for the mechanism comparison and the scaling predictions) is the default; Table S11 Case 1 is the paper's refit for the symmetric ellipsoid (lambda*Tld 24.48 min^-1, Rtot 480.5 nM) and is offered as 'umulis2010_ellipse'. On this ellipsoid neither set reproduces every published result: the ellipse refit matches the 60-min Fig. 4F level, Table S8 reproduces the 750-um split and the conserved large-embryo profile.",
     "Initial conditions: all species zero except free receptor = total receptor (the 2010 image-derived initial conditions were not published; the 2006 predecessor used the same zero start).",
     "The 1D cross-section is the AP midline (x/L = 0.5) with the circular approximation L_half = pi*diameter/2 and mirror symmetry at the dorsal and ventral midlines.",
     "Surface species (C, BC, BCR, BR) do not diffuse; B, S, T, I and IB diffuse on the PV sheet.",

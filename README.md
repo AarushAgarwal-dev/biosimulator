@@ -35,16 +35,22 @@ The **Embryo BMP** tab implements Umulis, Shimmi, O'Connor & Othmer (2010), *Dev
 18:260-274 (`bmp_embryo.py`): the reaction-transport equations and every fitted parameter of
 Supplemental Tables S1/S2/S3/S8, solved on the surface of a 400 × 180 µm prolate-spheroid embryo
 and on the AP-midline cross-section (BDF with an analytic sparse Jacobian; ligand mass balance
-checked to 10⁻³).
+checked to 10⁻³). The paper's separate refit for the ellipsoid (Table S11, Case 1) is available
+as a second parameter set.
 - **Solver verification**: the same code reproduces the fully specified predecessor model
   (Umulis et al. 2006 PNAS, Supp. Fig. 13) within 10 % from 30 min to steady state.
 - **Paper claims** (`python verify_bmp_umulis2010.py`): the contracting dorsal stripe, sog+/-
   widening, tld-/- loss of signal, loss of localisation with the in-vitro Sog/BMP on-rate, the
-  role of feedback, and scaling behaviour (a 750 µm embryo splits into two stripes from ~21 % EL;
-  paper: ~25 %) are each measured and reported pass/fail - 13 of 16 pass.
-  The three that do not (the exact Fig. 4F time course, the sog+/- magnitude, the Table S2 set)
-  depend on inputs the paper did not publish (the FISH-derived Sog field, the image-derived
-  initial state); they are shown, not hidden.
+  role of feedback, the no-feedback set also forming a stripe, and scaling behaviour (a 750 µm
+  embryo splits into two stripes from ~21 % EL; paper: ~25 %) are each measured and reported
+  pass/fail - 15 of 17 pass. Claims about the paper's 3D model are checked on the embryo surface
+  at x/L = 0.5. The ellipsoid refit reproduces the 60-min dorsal-midline level of Fig. 4F
+  (37.8 vs 37.9 nM).
+  The two that do not pass - the Fig. 4F time course before 60 min, and the size of the sog+/-
+  widening - depend on inputs the paper did not publish (the FISH-derived Sog field and the
+  image-derived initial state). In the model, laterally secreted Sog/Tsg floods the dorsal side for
+  the first ~20 min and holds the signal near zero; the paper's curve already reads 16.8 nM at
+  15 min. Both failures are shown in the app with that explanation.
 - **What had to be interpreted** is listed in the app: Table S1's printed Sog secretion
   (1.36 µM/min) abolishes the stripe when used literally, so the 2006 value (400 nM/min) is the
   default and the printed value is selectable.
