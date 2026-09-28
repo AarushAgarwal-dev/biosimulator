@@ -233,6 +233,11 @@ _KIND_CUES: Dict[str, Tuple[str, ...]] = {
 }
 
 
+# An interaction quoted from a negated clause ("A does not activate B") is evidence AGAINST it.
+_NEGATED = re.compile(r"\b(?:does|do|did|is|are|was|were|can|could|will|would|should)\s+not\b|n't\b|\bnever\b|"
+                      r"\bfails?\s+to\b|\bno\s+longer\b|\bneither\b|\bnor\b|\bcannot\b", re.I)
+
+
 def _kind_supported(kind: str, evidence: str, text: str) -> bool:
     cues = _KIND_CUES.get(kind)
     if not cues:
@@ -388,6 +393,10 @@ def validate_ir(ir: Dict[str, Any], text: str) -> List[str]:
             errors.append(f"Assumed process '{pid}' requires a reason.")
         if not assumed and _evidence_overlap(str(proc.get("evidence", "")), text) < 0.6:
             errors.append(f"Process '{pid}' evidence is not supported by the description.")
+        elif not assumed and _NEGATED.search(str(proc.get("evidence", ""))):
+            errors.append(f"Process '{pid}' rests on a negated statement ('{str(proc.get('evidence'))[:80]}'). "
+                          f"A description that says an interaction does NOT happen must not be modelled as that "
+                          f"interaction - remove the process.")
         elif not assumed and not _kind_supported(kind, str(proc.get("evidence", "")), text):
             errors.append(f"Process '{pid}' is a {kind}, but its evidence quote contains no {kind} wording "
                           f"that occurs in the description. Quote the phrase that states this {kind}, or "

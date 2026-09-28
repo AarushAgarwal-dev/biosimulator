@@ -39,6 +39,21 @@ class KindEvidenceGuardTests(unittest.TestCase):
         self.assertTrue(any(p["assumed"] for p in ir["processes"]))
         self.assertEqual(nc.validate_ir(ir, "A activates B."), [])
 
+    def test_a_negated_statement_cannot_support_a_process(self):
+        text = "A does not activate B. A is degraded at rate 0.1."
+        ir = nc.extract_ir_rules(text)
+        self.assertEqual(nc.validate_ir(ir, text), [])
+        bad = copy.deepcopy(ir)
+        bad["species"].append({"id": "B", "name": "B", "initial": 0.1, "initial_source": "default",
+                               "diffusion": None, "role": "state"})
+        bad["parameters"] += [{"name": n, "value": 1.0, "source": "default", "unit": "a", "meaning": n}
+                              for n in ("k_prod_B", "K_AB", "n_AB")]
+        bad["processes"].append({"id": "p_neg", "kind": "production", "target": "B", "k": "k_prod_B",
+                                 "evidence": "A does not activate B", "assumed": False,
+                                 "regulators": [{"species": "A", "effect": "activate", "K": "K_AB", "n": "n_AB"}]})
+        errors = nc.validate_ir(bad, text)
+        self.assertTrue(any("p_neg" in e and "negated" in e for e in errors), errors)
+
 
 class CustomRatePositivityTests(unittest.TestCase):
     def test_consumption_rate_must_vanish_at_zero(self):
