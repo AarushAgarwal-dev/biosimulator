@@ -294,13 +294,27 @@ class MAPLEExtractor:
                 return None, logs
 
             logs.append(f"Downloaded SBML ({len(sbml_content)} chars)")
-            blueprint = parse_sbml_to_blueprint(sbml_content)
+            try:
+                import sbml_import
+                blueprint = sbml_import.sbml_to_blueprint(sbml_content)
+                logs.append("Translated every kinetic law exactly (MathML -> equations).")
+            except Exception as exact_error:  # noqa: BLE001
+                # The exact translation failed (unsupported construct): fall back to the species
+                # list with schematic edges, and SAY so, rather than failing the import.
+                logs.append(f"Exact translation failed ({type(exact_error).__name__}: {exact_error}); "
+                            f"using the schematic importer.")
+                blueprint = parse_sbml_to_blueprint(sbml_content)
+                if isinstance(blueprint, dict):
+                    blueprint["_llm_notice"] = (
+                        f"This SBML model could not be translated exactly ({exact_error}). Only its species "
+                        f"and a schematic reaction graph with GENERIC Hill kinetics were imported - this is "
+                        f"not the published model's dynamics.")
             if not isinstance(blueprint, dict) or not blueprint.get("nodes"):
                 logs.append("The SBML parsed but contained no species, so there is no model to build.")
                 return None, logs
 
             logs.append(f"Parsed {len(blueprint['nodes'])} species, "
-                        f"{len(blueprint.get('edges') or [])} reactions")
+                        f"{len(blueprint.get('fluxes') or blueprint.get('edges') or [])} reactions")
             return blueprint, logs
         except Exception as e:
             logs.append(f"SBML import failed: {type(e).__name__}: {e}")
