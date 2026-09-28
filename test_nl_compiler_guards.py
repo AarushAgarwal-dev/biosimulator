@@ -145,6 +145,20 @@ class CatalystGuardTests(unittest.TestCase):
         self.assertLess(float(np.ptp(result["species"]["E"])), 1e-12)
 
 
+class CoverageWordsTests(unittest.TestCase):
+    def test_instruction_words_are_not_reported_as_missing_entities(self):
+        text = ("p53 activates Mdm2 transcription. Mdm2 promotes p53 degradation. "
+                "p53 is produced at rate 1. Simulate for 100 minutes.")
+        bp = nc.compile_text(text, None)
+        missing = bp["_verification"]["coverage"]["missing"]
+        self.assertEqual(missing, [], missing)
+
+    def test_a_genuinely_absent_entity_is_still_reported(self):
+        ir = nc.extract_ir_rules("A activates B.")
+        report = nc.verify(nc.compile_ir(ir), ir, "A activates B. Glucokinase is mentioned.")
+        self.assertIn("Glucokinase", report["coverage"]["missing"])
+
+
 class UnevidencedSpeciesTests(unittest.TestCase):
     TEXT = "A does not activate B. A is degraded at rate 0.1."
 

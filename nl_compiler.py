@@ -249,6 +249,16 @@ _STOP = {"a", "an", "the", "and", "or", "to", "of", "in", "on", "at", "by", "wit
          "initial", "starts", "start", "minutes", "minute", "hours", "hour", "seconds", "second", "units",
          "protein", "gene", "species", "concentration", "expression", "transcription", "degradation"}
 
+# Capitalised only because they open a sentence: instructions and connectives, never biological
+# entities. Used by the coverage check alone (the evidence matcher keeps _STOP).
+_NOT_ENTITIES = {"simulate", "simulation", "run", "model", "assume", "assuming", "use", "using", "consider",
+                 "plot", "show", "initially", "then", "after", "before", "when", "while", "once", "each", "both",
+                 "all", "there", "this", "these", "that", "those", "their", "they", "over", "during", "within",
+                 "under", "for", "without", "upon", "because", "since", "also", "finally", "here", "note",
+                 "given", "suppose", "let", "set", "treat", "include", "ignore", "keep", "make", "time",
+                 "rates", "production", "its", "however", "meanwhile", "together", "otherwise", "if",
+                 "not", "only", "every", "some", "no", "total", "starting", "begin", "begins", "end"}
+
 
 def _empty_ir(model_type: str = "ode", time_unit: str = "arbitrary") -> Dict[str, Any]:
     return {"model_type": model_type, "time_unit": time_unit, "t_end": None, "species": [],
@@ -811,9 +821,21 @@ def verify(bp: Dict[str, Any], ir: Dict[str, Any], text: str) -> Dict[str, Any]:
     represented |= {p["name"].lower() for p in ir.get("parameters", [])}
     candidates = []
     for token in _TOKEN_RE.findall(text or ""):
-        if (token.isupper() or any(c.isdigit() for c in token) or (token[:1].isupper() and len(token) > 2)) and token.lower() not in _STOP:
+        if (token.isupper() or any(c.isdigit() for c in token) or (token[:1].isupper() and len(token) > 2)) \
+                and token.lower() not in _STOP and token.lower() not in _NOT_ENTITIES:
             candidates.append(token)
-    missing = sorted({x for x in candidates if not any(x.lower() in y or y in x.lower() for y in represented)})
+    def _covered(token: str) -> bool:
+        low = token.lower()
+        for y in represented:
+            if low == y or low in re.split(r"[_\-\s]+", y):
+                return True
+            # Loose containment ("ERK" ~ "pERK", "DNA" ~ "DNA_damage") only for names long enough
+            # that it is meaningful; a one-letter species "A" must not cover every word with an a.
+            if len(y) >= 3 and len(low) >= 3 and (low in y or y in low):
+                return True
+        return False
+
+    missing = sorted({x for x in candidates if not _covered(x)})
     report["coverage"] = {"entities": sorted(set(candidates)), "missing": missing}
     if missing: report["warnings"].append("Named entities not represented: " + ", ".join(missing))
 
