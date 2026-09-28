@@ -241,7 +241,7 @@ def run_path(label: str, config, selected=CASES):
     return rows
 
 
-def summarize(rule_rows, live_rows):
+def summarize(rule_rows, live_rows, skip_reason="no AI credential is configured"):
     designed = [r for r in rule_rows if r["case"].rule_designed]
     rule_rate = sum(r["pass"] for r in designed) / max(1, len(designed))
     print(f"\nRule designed cases: {sum(r['pass'] for r in designed)}/{len(designed)} = {rule_rate:.1%} (target >=80%)")
@@ -250,7 +250,7 @@ def summarize(rule_rows, live_rows):
         live_rate = sum(r["pass"] for r in live_rows) / len(live_rows)
         print(f"LLM overall cases:    {sum(r['pass'] for r in live_rows)}/{len(live_rows)} = {live_rate:.1%} (target >=90%)")
     else:
-        print("LLM overall cases:    SKIPPED (PURDUE_GENAI_API_KEY unavailable)")
+        print(f"LLM overall cases:    SKIPPED ({skip_reason})")
     failures = [r for r in rule_rows + live_rows if not r["pass"]]
     if failures:
         print("\nFailures:")
@@ -265,13 +265,27 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--rules-only", action="store_true")
     parser.add_argument("--case", action="append", help="run only named case (repeatable)")
+    parser.add_argument("--engine", choices=("purdue", "bedrock"), default="purdue",
+                        help="AI engine for the live path (the key/credential comes from .env)")
     args = parser.parse_args()
     selected = [c for c in CASES if not args.case or c.name in set(args.case)]
     print(f"BioSimulateAI nl_compiler benchmark: {len(selected)} cases; assertions are shown individually.\n")
     rule_rows = run_path("rules", None, selected)
-    cfg = None if args.rules_only else live_config()
+    if args.rules_only:
+        cfg = None
+    elif args.engine == "bedrock":
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(os.path.join(os.path.dirname(__file__), ".env"), override=False)
+        except ImportError:
+            pass
+        import llm_provider
+        cfg = {"engine": "bedrock"} if llm_provider.bedrock_env_ready() else None
+    else:
+        cfg = live_config()
     live_rows = run_path("llm", cfg, selected) if cfg else []
-    rule_rate, live_rate = summarize(rule_rows, live_rows)
+    rule_rate, live_rate = summarize(rule_rows, live_rows,
+                                     "--rules-only" if args.rules_only else f"no {args.engine} credential is configured")
     target_rule = rule_rate >= .80
     target_live = live_rate is None or live_rate >= .90
     raise SystemExit(0 if target_rule and target_live else 1)

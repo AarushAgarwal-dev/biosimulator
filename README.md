@@ -161,7 +161,9 @@ Open the **🧠** control in the header and choose:
   photos of equations are read by a Purdue vision model (gemma4 / qwen3-vl).
 - **Rule-based (offline)**: deterministic compiler, instant, no model.
 - **AWS Bedrock**, **Remote endpoint** (any OpenAI-compatible server) or **Local model**
-  (GGUF via `llama-cpp-python`) remain available.
+  (GGUF via `llama-cpp-python`) remain available. Every engine goes through the same verified
+  IR compiler (the older free-form path is kept only as `"compiler": "legacy"` on the API), and
+  Bedrock's vision models can read photos of equations too.
 
 On a public deployment (`BIOSIM_REQUIRE_PAID_ACCESS_TOKEN=1`) AI engines need the deployment
 access token unless `BIOSIM_PURDUE_PUBLIC=1`; without it the UI falls back to the rule-based

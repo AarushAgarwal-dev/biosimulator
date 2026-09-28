@@ -237,10 +237,9 @@ class ParseRequest(BaseModel):
     text: str
     llm: Optional[Dict[str, Any]] = None
     api_key: Optional[str] = None  # deprecated (Gemini); ignored
-    # "ir" (default for the rule-based and Purdue engines): the LLM fills a strict intermediate
-    # representation and the equations are assembled deterministically and verified.
-    # "legacy": the older free-form path (agent.parse_biological_text), still the default for
-    # Bedrock / remote / local engines.
+    # "ir" (default, every engine): the LLM fills a strict intermediate representation and the
+    # equations are assembled deterministically and verified.
+    # "legacy": the older free-form path (agent.parse_biological_text), kept only on request.
     compiler: Optional[str] = None
 
 class CompileRequest(BaseModel):
@@ -660,12 +659,11 @@ def _llm_engine(config: Optional[Dict[str, Any]]) -> str:
 
 
 def _choose_compiler(engine: str, requested: Optional[str]) -> str:
+    """The verified IR compiler for every engine; the old free-form path only when asked for."""
     choice = str(requested or "").strip().lower()
     if choice and choice not in COMPILERS:
         _reject(f"compiler must be one of {', '.join(COMPILERS)}; got {requested!r}.")
-    if choice:
-        return choice
-    return "ir" if engine in ("off", "rules", "purdue") else "legacy"
+    return choice or "ir"
 
 
 @app.post("/api/blueprint")
@@ -760,9 +758,13 @@ def extract_equations(req: ExtractEquationsRequest, request: Request):
     if len(image_bytes) > 12 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Image is too large (max 12 MB). Please use a smaller photo.")
     try:
-        if engine == "purdue":
-            config = {"engine": "purdue", "model": (req.llm or {}).get("model")}
+        if engine in ("purdue", "bedrock"):
+            config = dict(req.llm or {})
+            if engine == "purdue":
+                config = {"engine": "purdue", "model": config.get("model")}
             client = llm_provider.build_client(config)
+            if not hasattr(client, "transcribe_image"):
+                raise ValueError("The selected engine cannot read images.")
             transcription = client.transcribe_image(image_bytes, fmt or "png", agent._IMAGE_TRANSCRIBE_PROMPT)
             cleaned = _clean_transcription(transcription)
             if not cleaned:
@@ -774,7 +776,7 @@ def extract_equations(req: ExtractEquationsRequest, request: Request):
             else:
                 blueprint = nl_compiler.compile_text(cleaned, config)
             blueprint["_transcription"] = transcription
-            blueprint["_engine"] = getattr(client, "active_model", None) or config.get("model") or "purdue"
+            blueprint["_engine"] = getattr(client, "active_model", None) or config.get("model") or engine
             return blueprint
         return agent.parse_image_to_blueprint(image_bytes, fmt or "png", req.llm)
     except ValueError as e:

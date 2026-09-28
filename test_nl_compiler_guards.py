@@ -116,5 +116,43 @@ class RegulatorSourceGuardTests(unittest.TestCase):
         self.assertLess(abs(mdm2[-1] - mdm2[-40]), 1e-2 * max(1.0, mdm2[-1]))   # settles instead of climbing
 
 
+class CatalystGuardTests(unittest.TestCase):
+    TEXT = "E starts at 1. S starts at 10. E catalyzes the conversion of S to P with kcat 2 and Km 3."
+
+    def test_invented_turnover_of_a_pure_catalyst_is_removed(self):
+        ir = nc.extract_ir_rules(self.TEXT)
+        ir["parameters"].append({"name": "k_deg_E", "value": 0.1, "source": "default", "unit": "1/min", "meaning": "x"})
+        ir["processes"].append({"id": "pX", "kind": "degradation", "species": "E", "k": "k_deg_E", "evidence": "",
+                                "assumed": True, "reason": "invented"})
+        repaired = nc._auto_repair_ir(ir, self.TEXT)
+        self.assertFalse(any(p["id"] == "pX" for p in repaired["processes"]))
+        result = ODEModel(nc.compile_ir(repaired)).simulate(20.0, 100)
+        self.assertLess(float(np.ptp(result["species"]["E"])), 1e-12)
+
+
+class UnevidencedSpeciesTests(unittest.TestCase):
+    TEXT = "A does not activate B. A is degraded at rate 0.1."
+
+    def test_species_only_in_assumed_processes_is_removed(self):
+        ir = {
+            "model_type": "ode", "time_unit": "min", "t_end": 10.0,
+            "species": [{"id": s, "name": s, "initial": 1.0, "initial_source": "default", "diffusion": None, "role": "state"}
+                        for s in ("A", "B")],
+            "parameters": [{"name": n, "value": 0.1, "source": "text" if n == "k_deg_A" else "default", "unit": "1/min",
+                            "meaning": n} for n in ("k_deg_A", "k_prod_B", "k_deg_B")],
+            "stimuli": [],
+            "processes": [
+                {"id": "p1", "kind": "degradation", "species": "A", "k": "k_deg_A", "evidence": "A is degraded at rate 0.1", "assumed": False},
+                {"id": "p2", "kind": "production", "target": "B", "k": "k_prod_B", "evidence": "", "assumed": True, "reason": "completeness"},
+                {"id": "p3", "kind": "degradation", "species": "B", "k": "k_deg_B", "evidence": "", "assumed": True, "reason": "completeness"}],
+            "assumptions": [], "unmodeled": [],
+        }
+        repaired = nc._auto_repair_ir(ir, self.TEXT)
+        self.assertEqual([s["id"] for s in repaired["species"]], ["A"])
+        self.assertEqual([p["id"] for p in repaired["processes"]], ["p1"])
+        self.assertTrue(any("Removed B" in a for a in repaired["assumptions"]))
+        self.assertEqual(nc.validate_ir(repaired, self.TEXT), [])
+
+
 if __name__ == "__main__":
     unittest.main()

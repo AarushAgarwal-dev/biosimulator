@@ -160,8 +160,9 @@ RULES:
   and meaning. Species "initial" values from DESCRIPTION have initial_source "text".
 - "evidence" is a short VERBATIM quote of the sentence stating that process. A process that the text does
   not state (e.g. turnover needed so a produced species stays bounded) has "assumed": true and a "reason".
-- An imposed signal that is not produced or consumed (e.g. "DNA damage", "a drug", "light") goes in
-  "stimuli", never also in "species".
+- An imposed NON-MOLECULAR condition (e.g. "DNA damage", "light", "heat", "a drug treatment", "a signal")
+  goes in "stimuli", never also in "species". Named molecules - proteins, genes, mRNAs, ligands such as
+  EGF, ions - are always species, even when the text never says how they are made.
 - diffusion / spatial / Turing / pattern => "model_type": "reaction_diffusion" with species diffusion values.
 - Put phrases you cannot represent in "unmodeled".
 
@@ -1037,6 +1038,32 @@ def _auto_repair_ir(ir: Dict[str, Any], text: str) -> Dict[str, Any]:
 
     species_ids = {s.get("id") for s in ir.get("species", [])}
     stimulus_names = {s.get("name") for s in ir.get("stimuli", [])}
+    # A named MOLECULE is a species, not an imposed condition. gpt-oss sometimes filed a ligand
+    # ("EGF activates EGFR") as a stimulus, which removed it from the graph and made the result
+    # depend on which engine compiled it. Only non-molecular conditions stay stimuli.
+    _non_molecular = re.compile(r"damage|light|stress|heat|cold|drug|treatment|signal|stimul|irradiat|radiat|"
+                                r"hypoxi|shock|pulse|input|dose|temperature|exposure|injur|starv|serum|nutrient",
+                                re.I)
+    converted = []
+    for stim in list(ir.get("stimuli", [])):
+        name = str(stim.get("name", ""))
+        if not name or _non_molecular.search(name.replace("_", " ")) or name in species_ids:
+            continue
+        ir["stimuli"].remove(stim)
+        ir.setdefault("species", []).append({"id": name, "name": name, "initial": float(stim.get("level") or 1.0),
+                                             "initial_source": "default", "diffusion": None, "role": "state"})
+        species_ids.add(name)
+        for proc in ir.get("processes", []):
+            for reg in proc.get("regulators", []) or []:
+                if reg.get("stimulus") == name:
+                    reg.pop("stimulus", None)
+                    reg["species"] = name
+        converted.append(name)
+    if converted:
+        notes.append(f"{', '.join(converted)} {'is a molecule' if len(converted) == 1 else 'are molecules'}, "
+                     f"so {'it is' if len(converted) == 1 else 'they are'} modelled as "
+                     f"{'a species' if len(converted) == 1 else 'species'} rather than an imposed stimulus.")
+    stimulus_names = {s.get("name") for s in ir.get("stimuli", [])}
     # A stimulus whose evidence quote is missing or paraphrased gets the sentence that names it.
     sentences = [s.strip() for s in re.split(r"(?<=[.;!?])\s+", text or "") if s.strip()]
     for stim in ir.get("stimuli", []):
@@ -1096,8 +1123,67 @@ def _auto_repair_ir(ir: Dict[str, Any], text: str) -> Dict[str, Any]:
                 notes.append(f"Parameter '{name}' was referenced but not declared; default {default:g} used.")
     if notes:
         ir.setdefault("assumptions", []).extend(notes)
+    _prune_unevidenced_species(ir)
+    _protect_catalysts(ir)
     _ensure_regulator_sources(ir)
     return ir
+
+
+def _prune_unevidenced_species(ir: Dict[str, Any]) -> None:
+    """Model only what is described: drop a species that no EVIDENCED process involves.
+
+    Measured on Bedrock Mistral Large: for "A does not activate B. A is degraded at rate 0.1." the
+    model kept B and invented an assumed production and turnover for it - B then appears as a
+    species the text explicitly says nothing happens to. A species that appears only in assumed
+    processes (or in none) is removed together with those processes, and the removal is disclosed.
+    """
+    processes = ir.get("processes", []) or []
+
+    def involved(p: Dict[str, Any]) -> set:
+        out = {p.get("target"), p.get("species"), p.get("complex"), p.get("enzyme")}
+        for field in ("reactants", "products"):
+            out |= {e.get("species") for e in (p.get(field) or []) if isinstance(e, dict)}
+        out |= {r.get("species") for r in (p.get("regulators") or []) if isinstance(r, dict)}
+        return {x for x in out if x}
+
+    evidenced = set()
+    for p in processes:
+        if not p.get("assumed"):
+            evidenced |= involved(p)
+    drop = [s.get("id") for s in ir.get("species", []) if s.get("id") not in evidenced]
+    if not drop or len(drop) == len(ir.get("species", [])):
+        return                       # nothing to prune, or nothing evidenced at all (validator reports it)
+    dropset = set(drop)
+    ir["species"] = [s for s in ir.get("species", []) if s.get("id") not in dropset]
+    ir["processes"] = [p for p in processes if not (p.get("assumed") and involved(p) & dropset)]
+    ir.setdefault("assumptions", []).append(
+        f"Removed {', '.join(drop)}: the description states no process involving "
+        f"{'it' if len(drop) == 1 else 'them'}, so modelling {'it' if len(drop) == 1 else 'them'} would invent biology.")
+
+
+def _protect_catalysts(ir: Dict[str, Any]) -> None:
+    """An enzyme described only as a catalyst is not consumed; an ASSUMED production or decay of it
+    (occasionally invented by the model) would make the catalyst amount drift. Remove those."""
+    processes = ir.get("processes", []) or []
+    enzymes = {p.get("enzyme") for p in processes if p.get("kind") == "conversion" and p.get("enzyme")}
+    other_roles = set()
+    for p in processes:
+        if p.get("assumed"):
+            continue
+        for field in ("target", "species", "complex"):
+            if p.get(field):
+                other_roles.add(p.get(field))
+        for field in ("reactants", "products"):
+            other_roles |= {e.get("species") for e in (p.get(field) or []) if isinstance(e, dict)}
+    catalysts = {e for e in enzymes if e and e not in other_roles}
+    removed = [p for p in processes if p.get("assumed") and p.get("kind") in ("production", "degradation")
+               and (p.get("target") in catalysts or p.get("species") in catalysts)]
+    if removed:
+        ir["processes"] = [p for p in processes if p not in removed]
+        names = sorted({p.get("target") or p.get("species") for p in removed})
+        ir.setdefault("assumptions", []).append(
+            f"{', '.join(names)} only catalyses a described conversion, so the invented turnover of it was removed; "
+            f"the catalyst amount is conserved.")
 
 
 def _ensure_regulator_sources(ir: Dict[str, Any]) -> None:
@@ -1114,6 +1200,27 @@ def _ensure_regulator_sources(ir: Dict[str, Any]) -> None:
     lost |= {e.get("species") for p in processes if p.get("kind") in ("conversion", "custom", "binding")
              for e in (p.get("reactants") or [])}
     params = {p.get("name") for p in ir.get("parameters", [])}
+    # A species that only regulates (never produced, never lost) gets a disclosed basal supply AND
+    # turnover (steady level 1.0), exactly as the deterministic extractor does, so both engines
+    # give the same model for "EGF activates EGFR".
+    only_regulators = sorted(s for s in regulators - sourced - lost if s)
+    for sid in only_regulators:
+        for name, meaning in ((f"k_supply_{sid}", f"assumed basal supply of {sid}"),
+                              (f"k_turnover_{sid}", f"assumed turnover of {sid}")):
+            if name not in params:
+                ir.setdefault("parameters", []).append({"name": name, "value": 0.1, "source": "default",
+                                                        "unit": "arbitrary", "meaning": meaning})
+                params.add(name)
+        processes.append({"id": f"auto_supply_{sid}", "kind": "production", "target": sid, "k": f"k_supply_{sid}",
+                          "evidence": "", "assumed": True,
+                          "reason": f"{sid} is named only as a regulator; a basal supply keeps it defined"})
+        processes.append({"id": f"auto_turnover_{sid}", "kind": "degradation", "species": sid,
+                          "k": f"k_turnover_{sid}", "evidence": "", "assumed": True,
+                          "reason": "first-order turnover keeps the supplied regulator bounded"})
+        ir.setdefault("assumptions", []).append(
+            f"{sid} has basal supply and turnover (steady level 1.0) because its source was not described.")
+        sourced.add(sid)
+        lost.add(sid)
     for sid in sorted(s for s in (regulators & lost) - sourced if s):
         name = f"k_supply_{sid}"
         if name not in params:
