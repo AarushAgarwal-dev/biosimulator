@@ -656,6 +656,26 @@ async function loadPreset(name) {
         await compileBlueprint();
         document.querySelector("[data-tab='blueprint']").click();
         updateStatus("Ready", "green");
+    } else {
+        // A text-only preset (Turing) defines its model by its description. Build that
+        // model now with the deterministic compiler: otherwise the PREVIOUS model stayed
+        // loaded under the new preset's targets, and "Run Simulation" simulated the old
+        // model and then failed evaluating a target species it does not contain.
+        state.presetName = null;
+        state.presetText = null;
+        updateStatus("Building the preset's model…", "yellow");
+        try {
+            const data = await apiJson("/api/blueprint", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text: preset.text, llm: { engine: "off" } })
+            });
+            await loadBlueprintIntoUI(data);
+        } catch (e) {
+            console.error("Preset compilation failed", e);
+            updateStatus("Preset failed to compile", "red");
+            if (typeof showToast === "function") showToast("Could not build the preset's model: " + e.message, "error", 8000);
+        }
     }
 }
 
