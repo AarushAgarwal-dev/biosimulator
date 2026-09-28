@@ -258,6 +258,73 @@
             color: var(--text-primary);
         }
 
+        /* Architecture diagram (Figure 1) */
+        .arch { display: flex; flex-direction: column; text-align: left; font-family: var(--font-sans); }
+        .arch-layer {
+            border: 1px solid var(--border-active);
+            border-radius: 8px;
+            padding: 14px 16px;
+            background: rgba(0, 242, 254, 0.03);
+        }
+        .arch-title {
+            font-family: var(--font-mono);
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--accent-cyan);
+            margin-bottom: 10px;
+        }
+        .arch-title span { color: var(--text-muted); font-weight: 400; margin-left: 8px; }
+        .arch-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+        .arch-chips span {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--text-primary);
+            background: var(--bg-code);
+            border: 1px solid var(--border-subtle);
+            border-radius: 999px;
+            padding: 3px 10px;
+        }
+        .arch-link {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            height: 36px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        .arch-link::before { content: ""; width: 2px; height: 100%; background: var(--accent-cyan); opacity: 0.6; }
+        .arch-groups { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+        .arch-group-title {
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+        .arch-module {
+            background: var(--bg-code);
+            border: 1px solid var(--border-subtle);
+            border-radius: 6px;
+            padding: 8px 10px;
+            margin-bottom: 8px;
+            font-size: 12.5px;
+            line-height: 1.4;
+            color: var(--text-secondary);
+        }
+        .arch-module code {
+            display: block;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--accent-cyan);
+            background: none;
+            border: 0;
+            padding: 0;
+            margin-bottom: 2px;
+        }
+
         /* Tables */
         .paper-table-wrapper {
             margin: 24px 0;
@@ -528,6 +595,7 @@
             .paper-container { padding: 32px 16px 80px; }
             .paper-title { font-size: 24px; }
             .figure-diagram { font-size: 11px; }
+            .arch-groups { grid-template-columns: 1fr; }
             .back-link { position: static; margin-bottom: 20px; display: inline-block; }
         }
 
@@ -537,6 +605,9 @@
             .back-link { display: none; }
             .paper-container { max-width: 100%; }
             .paper-table th { background: #f0f0f0; color: #333; }
+            .arch-layer, .arch-module, .arch-chips span { background: #fff; border-color: #ccc; }
+            .arch-title, .arch-module code { color: #0b5f6b; }
+            .arch-module, .arch-chips span, .arch-link, .arch-group-title { color: #333; }
             .abstract-box, .equation-block, .code-block, .figure-box, .highlight-box, .toc {
                 background: #fafafa; border-color: #ddd;
             }
@@ -551,10 +622,10 @@
         <header class="paper-header">
             <div class="paper-journal">Technical Report: BioSimulateAI</div>
             <h1 class="paper-title">BioSimulateAI: An AI-Powered Platform for Automated Multi-Scale Biological Model Generation, Simulation, and Calibration</h1>
-            <div class="paper-date">June 2026</div>
+            <div class="paper-date">September 2026</div>
             <div class="paper-badges">
                 <span class="badge badge-rag">Retrieval-Augmented Generation</span>
-                <span class="badge badge-llm">LLM-Driven Compilation</span>
+                <span class="badge badge-llm">Evidence-Verified Compilation</span>
                 <span class="badge badge-sim">Multi-Scale Simulation</span>
                 <span class="badge badge-abm">Cellular Potts Model</span>
             </div>
@@ -564,10 +635,10 @@
         <div class="abstract-box">
             <h2>Abstract</h2>
             <p>
-                We present <strong>BioSimulateAI</strong>, an integrated web platform that automates the translation of natural-language descriptions of biological systems into executable multi-scale mathematical models. The system combines <em>Retrieval-Augmented Generation (RAG)</em> from curated biological knowledge bases (Reactome, STRING, OmniPath, SIGNOR, BioModels) with <em>Large Language Model (LLM)</em> compilation to produce structured simulation blueprints. These blueprints drive three coupled simulation engines: (i) a symbolic ODE compiler using Hill-function kinetics with SymPy-based code generation, (ii) a finite-difference PDE solver for reaction-diffusion systems, and (iii) a full Cellular Potts Model (CPM/GGH) for agent-based tissue simulations. A closed-loop AI feedback agent evaluates simulation outcomes against user-defined experimental targets and iteratively refines model parameters and topology. Additionally, we implement MAPLE-inspired structured parameter extraction from scientific literature with hallucination-detection validators. The platform is accessible through a browser-based interface requiring no installation, and operates with or without an LLM API key via rule-based fallback parsers.
+                We present <strong>BioSimulateAI</strong>, an integrated web platform that turns plain-language descriptions of biological systems into executable, checked mathematical models. A language model (Purdue GenAI Studio by default; AWS Bedrock, OpenAI-compatible or local models are interchangeable) never writes equations directly: it fills a strict <em>intermediate representation</em> of species and processes, each tied to a verbatim quote from the description. The equations are then assembled deterministically and the model is accepted only after automatic checks: every stated interaction must have the right sign in the Jacobian, and the model must simulate to a finite, non-negative, bounded result. The same compiler runs without any language model on a rule-based path. Models can also come from <em>Retrieval-Augmented Generation</em> over curated databases (Reactome, STRING, OmniPath, SIGNOR, BioModels), from photographs of written equations, or from exact SBML import. Three simulation engines are coupled: an ODE compiler with SymPy code generation, a finite-difference PDE solver for reaction-diffusion, and a Cellular Potts Model for tissues. The platform also includes an organism-scale reaction-diffusion model of BMP patterning on the <em>Drosophila</em> embryo surface (Umulis et al. 2010). Published results are reproduced quantitatively: in the latest benchmark run all 21 test descriptions compiled correctly on each of the two tested language models, the SBML importer agrees with libRoadRunner to better than 10⁻⁴ on 8 curated BioModels entries, the two published-model presets reproduce their papers' figures, and the embryo model passes 15 of its 17 checks against the 2006 and 2010 papers. A closed-loop agent refines models toward experimental targets, and MAPLE-style extraction pulls parameters from the literature with hallucination-detection validators.
             </p>
             <div class="keywords">
-                <strong>Keywords:</strong> biological modeling, multi-scale simulation, retrieval-augmented generation, large language models, cellular Potts model, ODE, PDE, systems biology, model calibration, hallucination detection
+                <strong>Keywords:</strong> biological modeling, verified model compilation, multi-scale simulation, retrieval-augmented generation, large language models, BMP morphogen patterning, cellular Potts model, ODE, PDE, systems biology, model calibration, reproducibility
             </div>
         </div>
 
@@ -586,6 +657,8 @@
                 <li><a href="#sec-feedback">Closed-Loop AI Feedback & Optimization</a></li>
                 <li><a href="#sec-maple">MAPLE: Literature-Grounded Parameter Calibration</a></li>
                 <li><a href="#sec-frontend">Frontend & Visualization</a></li>
+                <li><a href="#sec-embryo">Organism-Scale BMP Patterning of the Drosophila Embryo</a></li>
+                <li><a href="#sec-validation">Validation Against Published Results</a></li>
                 <li><a href="#sec-discussion">Discussion</a></li>
                 <li><a href="#sec-conclusion">Conclusion</a></li>
             </ol>
@@ -600,41 +673,53 @@
             Recent advances in Large Language Models (LLMs) and Retrieval-Augmented Generation (RAG) present an opportunity to automate significant portions of this workflow. By grounding LLM outputs in curated biological knowledge bases, we can reduce hallucination risk while preserving the flexibility of natural-language model specification. Here we present <strong>BioSimulateAI</strong>, a platform that integrates these technologies into a cohesive pipeline spanning text parsing, model compilation, multi-scale simulation, and AI-driven calibration.
         </p>
         <p>
-            Our contributions are threefold: (1) a <strong>dual-mode NLP parser</strong> that translates biological descriptions into structured blueprints using either an LLM or a robust regex-based fallback; (2) a <strong>multi-scale simulation engine</strong> coupling ODE, PDE, and Cellular Potts Model solvers through a time-scale-separated coordinator; and (3) a <strong>MAPLE-inspired calibration pipeline</strong> with structured Pydantic schemas and hallucination-detection validators for literature-based parameter extraction.
+            Our contributions are fourfold: (1) an <strong>evidence-verified compiler</strong> in which a language model only fills a strict intermediate representation, every process must quote the description, and the deterministically assembled equations are checked before they are shown; (2) a <strong>multi-scale simulation engine</strong> coupling ODE, PDE, and Cellular Potts Model solvers through a time-scale-separated coordinator; (3) a <strong>MAPLE-inspired calibration pipeline</strong> with structured Pydantic schemas and hallucination-detection validators for literature-based parameter extraction; and (4) <strong>reproductions of published models</strong>, including the organism-scale BMP patterning model of Umulis et al. (2010), checked quantitatively against the papers' figures.
         </p>
 
         <!-- 2. SYSTEM ARCHITECTURE -->
         <h2 class="section-heading" id="sec-architecture"><span class="section-number">2.</span> System Architecture</h2>
         <p>
-            BioSimulateAI follows a client-server architecture with a Python/FastAPI backend serving a single-page HTML/JavaScript frontend. The backend comprises seven modules organized by function:
+            BioSimulateAI follows a client-server architecture with a Python/FastAPI backend serving a single-page HTML/JavaScript frontend. The backend modules are organized by function:
         </p>
 
         <div class="figure">
             <div class="figure-box">
-                <div class="figure-diagram">
-┌───────────────────────────────────────────────────────────────────┐
-│                     FRONTEND (HTML / JS / Canvas)                  │
-│   Cytoscape.js  │  Chart.js  │  KaTeX  │  Canvas 2D Renderers    │
-└────────────────────────────────┬──────────────────────────────────┘
-                                 │ HTTP REST (JSON)
-┌────────────────────────────────┴──────────────────────────────────┐
-│                      FastAPI SERVER  (main.py)                     │
-│                                                                    │
-│   ┌─────────────┐  ┌──────────────────┐  ┌───────────────────┐   │
-│   │  agent.py    │  │ simulation_engine│  │   abm_engine.py   │   │
-│   │  NLP Parser  │  │  ODE + PDE       │  │   Cellular Potts  │   │
-│   │  + LLM Agent │  │  Solvers         │  │   Model (GGH)     │   │
-│   └──────┬───────┘  └────────┬─────────┘  └────────┬──────────┘   │
-│          │                   │                      │              │
-│   ┌──────┴───────┐  ┌───────┴──────────┐  ┌───────┴──────────┐   │
-│   │ db_interface │  │  multiscale.py   │  │ maple_extractor  │   │
-│   │ RAG Database │  │  ODE↔ABM↔PDE    │  │ + maple_schemas  │   │
-│   │ Connectors   │  │  Coupling        │  │ Calibration      │   │
-│   └──────────────┘  └──────────────────┘  └──────────────────┘   │
-└───────────────────────────────────────────────────────────────────┘</div>
+                <div class="arch">
+                    <div class="arch-layer">
+                        <div class="arch-title">Frontend <span>HTML / JS / Canvas</span></div>
+                        <div class="arch-chips"><span>Cytoscape.js</span><span>Chart.js</span><span>KaTeX</span><span>Canvas 2D</span></div>
+                    </div>
+                    <div class="arch-link">HTTP REST (JSON)</div>
+                    <div class="arch-layer">
+                        <div class="arch-title">FastAPI server <span>main.py</span></div>
+                        <div class="arch-groups">
+                            <div class="arch-group">
+                                <div class="arch-group-title">Model compilation</div>
+                                <div class="arch-module"><code>nl_compiler.py</code>Evidence-verified IR compiler</div>
+                                <div class="arch-module"><code>llm_provider.py</code>Purdue GenAI, Bedrock and local models</div>
+                                <div class="arch-module"><code>sbml_import.py</code>Exact SBML translation</div>
+                                <div class="arch-module"><code>agent.py</code>Legacy parser, feedback agent</div>
+                                <div class="arch-module"><code>preset_loader.py</code>Published-model presets</div>
+                            </div>
+                            <div class="arch-group">
+                                <div class="arch-group-title">Simulation</div>
+                                <div class="arch-module"><code>simulation_engine.py</code>ODE and PDE solvers</div>
+                                <div class="arch-module"><code>bmp_embryo.py</code>Umulis 2010 embryo model</div>
+                                <div class="arch-module"><code>abm_engine.py</code>Cellular Potts Model</div>
+                                <div class="arch-module"><code>multiscale.py</code>ODE↔ABM↔PDE coupling</div>
+                            </div>
+                            <div class="arch-group">
+                                <div class="arch-group-title">Knowledge &amp; calibration</div>
+                                <div class="arch-module"><code>db_interface.py</code>RAG database connectors</div>
+                                <div class="arch-module"><code>maple_extractor.py</code>Literature parameter extraction</div>
+                                <div class="arch-module"><code>maple_schemas.py</code>Validators and hallucination checks</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="figure-caption">
-                <strong>Figure 1.</strong> High-level architecture of BioSimulateAI. The frontend communicates with the FastAPI backend through 17 REST endpoints. The backend is organized into functional modules: NLP parsing, simulation engines, database connectors, multi-scale coupling, and calibration.
+                <strong>Figure 1.</strong> High-level architecture of BioSimulateAI. The frontend communicates with the FastAPI backend through 62 REST endpoints. The backend is organized into functional modules: model compilation (the evidence-verified compiler, the language-model providers and the legacy parser), simulation engines, the organism-scale embryo model, exact SBML import, database connectors, multi-scale coupling, and calibration.
             </div>
         </div>
 
@@ -651,22 +736,46 @@
                 </thead>
                 <tbody>
                     <tr>
+                        <td><code>nl_compiler.py</code></td>
+                        <td>Evidence-verified language-to-model compiler: strict intermediate representation, validation, deterministic assembly, Jacobian-sign and simulation checks, rule-based extraction</td>
+                        <td>SymPy, NumPy, llm_provider, simulation_engine</td>
+                        <td>~2,030</td>
+                    </tr>
+                    <tr>
+                        <td><code>llm_provider.py</code></td>
+                        <td>Language-model engines (Purdue GenAI Studio, AWS Bedrock, OpenAI-compatible, local), structured output, retries, rate limiting, vision</td>
+                        <td>requests, boto3, llama-cpp-python (optional)</td>
+                        <td>~1,210</td>
+                    </tr>
+                    <tr>
                         <td><code>agent.py</code></td>
-                        <td>Natural language parsing, LLM-driven compilation, closed-loop refinement, sensitivity-enhanced feedback</td>
-                        <td>llama-cpp-python, regex, NumPy</td>
-                        <td>~550</td>
+                        <td>Legacy free-form parsing, equation reading, closed-loop refinement, sensitivity-enhanced feedback</td>
+                        <td>regex, NumPy</td>
+                        <td>~3,720</td>
                     </tr>
                     <tr>
                         <td><code>simulation_engine.py</code></td>
-                        <td>Symbolic ODE compilation, SciPy IVP solving, finite-difference PDE solver, parameter fitting</td>
+                        <td>Symbolic ODE compilation, SciPy IVP solving, finite-difference PDE solver, parameter fitting, equation-derived interaction graph</td>
                         <td>SymPy, SciPy, NumPy</td>
-                        <td>~365</td>
+                        <td>~1,050</td>
+                    </tr>
+                    <tr>
+                        <td><code>bmp_embryo.py</code></td>
+                        <td>Umulis et al. (2010) BMP patterning on the embryo surface and cross-section; validation against the 2006 and 2010 papers</td>
+                        <td>SciPy (BDF, sparse LU), NumPy</td>
+                        <td>~1,140</td>
+                    </tr>
+                    <tr>
+                        <td><code>sbml_import.py</code></td>
+                        <td>Exact SBML translation: MathML kinetic laws, stoichiometry, compartments, rules, initial assignments</td>
+                        <td>xml.etree, SymPy</td>
+                        <td>~490</td>
                     </tr>
                     <tr>
                         <td><code>abm_engine.py</code></td>
                         <td>Cellular Potts Model with Hamiltonian dynamics, cell behaviors, diffusible fields</td>
                         <td>NumPy</td>
-                        <td>~848</td>
+                        <td>~855</td>
                     </tr>
                     <tr>
                         <td><code>multiscale.py</code></td>
@@ -677,20 +786,20 @@
                     <tr>
                         <td><code>maple_extractor.py</code></td>
                         <td>LLM parameter extraction with retry loops and validation</td>
-                        <td>llama-cpp-python, Pydantic</td>
+                        <td>llm_provider, Pydantic</td>
                         <td>~425</td>
                     </tr>
                     <tr>
                         <td><code>maple_schemas.py</code></td>
                         <td>Pydantic schemas, hallucination detection, DOI verification, unit validation</td>
                         <td>Pydantic v2, requests</td>
-                        <td>~748</td>
+                        <td>~750</td>
                     </tr>
                     <tr>
                         <td><code>db_interface.py</code></td>
                         <td>Reactome, STRING, OmniPath, SIGNOR, BioModels API connectors with fallbacks</td>
                         <td>requests</td>
-                        <td>~401</td>
+                        <td>~470</td>
                     </tr>
                 </tbody>
             </table>
@@ -699,46 +808,40 @@
         <!-- 3. NLP PARSING -->
         <h2 class="section-heading" id="sec-nlp"><span class="section-number">3.</span> Natural Language Parsing & Blueprint Compilation</h2>
         <p>
-            The system accepts free-text descriptions of biological processes and compiles them into structured JSON blueprints that drive downstream simulation. We implement a <strong>dual-mode parser</strong>: an LLM-based parser that leverages an open-source language model's understanding of biological systems, and a robust rule-based fallback parser for offline use.
+            The system accepts free-text descriptions of biological processes and compiles them into structured JSON blueprints that drive downstream simulation. The compiler is built so that a language model can help read the text but cannot silently invent the mathematics: the model's only output is a constrained <strong>intermediate representation (IR)</strong>, the equations are assembled from it by deterministic code, and the result is checked before it is shown. The same pipeline runs with no language model at all, on a rule-based extractor.
         </p>
 
-        <h3 class="subsection-heading"><span class="subsection-number">3.1</span> LLM-Based Parsing</h3>
+        <h3 class="subsection-heading"><span class="subsection-number">3.1</span> The Intermediate Representation</h3>
         <p>
-            When an LLM engine is enabled (a local open-source model, or a remote OpenAI-compatible endpoint), the system constructs a detailed prompt containing the input text and the expected JSON schema. The LLM is instructed to produce a blueprint with typed nodes (biological species), directed edges (activation/inhibition interactions with Hill-function parameters), optional spatial configuration for PDEs, and simulation metadata. The response is stripped of any markdown formatting and parsed as JSON.
+            The IR lists species (with initial values and optional diffusion), named parameters (each marked as taken from the text or defaulted), imposed stimuli, and processes of five kinds: production, degradation, conversion (optionally enzyme-catalysed), binding, and custom rate laws. Activation and inhibition are attached to the process they regulate, and statements the model cannot represent are listed as unmodelled rather than dropped. Every process carries a <em>verbatim evidence quote</em> from the description, or is explicitly marked as an assumption with a stated reason. The language model is asked for JSON that satisfies a strict schema; Purdue GenAI Studio models use the backend's structured-output mode (vLLM <code>response_format</code> for gpt-oss, Ollama <code>format</code> for the others). The client retries empty (null) responses, rate-limit and server errors, detects truncated output, and keeps its request rate below the service's per-user limit.
         </p>
 
-        <h3 class="subsection-heading"><span class="subsection-number">3.2</span> Rule-Based Fallback Parser</h3>
+        <h3 class="subsection-heading"><span class="subsection-number">3.2</span> Validation, Repair and Assembly</h3>
         <p>
-            For offline operation or when no API key is available, we implement a regex-based parser that extracts biological entities and interactions from natural language. The parser handles:
+            An IR fails validation when a quote does not appear in the text, when the quote contains no wording of the process's own kind, when the only evidence for an interaction is a negated sentence ("A does not activate B"), or when a custom rate law does not vanish as its consumed reactant is exhausted. The errors are sent back to the model for up to two repair rounds; if the IR still fails, the rule-based extractor is used and the interface says so. A small set of <strong>deterministic repairs</strong>, each disclosed to the user, handles recurring model errors measured in live runs: a named molecule filed as an external stimulus becomes a species; a species that no quoted process involves is removed instead of receiving invented turnover; a catalyst's amount stays conserved; a process that repeats another from the same sentence is dropped so no rate is counted twice. A rule-based cross-check adds interactions the rules find but the model omitted, and equations written out in the text take precedence over the model's reading. The accepted IR is then turned into rate laws (mass action, Hill-type regulation) by code, not by the model.
         </p>
-        <ul>
-            <li><strong>Activation verbs:</strong> activates, stimulates, triggers, induces, phosphorylates, increases, promotes, binds to</li>
-            <li><strong>Inhibition verbs:</strong> inhibits, blocks, suppresses, dephosphorylates, decreases, represses</li>
-            <li><strong>Initial conditions:</strong> "<em>X starts at 10.0</em>" or "<em>10 units of X</em>"</li>
-            <li><strong>Compound sentences:</strong> "<em>EGF binds to EGFR and activates it</em>" → single EGF→EGFR edge</li>
-            <li><strong>PDE detection:</strong> keywords like "reaction-diffusion", "Turing", "spatial", "diffusion"</li>
-        </ul>
         <p>
-            A critical design decision is the <strong>stopword filtering</strong> system: English pronouns (it, them), conjunctions (and, or), and generic biology terms (protein, receptor) are excluded from being captured as species names by regex groups. This prevents the parser from creating spurious nodes when processing compound sentences.
+            Before a model is displayed it must pass: (i) a symbolic Jacobian check that every stated activation or inhibition has the right sign, (ii) a simulation that stays finite, non-negative and bounded, (iii) a coverage check that every entity named in the text is represented, and, for reaction-diffusion models, (iv) a check that the explicit time step respects the diffusion stability limit. The results appear in the interface next to the equations, together with the quote each process rests on and every assumption made. On a 21-description benchmark with numeric behavioural checks, the latest run compiled all 21 descriptions correctly on Purdue GenAI (gpt-oss:120b) and on AWS Bedrock (Mistral Large), and all 21 on the rule-based path. Photographs of written equations are transcribed by a vision model and then compiled exactly as written, without reinterpretation.
         </p>
 
         <h3 class="subsection-heading"><span class="subsection-number">3.3</span> Blueprint Schema</h3>
         <p>
-            The output blueprint is a JSON object conforming to a defined schema:
+            The output blueprint is a JSON object. Custom-kinetics models carry explicit rate laws; the compiler also attaches its provenance and verification report:
         </p>
         <div class="code-block">
             <span class="code-label">Blueprint Schema</span>
             <pre>{
   "type": "ODE" | "PDE",
-  "nodes": [
-    { "id": "EGFR", "name": "EGF Receptor", "initial_value": 1.0 }
-  ],
-  "edges": [
-    { "source": "EGF", "target": "EGFR", "type": "activation",
-      "parameters": { "k": 0.5, "K_d": 1.0, "n": 2.0 } }
-  ],
-  "spatial": { ... },           // PDE only
-  "simulation_config": { "t_max": 50.0 }
+  "nodes": [ { "id": "p53", "initial_value": 0.0 }, { "id": "Mdm2", ... } ],
+  "parameters": { "k_prod_p53": 1.0, "k_deg_p53": 0.1, ... },
+  "fluxes": { "prod_p53_p1": "k_prod_p53",
+              "deg_p53_p2": "k_deg_p53*p53*Mdm2^n/(K^n + Mdm2^n)" },
+  "odes": { "p53": "prod_p53_p1 - deg_p53_p2", ... },
+  "spatial": { ... },                 // PDE only
+  "simulation_config": { "t_max": 100.0 },
+  "_ir": { ... },                     // species, processes, evidence quotes
+  "_verification": { "ok": true, "sign_checks": [...], "simulation": {...},
+                     "coverage": {...} }
 }</pre>
         </div>
 
@@ -808,7 +911,7 @@
         <!-- 5. ODE -->
         <h2 class="section-heading" id="sec-ode"><span class="section-number">5.</span> ODE Compilation & Symbolic Mathematics</h2>
         <p>
-            The ODE compiler translates a blueprint's interaction graph into a system of coupled ordinary differential equations using Hill-function kinetics. The compilation is fully symbolic, implemented with SymPy, enabling automatic LaTeX rendering, parameter sensitivity analysis, and efficient numerical evaluation.
+            The ODE compiler turns a blueprint into a system of coupled ordinary differential equations. Blueprints that carry explicit rate laws (from the evidence-verified compiler, SBML import, photographed equations, or the published-model presets) are compiled exactly as written, with every species, parameter and flux name bound as its own symbol. Edge-only blueprints, such as those built directly from database interactions, are expanded with the Hill-function kinetics described below. The compilation is fully symbolic, implemented with SymPy, enabling automatic LaTeX rendering, parameter sensitivity analysis, and efficient numerical evaluation.
         </p>
 
         <h3 class="subsection-heading"><span class="subsection-number">5.1</span> Hill-Function ODE Formulation</h3>
@@ -1003,37 +1106,100 @@ For each Monte Carlo Step (MCS):
             The frontend is implemented as a single-page application using vanilla HTML, CSS, and JavaScript, with three external libraries for specialized rendering:
         </p>
         <ul>
-            <li><strong>Cytoscape.js</strong> renders the interaction graph as a force-directed network layout with color-coded activation (cyan) and inhibition (red) edges.</li>
+            <li><strong>Cytoscape.js</strong> renders the interaction graph. Arrows are derived from the equations themselves (the sign of each partial derivative), not drawn separately; weak influences are folded away by default and a "Show every connection" toggle draws all of them.</li>
             <li><strong>Chart.js</strong> renders ODE time-series data as responsive line charts with hover tooltips.</li>
             <li><strong>KaTeX</strong> renders the compiled LaTeX equations in the Equations tab.</li>
             <li><strong>Canvas 2D</strong> renders PDE heatmaps with a plasma colormap palette and ABM lattice visualizations with per-cell-type coloring.</li>
         </ul>
         <p>
-            The interface is organized into six tabs: Blueprint (graph + JSON), Equations (LaTeX), Simulator (parameters + visualization), Feedback (optimization logs + target progress ring), Agent-Based (CPM lattice), and MAPLE (extraction form + validation results). A sidebar provides the text input, database RAG interface, and target constraint editor.
+            The interface is organized into tabs: Blueprint (graph, provenance of every process and the verification results), Equations (LaTeX), Simulator (parameters, parameter exploration and visualization), Embryo BMP (the organism-scale model of Section 12 with live runs and its validation table), Feedback (optimization logs and target progress), Agent-Based (CPM lattice), MAPLE (extraction form and validation results) and Guides (captioned explainer videos rendered from the application's own outputs). A sidebar provides the text input, published-model presets, the database RAG interface, and the target constraint editor.
         </p>
 
-        <!-- 12. DISCUSSION -->
-        <h2 class="section-heading" id="sec-discussion"><span class="section-number">12.</span> Discussion</h2>
-
-        <h3 class="subsection-heading"><span class="subsection-number">12.1</span> Limitations</h3>
+        <!-- 12. ORGANISM-SCALE EMBRYO MODEL -->
+        <h2 class="section-heading" id="sec-embryo"><span class="section-number">12.</span> Organism-Scale BMP Patterning of the Drosophila Embryo</h2>
         <p>
-            Several limitations should be noted. The rule-based parser, while robust to common phrasing, cannot handle complex biological descriptions involving multi-step mechanisms, allosteric regulation, or post-translational modification cascades without explicit enumeration. The PDE solver uses an explicit Euler scheme, which imposes stability constraints on the time step relative to the grid spacing and diffusion coefficients. The ABM engine, while featuring a full Hamiltonian formulation, does not currently implement elastic or persistence-based motility models.
+            The Embryo BMP tab implements the organism-scale model of Umulis, Shimmi, O'Connor &amp; Othmer (2010) [18]. Dpp/Scw heterodimers secreted in the dorsal region are bound by Sog/Tsg, shuttled toward the dorsal midline and released there when Tolloid cleaves Sog; a surface BMP-binding protein induced by signalling (the paper's best-supported feedback mechanism) sharpens the stripe. The reaction-transport equations (main-text Eqs 1–7; Supplemental Eqs 7–21 for the no-feedback and receptor-feedback variants and 52–61 for the surface-binding-protein feedback) and every printed rate constant, diffusivity and fitted parameter (Tables S1, S2, S3, S8 and S11) are used as published. They are solved on the perivitelline sheet of a 400 × 180 µm prolate spheroid (a finite-volume Laplace–Beltrami operator) and on the anterior-posterior midline cross-section, by the method of lines with a BDF integrator and an analytic sparse Jacobian; every run checks positivity and that ligand mass balance holds to a relative error below 10⁻³.
+        </p>
+        <p>
+            Three inputs were not published and are stated as assumptions in the interface: the FISH-derived Sog secretion field (the Fourier coefficients of Supplemental Eq. 82), the image-derived initial state, and a usable Sog secretion rate. Table S1 prints 1.36 µM/min, which, used literally, floods the embryo with Sog/Tsg and abolishes the stripe; the default therefore uses the 400 nM/min of the fully specified 2006 predecessor [17], and the printed value remains selectable. The paper fitted the model separately for its reconstructed embryo (Table S8, the default) and for the ellipsoid (Table S11); both sets are available. To verify the solver independently of these choices, the same code reproduces the 2006 model's published dorsal-midline curves (Supplemental Fig. 13) to within 12% from 30 minutes to steady state.
         </p>
 
-        <h3 class="subsection-heading"><span class="subsection-number">12.2</span> Design Decisions</h3>
+        <!-- 13. VALIDATION -->
+        <h2 class="section-heading" id="sec-validation"><span class="section-number">13.</span> Validation Against Published Results</h2>
+        <p>
+            Each model family is checked against numbers taken from its source, and the checks run as automated tests. Failures are reported rather than tuned away.
+        </p>
+        <div class="paper-table-wrapper">
+            <div class="table-caption"><strong>Table 4.</strong> Quantitative checks against published results.</div>
+            <table class="paper-table">
+                <thead>
+                    <tr>
+                        <th>Component</th>
+                        <th>Reference data</th>
+                        <th>Check</th>
+                        <th>Result</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Language-to-model compiler</td>
+                        <td>21 descriptions (feedback loops and switches, signalling cascades, binding and enzyme kinetics, epidemic and predator-prey models, reaction-diffusion, a negated statement, a non-biological control)</td>
+                        <td>Numeric behavioural assertions on the compiled model</td>
+                        <td>21/21 on Purdue GenAI, 21/21 on AWS Bedrock, 21/21 rule-based (latest run)</td>
+                    </tr>
+                    <tr>
+                        <td>SBML import</td>
+                        <td>8 curated BioModels entries</td>
+                        <td>Trajectories against libRoadRunner (maximum error relative to each species' range)</td>
+                        <td>8/8 agree to better than 10⁻⁴</td>
+                    </tr>
+                    <tr>
+                        <td>Ca²⁺ oscillator preset</td>
+                        <td>Goldbeter, Dupont &amp; Berridge 1990 [15], Figs 2–3</td>
+                        <td>Oscillation interval; steady state above it; period and amplitude against the digitised Fig. 3</td>
+                        <td>β = 28.9–77.4% (paper 29.1–77.5%); 0.67 µM (paper ≈0.7 µM); within 3%</td>
+                    </tr>
+                    <tr>
+                        <td>CaMKII switch preset</td>
+                        <td>Zhabotinsky 2000 [16], Table 1, Figs 9B and 10A</td>
+                        <td>The four Ca²⁺ step experiments; single-valued cytosolic case</td>
+                        <td>4/4 steps as published; single-valued as published</td>
+                    </tr>
+                    <tr>
+                        <td>Embryo BMP model</td>
+                        <td>Umulis et al. 2006 [17] and 2010 [18]</td>
+                        <td>17 checks: solver verification, Fig. 4F levels, stripe width, mutants, feedback, scaling</td>
+                        <td>15/17 pass</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        <p>
+            The two embryo checks that fail are informative. Before about 20 minutes, Sog/Tsg secreted in the lateral neuroectoderm floods the dorsal side of the model and holds the signal near zero until Tolloid clears it, whereas the paper's Fig. 4F already reads 16.8 nM at the dorsal midline at 15 minutes; the 60-minute level is reproduced (37.8 nM with the ellipsoid refit, against 37.9 nM). Halving Sog secretion for <em>sog</em>+/− widens the stripe, measured at 20% of the wild-type maximum, by 18.6 cells in the model against the 2–4 nuclei measured. Both depend on the unpublished Sog field and initial state. Claims about the paper's 3D model, such as the Fig. 4F time course and the ability of the no-feedback parameter set to form a stripe, are evaluated on the embryo surface; the one-dimensional cross-section, which treats the central Tsg source as if it covered the whole anterior-posterior axis, is shown for reference.
+        </p>
+
+        <!-- 14. DISCUSSION -->
+        <h2 class="section-heading" id="sec-discussion"><span class="section-number">14.</span> Discussion</h2>
+
+        <h3 class="subsection-heading"><span class="subsection-number">14.1</span> Limitations</h3>
+        <p>
+            Several limitations should be noted. The rule-based compiler covers a defined set of phrasings; descriptions outside it need a language model, and the language models remain non-deterministic, so one benchmark run's score does not guarantee the next. The embryo model cannot reproduce the early Fig. 4F time course or the magnitude of the <em>sog</em>+/− phenotype without the unpublished inputs described above. The fold-change preset after Lyashenko et al. is a reduced model and is labelled as such. The PDE solver uses an explicit Euler scheme, which imposes stability constraints on the time step relative to the grid spacing and diffusion coefficients. The ABM engine, while featuring a full Hamiltonian formulation, does not currently implement elastic or persistence-based motility models.
+        </p>
+
+        <h3 class="subsection-heading"><span class="subsection-number">14.2</span> Design Decisions</h3>
         <p>
             A key architectural choice was the <strong>blueprint-centric design</strong>: all simulation engines consume the same JSON blueprint schema, enabling seamless switching between ODE, PDE, and ABM representations. This also enables the closed-loop agent to modify the blueprint and re-simulate without engine-specific knowledge. Another critical decision was implementing <strong>comprehensive fallback systems</strong> at every level (mock database responses, rule-based parsing, and demo calibration targets), ensuring the platform remains fully functional without network access or an API key.
         </p>
 
-        <h3 class="subsection-heading"><span class="subsection-number">12.3</span> Future Work</h3>
+        <h3 class="subsection-heading"><span class="subsection-number">14.3</span> Future Work</h3>
         <p>
-            Future extensions include: integration of stochastic simulation algorithms (Gillespie SSA) for low-copy-number species; support for SBML Level 3 with qualitative models and multi-compartment reactions; GPU-accelerated PDE solvers for larger grid sizes; and a DPO (Direct Preference Optimization) training loop that uses the refinement history to fine-tune the LLM agent's parameter adjustment strategy.
+            Future extensions include: integration of stochastic simulation algorithms (Gillespie SSA) for low-copy-number species; import of SBML events and delays, which are currently reported but not translated; the non-uniform Tld and Tkv cases of the embryo model once image-derived fields are available; GPU-accelerated PDE solvers for larger grid sizes; and a DPO (Direct Preference Optimization) training loop that uses the refinement history to fine-tune the LLM agent's parameter adjustment strategy.
         </p>
 
-        <!-- 13. CONCLUSION -->
-        <h2 class="section-heading" id="sec-conclusion"><span class="section-number">13.</span> Conclusion</h2>
+        <!-- 15. CONCLUSION -->
+        <h2 class="section-heading" id="sec-conclusion"><span class="section-number">15.</span> Conclusion</h2>
         <p>
-            BioSimulateAI demonstrates that the combination of Retrieval-Augmented Generation, Large Language Models, and multi-scale simulation can substantially automate the biological modeling workflow. By grounding LLM outputs in curated databases and validating extracted parameters with hallucination-detection schemas, we achieve a system that is both flexible and reliable. The platform's blueprint-centric architecture enables seamless transitions between modeling scales (ODE, PDE, ABM) and supports iterative AI-driven refinement toward user-defined experimental targets. All components are accessible through a browser interface with no installation required, lowering the barrier to entry for quantitative biological modeling.
+            BioSimulateAI shows that language models can make biological modeling faster without being trusted blindly. The model reads the description, but every process it proposes must quote the text, the equations are built by deterministic code, and the result is checked for signs, boundedness and coverage before anyone sees it. Grounding in curated databases, exact SBML import and quantitative reproductions of published models give researchers a way to see where the system agrees with the literature and where, and why, it does not. The platform's blueprint-centric architecture enables transitions between modeling scales (ODE, PDE, ABM) and supports iterative AI-driven refinement toward user-defined experimental targets. All components are accessible through a browser interface with no installation required.
         </p>
 
         <hr>
@@ -1056,6 +1222,10 @@ For each Monte Carlo Step (MCS):
                 <li>Swat, M. H. et al. Multi-scale modeling of tissues using CompuCell3D. <em>Methods in Cell Biology</em> <strong>110</strong>, 325–366 (2012).</li>
                 <li>Meurer, A. et al. SymPy: symbolic computing in Python. <em>PeerJ Computer Science</em> <strong>3</strong>, e103 (2017).</li>
                 <li>Virtanen, P. et al. SciPy 1.0: fundamental algorithms for scientific computing. <em>Nature Methods</em> <strong>17</strong>, 261–272 (2020).</li>
+                <li>Goldbeter, A., Dupont, G. &amp; Berridge, M. J. Minimal model for signal-induced Ca<sup>2+</sup> oscillations and for their frequency encoding through protein phosphorylation. <em>Proceedings of the National Academy of Sciences USA</em> <strong>87</strong>, 1461–1465 (1990).</li>
+                <li>Zhabotinsky, A. M. Bistability in the Ca<sup>2+</sup>/calmodulin-dependent protein kinase-phosphatase system. <em>Biophysical Journal</em> <strong>79</strong>, 2211–2221 (2000).</li>
+                <li>Umulis, D. M., Serpe, M., O'Connor, M. B. &amp; Othmer, H. G. Robust, bistable patterning of the dorsal surface of the <em>Drosophila</em> embryo. <em>Proceedings of the National Academy of Sciences USA</em> <strong>103</strong>, 11613–11618 (2006).</li>
+                <li>Umulis, D. M., Shimmi, O., O'Connor, M. B. &amp; Othmer, H. G. Organism-scale modeling of early <em>Drosophila</em> patterning via bone morphogenetic proteins. <em>Developmental Cell</em> <strong>18</strong>, 260–274 (2010).</li>
             </ol>
         </div>
     </div>
