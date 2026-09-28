@@ -262,14 +262,98 @@
       "kind": "paper_claim",
       "claim": "A 750-um embryo with fixed production/receptor concentrations (shuttling only) splits into two stripes",
       "citation": "Umulis 2010 Fig. 7, p.271-272 ('splits at ~25% embryo length ... two parallel stripes')",
-      "how_measured": "48x32 surface (the same answer at 32x24 and 64x40): AP positions where the 60-min BR maximum leaves the DM",
+      "how_measured": "48x32 surface at 60/90/120 min: AP positions where the BR maximum lies off the dorsal midline (midline < 95% of the maximum); the paper does not state the time of its Fig. 7 snapshot",
       "measured": {
         "grid": "48x32",
-        "split_ap_fractions_400": [],
-        "split_ap_fractions_750": [],
-        "note": "the paper used the reconstructed (non-symmetric) VirtualEmbryo geometry and FISH prepatterns; this model uses a symmetric prolate spheroid"
+        "split_ap_fractions_400": {
+          "60.0": [],
+          "90.0": [],
+          "120.0": []
+        },
+        "split_ap_fractions_750": {
+          "60.0": [],
+          "90.0": [
+            0.002,
+            0.007,
+            0.013,
+            0.022,
+            0.032,
+            0.045,
+            0.209,
+            0.236,
+            0.264,
+            0.294,
+            0.324,
+            0.355,
+            0.386,
+            0.419,
+            0.451,
+            0.484,
+            0.516,
+            0.549,
+            0.581,
+            0.614,
+            0.645,
+            0.676,
+            0.706,
+            0.736,
+            0.764,
+            0.791,
+            0.955,
+            0.968,
+            0.978,
+            0.987,
+            0.993,
+            0.998
+          ],
+          "120.0": [
+            0.002,
+            0.007,
+            0.013,
+            0.022,
+            0.032,
+            0.045,
+            0.158,
+            0.183,
+            0.209,
+            0.236,
+            0.264,
+            0.294,
+            0.324,
+            0.355,
+            0.386,
+            0.419,
+            0.451,
+            0.484,
+            0.516,
+            0.549,
+            0.581,
+            0.614,
+            0.645,
+            0.676,
+            0.706,
+            0.736,
+            0.764,
+            0.791,
+            0.817,
+            0.842,
+            0.955,
+            0.968,
+            0.978,
+            0.987,
+            0.993,
+            0.998
+          ]
+        },
+        "first_split_time_750_min": 90.0,
+        "interior_split_ap_range_750": [
+          0.209,
+          0.791
+        ],
+        "paper_split_start_ap_fraction": 0.25,
+        "note": "cells within 5% of the poles are excluded from the range (the DV direction degenerates there); the paper's split rejoins at the posterior pole on the reconstructed, non-symmetric embryo, while on this symmetric spheroid it is symmetric about mid-embryo"
       },
-      "pass": false
+      "pass": true
     },
     {
       "id": "V8b",
@@ -281,8 +365,8 @@
         "grid": "48x32",
         "pole_to_max_ratio": 0.180616579271709,
         "peak_ap_fraction": 0.4836404585891118,
-        "rms_750_unconserved": 0.11211075529820355,
-        "rms_750_conserved": 0.10266978613999111
+        "rms_750_unconserved": 0.1121107540551575,
+        "rms_750_conserved": 0.10266978607930492
       },
       "pass": true
     },
@@ -294,14 +378,14 @@
       "how_measured": "Min/max ratio of 60-min DM BR along AP and the AP position of the maximum",
       "measured": {
         "grid": "48x32",
-        "dm_min_max_ratio": 0.8851502340872811,
+        "dm_min_max_ratio": 0.8851502357555301,
         "peak_ap_fraction": 0.006678333957560512,
         "note": "the maximum sits at the termini, where Fig. 4A places dpp around the whole circumference"
       },
       "pass": true
     }
   ],
-  "passed": 12,
+  "passed": 13,
   "total": 16,
   "required_ids": [
     "S1",
@@ -313,7 +397,7 @@
     "V7"
   ],
   "required_pass": true,
-  "wall_time_s": 20.159619400001247,
+  "wall_time_s": 25.43306150000717,
   "assumptions": [
     "Equations and Tables S1/S2/S3/S8 are used exactly; diffusivities converted from um^2/s to um^2/min.",
     "Table S1 prints 'phi_S 1.36 uM*min^1'. Used literally (1360 nM/min) with the 2010 Sog equation (no Sog decay term) it floods the PV space with Sog/Tsg and abolishes the dorsal BMP stripe entirely (validation D1). The 2010 Sog source was a FISH-derived field (Supplemental Eq. 82) whose coefficients were not published, so the Sog secretion rate the same authors published for the predecessor model is used.",

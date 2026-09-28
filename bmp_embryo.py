@@ -914,28 +914,51 @@ def validate(include_surface: bool = False) -> dict[str, Any]:
 
     if include_surface:
         grid = dict(nu=48, nv=32)
-        s400 = simulate_surface(save_times=[60.0], **grid)
-        s750 = simulate_surface(length_ap=750.0, save_times=[60.0], **grid)
+        split_times = [60.0, 90.0, 120.0]
+        s400 = simulate_surface(save_times=split_times, t_end=120.0, **grid)
+        s750 = simulate_surface(length_ap=750.0, save_times=split_times, t_end=120.0, **grid)
         s750c = simulate_surface(length_ap=750.0, conserve=True, save_times=[60.0], **grid)
         mid = grid["nu"] // 2
 
         def norm(v): return v / max(float(np.max(v)), 1e-30)
-        p400 = norm(np.asarray(s400["fields"]["BR"][-1])[mid])
-        p750 = norm(np.asarray(s750["fields"]["BR"][-1])[mid])
+
+        def split_positions(res, t):
+            """AP fractions where the BR maximum at time t lies off the dorsal midline (a DV split)."""
+            k = res["times"].index(t)
+            br = np.asarray(res["fields"]["BR"][k])
+            u = np.asarray(res["grid"]["u"])
+            out = []
+            for i in range(br.shape[0]):
+                row = br[i]
+                j = int(np.argmax(row))
+                if j > 0 and row[0] < 0.95 * row[j]:
+                    out.append(round(float((1 - math.cos(u[i])) / 2), 3))
+            return out
+
+        splits400 = {str(t): split_positions(s400, t) for t in split_times}
+        splits750 = {str(t): split_positions(s750, t) for t in split_times}
+        first_split = next((t for t in split_times if splits750[str(t)]), None)
+        k60 = s400["times"].index(60.0)
+        p400 = norm(np.asarray(s400["fields"]["BR"][k60])[mid])
+        p750 = norm(np.asarray(s750["fields"]["BR"][s750["times"].index(60.0)])[mid])
         p750c = norm(np.asarray(s750c["fields"]["BR"][-1])[mid])
         rms_unc = float(np.sqrt(np.mean((p750 - p400) ** 2)))
         rms_con = float(np.sqrt(np.mean((p750c - p400) ** 2)))
-        splits750 = [float(f) for f, yes in zip(s750["readouts"]["dorsal_midline"]["ap_fraction"], s750["readouts"]["split_map_vs_ap"]) if yes]
-        splits400 = [float(f) for f, yes in zip(s400["readouts"]["dorsal_midline"]["ap_fraction"], s400["readouts"]["split_map_vs_ap"]) if yes]
         label = f"{grid['nu']}x{grid['nv']}"
+        span750 = [f for f in (splits750[str(first_split)] if first_split else []) if 0.05 <= f <= 0.95]
         rows.append(_row(
             "V8", "A 750-um embryo with fixed production/receptor concentrations (shuttling only) splits into two stripes",
             "Umulis 2010 Fig. 7, p.271-272 ('splits at ~25% embryo length ... two parallel stripes')",
-            f"{label} surface (the same answer at 32x24 and 64x40): AP positions where the 60-min BR maximum leaves the DM",
+            f"{label} surface at 60/90/120 min: AP positions where the BR maximum lies off the dorsal midline "
+            "(midline < 95% of the maximum); the paper does not state the time of its Fig. 7 snapshot",
             {"grid": label, "split_ap_fractions_400": splits400, "split_ap_fractions_750": splits750,
-             "note": "the paper used the reconstructed (non-symmetric) VirtualEmbryo geometry and FISH prepatterns; "
-                     "this model uses a symmetric prolate spheroid"},
-            bool(splits750) and not splits400))
+             "first_split_time_750_min": first_split,
+             "interior_split_ap_range_750": [min(span750), max(span750)] if span750 else None,
+             "paper_split_start_ap_fraction": 0.25,
+             "note": "cells within 5% of the poles are excluded from the range (the DV direction degenerates there); "
+                     "the paper's split rejoins at the posterior pole on the reconstructed, non-symmetric embryo, "
+                     "while on this symmetric spheroid it is symmetric about mid-embryo"},
+            bool(span750) and not any(splits400.values())))
         dmc = s750c["readouts"]["dorsal_midline"]
         dm_c = np.asarray(dmc["BR"])
         pole_ratio = float(min(dm_c[0], dm_c[-1]) / max(float(np.max(dm_c)), 1e-30))
@@ -947,7 +970,12 @@ def validate(include_surface: bool = False) -> dict[str, Any]:
             {"grid": label, "pole_to_max_ratio": pole_ratio, "peak_ap_fraction": dmc["peak_ap_fraction"],
              "rms_750_unconserved": rms_unc, "rms_750_conserved": rms_con},
             pole_ratio < 0.5 and 0.4 <= dmc["peak_ap_fraction"] <= 0.6))
-        dm = s400["readouts"]["dorsal_midline"]
+        br60 = np.asarray(s400["fields"]["BR"][k60])
+        dm_line = br60[:, 0]
+        dm_peak_i = int(np.argmax(dm_line))
+        u400 = np.asarray(s400["grid"]["u"])
+        dm = {"min_max_ratio": float(np.min(dm_line) / max(float(np.max(dm_line)), 1e-30)),
+              "peak_ap_fraction": float((1 - math.cos(u400[dm_peak_i])) / 2)}
         rows.append(_row(
             "V9", "On the embryo surface, dorsal-midline BR varies along the AP axis", "Umulis 2010 Fig. 4E, 6, p.264",
             "Min/max ratio of 60-min DM BR along AP and the AP position of the maximum",

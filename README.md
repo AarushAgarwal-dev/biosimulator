@@ -40,10 +40,11 @@ checked to 10⁻³).
   (Umulis et al. 2006 PNAS, Supp. Fig. 13) within 10 % from 30 min to steady state.
 - **Paper claims** (`python verify_bmp_umulis2010.py`): the contracting dorsal stripe, sog+/-
   widening, tld-/- loss of signal, loss of localisation with the in-vitro Sog/BMP on-rate, the
-  role of feedback, and scaling behaviour are each measured and reported pass/fail - 12 of 16 pass.
-  The four that do not (the exact Fig. 4F time course, the sog+/- magnitude, the Table S2 set, the
-  750 µm split) depend on inputs the paper did not publish (the FISH-derived Sog field, the
-  image-derived initial state); they are shown, not hidden.
+  role of feedback, and scaling behaviour (a 750 µm embryo splits into two stripes from ~21 % EL;
+  paper: ~25 %) are each measured and reported pass/fail - 13 of 16 pass.
+  The three that do not (the exact Fig. 4F time course, the sog+/- magnitude, the Table S2 set)
+  depend on inputs the paper did not publish (the FISH-derived Sog field, the image-derived
+  initial state); they are shown, not hidden.
 - **What had to be interpreted** is listed in the app: Table S1's printed Sog secretion
   (1.36 µM/min) abolishes the stripe when used literally, so the 2006 value (400 nM/min) is the
   default and the printed value is selectable.
