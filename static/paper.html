@@ -867,38 +867,38 @@
                         <td>Reactome</td>
                         <td>Pathway structures, contained reactions, reaction participants</td>
                         <td>REST Content Service</td>
-                        <td>Mock pathway catalog</td>
+                        <td>Three EGFR/MAPK pathways (names checked against Reactome), labelled offline</td>
                     </tr>
                     <tr>
                         <td>STRING DB</td>
                         <td>Protein-protein interaction networks with confidence scores</td>
                         <td>REST JSON API</td>
-                        <td>Sequential chain generation</td>
+                        <td>Unscored associations between the typed proteins, labelled offline</td>
                     </tr>
                     <tr>
                         <td>OmniPath</td>
                         <td>Directed signaling interactions with literature references (PMIDs)</td>
                         <td>REST API</td>
-                        <td>Curated interaction lookup table</td>
+                        <td>Canonical EGFR/MAPK and TGF-β steps without references, labelled offline</td>
                     </tr>
                     <tr>
                         <td>SIGNOR</td>
-                        <td>Curated signaling relationships with mechanisms and effects</td>
-                        <td>REST API</td>
-                        <td>Pathway-specific mock data</td>
+                        <td>Curated causal relationships with mechanisms, effects, PMIDs and scores</td>
+                        <td>getData.php download service, queried by UniProt accession (gene symbols are mapped through UniProt)</td>
+                        <td>Canonical EGFR/MAPK steps without references, labelled offline</td>
                     </tr>
                     <tr>
                         <td>BioModels</td>
                         <td>Published SBML mathematical models with XML content</td>
-                        <td>EBI REST API</td>
-                        <td>Curated model catalog</td>
+                        <td>REST API; SBML from the CC0 GitHub mirror of the curated collection (sys-bio/temp-biomodels) when BioModels does not respond</td>
+                        <td>Eleven curated models (ids and names checked against their SBML files), labelled offline</td>
                     </tr>
                 </tbody>
             </table>
         </div>
 
         <p>
-            The RAG workflow proceeds in three stages: (1) <strong>Retrieval</strong>: the user queries a database through the sidebar interface, receiving structured results (pathway names, interaction edges, SBML model IDs); (2) <strong>Augmentation</strong>: retrieved data is transformed into natural-language biological descriptions and injected into the text input area; (3) <strong>Generation</strong>: the augmented text is parsed by the LLM or rule-based parser to produce a grounded blueprint. Each database connector includes a mock fallback that returns representative data when the external API is unreachable, ensuring the platform remains functional offline.
+            The RAG workflow proceeds in three stages: (1) <strong>Retrieval</strong>: the user queries a database through the sidebar interface, receiving structured results (pathway names, interaction edges, SBML model IDs); (2) <strong>Augmentation</strong>: retrieved data is transformed into natural-language biological descriptions and injected into the text input area; (3) <strong>Generation</strong>: the augmented text is parsed by the LLM or rule-based parser to produce a grounded blueprint. When a database does not answer, the connector returns a small set of offline examples. They keep the interface usable, but every record is marked offline, the interface says so, and none cites a paper, because an example must never pass for a database record.
         </p>
 
         <div class="highlight-box">
@@ -1188,7 +1188,7 @@ For each Monte Carlo Step (MCS):
 
         <h3 class="subsection-heading"><span class="subsection-number">14.2</span> Design Decisions</h3>
         <p>
-            A key architectural choice was the <strong>blueprint-centric design</strong>: all simulation engines consume the same JSON blueprint schema, enabling seamless switching between ODE, PDE, and ABM representations. This also enables the closed-loop agent to modify the blueprint and re-simulate without engine-specific knowledge. Another critical decision was implementing <strong>comprehensive fallback systems</strong> at every level (mock database responses, rule-based parsing, and demo calibration targets), ensuring the platform remains fully functional without network access or an API key.
+            A key architectural choice was the <strong>blueprint-centric design</strong>: all simulation engines consume the same JSON blueprint schema, enabling seamless switching between ODE, PDE, and ABM representations. This also enables the closed-loop agent to modify the blueprint and re-simulate without engine-specific knowledge. Another critical decision was implementing <strong>disclosed fallbacks</strong> at every level (offline database examples, the rule-based compiler, and demo calibration targets), so the platform remains usable without network access or an API key, and every fallback is labelled as such in the interface.
         </p>
 
         <h3 class="subsection-heading"><span class="subsection-number">14.3</span> Future Work</h3>

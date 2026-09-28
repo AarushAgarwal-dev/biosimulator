@@ -99,8 +99,11 @@ Real-time retrieval from 5 biological knowledge databases to ground model genera
 | **Reactome** | Curated pathway structures & reactions | REST Content Service |
 | **STRING DB** | Protein-protein interaction networks | JSON API |
 | **OmniPath** | Directed signaling with literature refs | REST API |
-| **SIGNOR** | Curated signaling relationships | REST API |
-| **BioModels** | Published SBML mathematical models | EBI REST API |
+| **SIGNOR** | Curated causal relationships (mechanism, effect, PMID, score) | `getData.php` download service, by UniProt accession (gene symbols mapped through UniProt) |
+| **BioModels** | Published SBML mathematical models | REST API; SBML from the CC0 GitHub mirror of the curated collection (`sys-bio/temp-biomodels`) when BioModels does not respond |
+
+When a database does not answer, a small set of offline examples keeps the interface usable. Every
+offline record is marked `"offline": true`, the interface says so, and none cites a paper.
 
 Retrieved interactions are transformed into natural-language descriptions and fed to the parser/LLM for blueprint generation.
 
@@ -296,7 +299,7 @@ biosimulator/
 | `/api/reactome/search` | GET | Search Reactome pathways |
 | `/api/string/network` | POST | Fetch STRING protein interactions |
 | `/api/omnipath/interactions` | POST | Query OmniPath signaling data |
-| `/api/signor/search` | GET | Search SIGNOR pathway data |
+| `/api/signor/search` | GET | Curated SIGNOR relations for one human protein |
 | `/api/biomodels/search` | GET | Search BioModels repository |
 | `/api/biomodels/import` | POST | Import SBML model as blueprint |
 

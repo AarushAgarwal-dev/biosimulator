@@ -1726,6 +1726,7 @@ textarea:focus {
 .conn-count { font-size: 12px; color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; }
 .modal-footer .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
 .placeholder-text.err, .placeholder-text.error { color: var(--accent-red); font-style: normal; }
+.placeholder-text.warn { color: var(--accent-amber, #ffaa00); font-style: normal; }
 
 /* ==========================================================================
    TOAST NOTIFICATIONS

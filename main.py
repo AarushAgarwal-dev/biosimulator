@@ -1033,8 +1033,12 @@ def import_biomodel(req: SBMLImportRequest):
         blueprint, logs = extractor.import_biomodels_sbml(req.model_id)
         if blueprint:
             return {"blueprint": blueprint, "logs": logs}
-        else:
-            raise HTTPException(status_code=404, detail=f"Model {req.model_id} not found")
+        source = getattr(extractor, "last_fetch_source", None)
+        if source == "unreachable":
+            raise HTTPException(status_code=502, detail=(
+                f"BioModels could not be reached, so {req.model_id} could not be downloaded. "
+                f"Try again later."))
+        raise HTTPException(status_code=404, detail=f"Model {req.model_id} not found")
     except HTTPException:
         raise
     except Exception as e:
@@ -1079,9 +1083,13 @@ def simulate_abm(req: ABMSimulateRequest):
     try:
         from abm_engine import build_cpm_from_blueprint
         cpm = build_cpm_from_blueprint(req.blueprint)
+        # Fields are rounded to 1e-4 for transport: full-precision snapshots were ~80% of
+        # the 42 MB PDAC response and the Agent-Based tab does not draw them. Workflow run
+        # exports (approach_abm) keep full precision.
         result = cpm.simulate(
             num_mcs=bounds["num_mcs"],
-            save_every=bounds["save_every"]
+            save_every=bounds["save_every"],
+            field_decimals=4
         )
         return result
     except HTTPException:
