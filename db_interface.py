@@ -1,4 +1,5 @@
 import re
+import time
 import requests
 from typing import List, Dict, Any, Optional
 
@@ -222,39 +223,81 @@ def search_omnipath_interactions(proteins: List[str], organism: int = 9606) -> L
 # ============================================================
 # SIGNOR API
 # ============================================================
-SIGNOR_API_URL = "https://signor.uniroma2.it/API/getdata"
+# The '/API/getdata?type=pathwaydata' form this used before answers 404 (checked
+# 2026-09-28), so every search silently fell back to the offline examples.
+# getData.php is SIGNOR's documented download endpoint; it takes a UniProt accession
+# and returns one curated causal relation per tab-separated line.
+SIGNOR_DATA_URL = "https://signor.uniroma2.it/getData.php"
+UNIPROT_SEARCH_URL = "https://rest.uniprot.org/uniprotkb/search"
+_UNIPROT_ACCESSION = re.compile(
+    r"^(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})$")
+_GENE_SYMBOL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,19}$")
+# getData.php columns (0-based): 0 entity A, 4 entity B, 8 effect, 9 mechanism,
+# 21 PMID, 26 SIGNOR id, 27 score.
+_SIGNOR_COLUMNS = {"a": 0, "b": 4, "effect": 8, "mechanism": 9, "pmid": 21, "id": 26, "score": 27}
+
+
+def _uniprot_accession(query: str) -> Optional[str]:
+    """Map a human gene symbol to its reviewed UniProt accession (an accession passes through)."""
+    token = (query or "").strip()
+    if _UNIPROT_ACCESSION.match(token.upper()):
+        return token.upper()
+    if not _GENE_SYMBOL.match(token):
+        return None
+    response = requests.get(UNIPROT_SEARCH_URL, timeout=10, params={
+        "query": f"gene_exact:{token} AND organism_id:9606 AND reviewed:true",
+        "fields": "accession", "format": "tsv", "size": 1})
+    response.raise_for_status()
+    lines = [line for line in response.text.strip().splitlines() if line.strip()]
+    return lines[1].split("\t")[0].strip() if len(lines) > 1 else None
+
+
+def _signor_type(effect: str) -> str:
+    effect = (effect or "").strip().lower()
+    if effect.startswith("up-regulates"):
+        return "activation"
+    if effect.startswith("down-regulates"):
+        return "inhibition"
+    return "association"
+
 
 def search_signor_pathway(query: str) -> List[Dict[str, Any]]:
-    """
-    Query SIGNOR for curated signaling relationships.
-    """
-    url = SIGNOR_API_URL
-    params = {
-        "type": "pathwaydata",
-        "pathway": query,
-        "format": "json"
-    }
+    """Curated SIGNOR causal relations involving one human protein (gene symbol or UniProt id)."""
     try:
-        response = requests.get(url, params=params, timeout=15)
-        if response.status_code == 200:
-            data = response.json()
-            results = []
-            for item in data[:300]:
-                results.append({
-                    "source": item.get("entitya", ""),
-                    "target": item.get("entityb", ""),
-                    "mechanism": item.get("mechanism", ""),
-                    "effect": item.get("effect", ""),
-                    "type": "activation" if "activ" in item.get("effect", "").lower() else (
-                        "inhibition" if "inhib" in item.get("effect", "").lower() else "association"
-                    ),
-                    "pmid": item.get("pmid", ""),
-                    "pathway": item.get("pathway", query)
-                })
-            return results
-        return get_mock_signor(query)
+        accession = _uniprot_accession(query)
+        if not accession:
+            return []                      # no reviewed human protein by that name
+        response = requests.get(SIGNOR_DATA_URL, params={"organism": "9606", "id": accession}, timeout=15)
+        response.raise_for_status()
+        text = response.text.strip()
+        if not text or text.lower().startswith("no result"):
+            return []
+        results = []
+        c = _SIGNOR_COLUMNS
+        for line in text.splitlines():
+            cols = line.split("\t")
+            if len(cols) <= c["mechanism"]:
+                continue
+            pmid = cols[c["pmid"]].strip() if len(cols) > c["pmid"] else ""
+            try:
+                score = float(cols[c["score"]]) if len(cols) > c["score"] else None
+            except ValueError:
+                score = None
+            results.append({
+                "source": cols[c["a"]].strip(),
+                "target": cols[c["b"]].strip(),
+                "mechanism": cols[c["mechanism"]].strip(),
+                "effect": cols[c["effect"]].strip(),
+                "type": _signor_type(cols[c["effect"]]),
+                "pmid": pmid if pmid.isdigit() else "",
+                "signor_id": cols[c["id"]].strip() if len(cols) > c["id"] else "",
+                "score": score,
+            })
+            if len(results) >= 300:
+                break
+        return results
     except Exception as e:
-        print(f"Error querying SIGNOR: {e}")
+        print(f"Error querying SIGNOR: {type(e).__name__}")
         return get_mock_signor(query)
 
 
@@ -273,8 +316,10 @@ def search_biomodels(query: str, num_results: int = 10) -> List[Dict[str, Any]]:
         "numResults": num_results,
         "format": "json"
     }
+    if _biomodels_known_down():
+        return get_mock_biomodels(query)
     try:
-        response = requests.get(url, params=params, timeout=15)
+        response = requests.get(url, params=params, timeout=10)
         if response.status_code == 200:
             data = response.json()
             if not isinstance(data, dict):
@@ -298,14 +343,45 @@ def search_biomodels(query: str, num_results: int = 10) -> List[Dict[str, Any]]:
             # set over handing the UI an empty list that looks like "no results".
             print("BioModels search returned no parseable models; using offline set.")
         return get_mock_biomodels(query)
+    except requests.exceptions.RequestException as e:
+        print(f"Error searching BioModels: {type(e).__name__}")
+        _mark_biomodels_down()
+        return get_mock_biomodels(query)
     except Exception as e:
         print(f"Error searching BioModels: {e}")
         return get_mock_biomodels(query)
 
 
-def fetch_biomodel_sbml(model_id: str) -> Optional[str]:
-    """
-    Download SBML content for a given BioModels ID.
+#: A CC0 GitHub mirror of the curated BioModels collection (sys-bio/temp-biomodels): 'final'
+#: holds the files as re-curated for BioModels, 'original' the files as first published.
+#: Used only when BioModels itself does not answer (its host moved to www.biomodels.org and
+#: timed out for every request on 2026-09-28), and only for curated BIOMD ids.
+BIOMODELS_MIRROR_URLS = (
+    "https://raw.githubusercontent.com/sys-bio/temp-biomodels/main/final/{mid}/{mid}_url.xml",
+    "https://raw.githubusercontent.com/sys-bio/temp-biomodels/main/original/{mid}/{mid}_url.xml",
+)
+_CURATED_BIOMD = re.compile(r"^BIOMD\d{10}$")
+
+# When BioModels does not answer at all, remember it briefly so the next search or import
+# goes straight to the offline set / mirror instead of waiting out the same timeouts again.
+_BIOMODELS_OUTAGE_SECONDS = 600.0
+_biomodels_down_until = 0.0
+
+
+def _biomodels_known_down() -> bool:
+    return time.monotonic() < _biomodels_down_until
+
+
+def _mark_biomodels_down() -> None:
+    global _biomodels_down_until
+    _biomodels_down_until = time.monotonic() + _BIOMODELS_OUTAGE_SECONDS
+
+
+def fetch_biomodel_sbml_with_source(model_id: str) -> tuple:
+    """Download SBML for a BioModels id; returns (sbml_text or None, source).
+
+    source is "biomodels", "mirror", "not_found" (BioModels or the mirror answered and
+    has no SBML for that id), "unreachable" (nothing answered) or "invalid_id".
 
     Two things this must not do, both previously observed against the live API:
     the '/{id}/download' form answers 200 with an HTML landing page, and omitting
@@ -315,70 +391,92 @@ def fetch_biomodel_sbml(model_id: str) -> Optional[str]:
     """
     if not _VALID_MODEL_ID.match(model_id or ""):
         print(f"Rejected malformed BioModels id: {model_id!r}")
-        return None
+        return None, "invalid_id"
 
     attempts = [
         (f"{BIOMODELS_API_URL}/model/download/{model_id}", {"filename": f"{model_id}_url.xml"}),
         (f"{BIOMODELS_API_URL}/{model_id}/download", {"filename": f"{model_id}_url.xml"}),
     ]
-    for url, params in attempts:
+    answered = False
+    biomodels_answered = False
+    for url, params in ([] if _biomodels_known_down() else attempts):
         try:
-            response = requests.get(url, timeout=15, params=params)
+            response = requests.get(url, timeout=8, params=params)
         except Exception as e:
             print(f"Error fetching BioModel SBML from {url}: {type(e).__name__}")
             continue
+        answered = biomodels_answered = True
         if response.status_code == 200 and _looks_like_sbml(response.text):
-            return response.text
-    return None
+            return response.text, "biomodels"
+    if not biomodels_answered and not _biomodels_known_down():
+        _mark_biomodels_down()
+
+    if _CURATED_BIOMD.match(model_id):
+        for template in BIOMODELS_MIRROR_URLS:
+            try:
+                response = requests.get(template.format(mid=model_id), timeout=20)
+            except Exception as e:
+                print(f"Error fetching BioModel SBML from the mirror: {type(e).__name__}")
+                continue
+            answered = True
+            if response.status_code == 200 and _looks_like_sbml(response.text):
+                return response.text, "mirror"
+    return None, ("not_found" if answered else "unreachable")
 
 
-# Mock fallback systems for reliability and offline support
+def fetch_biomodel_sbml(model_id: str) -> Optional[str]:
+    """Download SBML content for a given BioModels ID (see fetch_biomodel_sbml_with_source)."""
+    return fetch_biomodel_sbml_with_source(model_id)[0]
+
+
+# Offline fallbacks, used only when a service does not answer. Every record carries
+# "offline": True so the interface can say it is an offline example, and none carries a
+# literature reference: the earlier set cited PMIDs that belong to unrelated papers
+# (PMID 12345678 is the "Denpasar Declaration on Population and Development").
 def get_mock_pathway_search(query: str) -> List[Dict[str, Any]]:
     query_lower = query.lower()
     if "egfr" in query_lower or "mapk" in query_lower or "signaling" in query_lower:
+        # Names checked against Reactome's ContentService on 2026-09-28.
         return [
-            {"id": "R-HSA-177929", "name": "EGFR signaling pathway", "species": "Homo sapiens", "details": "Cytosol"},
-            {"id": "R-HSA-5684996", "name": "MAPK family signaling cascades", "species": "Homo sapiens", "details": "Cytosol"},
-            {"id": "R-HSA-162582", "name": "Signal Transduction", "species": "Homo sapiens", "details": "Cytosol"}
+            {"id": "R-HSA-177929", "name": "Signaling by EGFR", "species": "Homo sapiens",
+             "details": "Pathway", "offline": True},
+            {"id": "R-HSA-5684996", "name": "MAPK1/MAPK3 signaling", "species": "Homo sapiens",
+             "details": "Pathway", "offline": True},
+            {"id": "R-HSA-5683057", "name": "MAPK family signaling cascades", "species": "Homo sapiens",
+             "details": "Pathway", "offline": True},
         ]
     return []
 
 def get_mock_reactions(pathway_id: str) -> List[Dict[str, Any]]:
-    if pathway_id == "R-HSA-177929" or pathway_id == "R-HSA-5684996":
+    if pathway_id in ("R-HSA-177929", "R-HSA-5684996", "R-HSA-5683057"):
+        # A simplified offline summary of the canonical cascade, not Reactome's own events.
         return [
-            {"id": "RXN-EGF-EGFR", "name": "EGF binding to EGFR and receptor dimerization", "type": "reaction"},
-            {"id": "RXN-EGFR-Autophosphorylation", "name": "EGFR autophosphorylation", "type": "reaction"},
-            {"id": "RXN-EGFR-RAS", "name": "Activated EGFR triggers SOS to activate RAS", "type": "reaction"},
-            {"id": "RXN-RAS-RAF", "name": "RAS-GTP activates RAF", "type": "reaction"},
-            {"id": "RXN-RAF-MEK", "name": "RAF phosphorylates and activates MEK", "type": "reaction"},
-            {"id": "RXN-MEK-ERK", "name": "MEK phosphorylates and activates ERK", "type": "reaction"}
+            {"id": "offline-1", "name": "EGF binding to EGFR and receptor dimerization", "type": "reaction", "offline": True},
+            {"id": "offline-2", "name": "EGFR autophosphorylation", "type": "reaction", "offline": True},
+            {"id": "offline-3", "name": "Activated EGFR triggers SOS to activate RAS", "type": "reaction", "offline": True},
+            {"id": "offline-4", "name": "RAS-GTP activates RAF", "type": "reaction", "offline": True},
+            {"id": "offline-5", "name": "RAF phosphorylates and activates MEK", "type": "reaction", "offline": True},
+            {"id": "offline-6", "name": "MEK phosphorylates and activates ERK", "type": "reaction", "offline": True}
         ]
     return []
 
 def get_mock_string_network(proteins: List[str]) -> List[Dict[str, Any]]:
-    # Generate simple path interactions among input list
+    # Offline placeholder: chains the typed proteins; not STRING data.
     interactions = []
     normalized = [p.upper() for p in proteins]
     for i in range(len(normalized) - 1):
         interactions.append({
             "source": normalized[i],
             "target": normalized[i+1],
-            "score": 0.95,
-            "type": "activation"
-        })
-    # Add feedback if ERK and EGFR are present
-    if "ERK" in normalized and "EGFR" in normalized:
-        interactions.append({
-            "source": "ERK",
-            "target": "EGFR",
-            "score": 0.82,
-            "type": "inhibition"
+            "score": None,
+            "type": "association",
+            "offline": True
         })
     return interactions
 
 
 def get_mock_omnipath(proteins: List[str]) -> List[Dict[str, Any]]:
-    """Fallback OmniPath interactions."""
+    """Offline example interactions (canonical EGFR/MAPK and TGF-beta steps), not OmniPath data."""
     normalized = [p.upper() for p in proteins]
     interactions = []
     known_interactions = {
@@ -398,73 +496,48 @@ def get_mock_omnipath(proteins: List[str]) -> List[Dict[str, Any]]:
             interactions.append({
                 "source": src, "target": tgt,
                 "type": etype, "is_directed": True,
-                "references": "PMID:12345678",
-                "sources_db": "OmniPath;SignaLink;SIGNOR",
-                "score": 0.95
+                "references": "",
+                "sources_db": "offline example",
+                "score": None,
+                "offline": True
             })
     return interactions
 
 
 def get_mock_signor(query: str) -> List[Dict[str, Any]]:
-    """Fallback SIGNOR pathway data."""
+    """Offline example relations (canonical EGFR/MAPK cascade), not SIGNOR records."""
     q = query.lower()
     if "egfr" in q or "mapk" in q or "ras" in q:
-        return [
-            {"source": "EGF", "target": "EGFR", "mechanism": "binding",
-             "effect": "up-regulates activity", "type": "activation",
-             "pmid": "8663547", "pathway": "EGFR signaling"},
-            {"source": "EGFR", "target": "RAS", "mechanism": "phosphorylation",
-             "effect": "up-regulates activity", "type": "activation",
-             "pmid": "9472014", "pathway": "EGFR signaling"},
-            {"source": "RAS", "target": "RAF", "mechanism": "binding",
-             "effect": "up-regulates activity", "type": "activation",
-             "pmid": "8259215", "pathway": "MAPK cascade"},
-            {"source": "RAF", "target": "MEK", "mechanism": "phosphorylation",
-             "effect": "up-regulates activity", "type": "activation",
-             "pmid": "8289787", "pathway": "MAPK cascade"},
-            {"source": "MEK", "target": "ERK", "mechanism": "phosphorylation",
-             "effect": "up-regulates activity", "type": "activation",
-             "pmid": "8289787", "pathway": "MAPK cascade"},
-        ]
-    if "pdac" in q or "pancrea" in q:
-        return [
-            {"source": "KRAS", "target": "RAF1", "mechanism": "binding",
-             "effect": "up-regulates activity", "type": "activation",
-             "pmid": "23539445", "pathway": "PDAC signaling"},
-            {"source": "TGFB1", "target": "SMAD4", "mechanism": "pathway",
-             "effect": "up-regulates quantity", "type": "activation",
-             "pmid": "18978816", "pathway": "TGF-beta"},
-        ]
+        steps = [("EGF", "EGFR", "binding"), ("EGFR", "GRB2", "binding"), ("GRB2", "SOS1", "binding"),
+                 ("SOS1", "HRAS", "guanine nucleotide exchange factor"), ("HRAS", "RAF1", "binding"),
+                 ("RAF1", "MAP2K1", "phosphorylation"), ("MAP2K1", "MAPK1", "phosphorylation")]
+        return [{"source": a, "target": b, "mechanism": m, "effect": "up-regulates activity",
+                 "type": "activation", "pmid": "", "offline": True} for a, b, m in steps]
     return []
 
 
 def get_mock_biomodels(query: str) -> List[Dict[str, Any]]:
-    """Fallback BioModels search results."""
+    """Offline BioModels examples; ids and names checked against the curated SBML files."""
     q = query.lower()
-    results = []
-    if "egfr" in q or "mapk" in q or "signaling" in q:
-        results.extend([
-            {"id": "BIOMD0000000006", "name": "Kholodenko2000 - EGFR signaling",
-             "description": "Kholodenko's model of the MAPK signaling cascade downstream of EGFR",
-             "format": "SBML", "submitter": "BioModels Team",
-             "publication": "Negative feedback and ultrasensitivity in MAPK"},
-            {"id": "BIOMD0000000010", "name": "Kholodenko2000 - Ultrasensitivity and Negative Feedback",
-             "description": "Analysis of negative feedback and ultrasensitivity in MAPK pathway",
-             "format": "SBML", "submitter": "BioModels Team",
-             "publication": "Negative feedback and ultrasensitivity"},
-        ])
-    if "tumor" in q or "cancer" in q or "pdac" in q:
-        results.extend([
-            {"id": "BIOMD0000000908", "name": "Tumor-Immune Interaction Model",
-             "description": "ODE model of tumor growth with immune response dynamics",
-             "format": "SBML", "submitter": "BioModels Team",
-             "publication": "Mathematical model of tumor-immune interactions"},
-        ])
-    if not results:
-        results = [
-            {"id": "BIOMD0000000006", "name": "Kholodenko2000 - EGFR signaling",
-             "description": "Classic MAPK cascade model", "format": "SBML",
-             "submitter": "BioModels Team", "publication": "EGFR signaling model"},
-        ]
-    return results
+    catalogue = [
+        ("BIOMD0000000010", "Kholodenko2000 - Ultrasensitivity and negative feedback bring oscillations in MAPK cascade",
+         ("mapk", "erk", "egfr", "signal", "oscillat", "feedback")),
+        ("BIOMD0000000009", "Huang1996 - Ultrasensitivity in MAPK cascade", ("mapk", "erk", "ultrasens", "signal")),
+        ("BIOMD0000000048", "Kholodenko1999 - EGFR signaling", ("egfr", "egf", "signal", "receptor")),
+        ("BIOMD0000000019", "Schoeberl2002 - EGF MAPK", ("egfr", "egf", "mapk", "signal")),
+        ("BIOMD0000000012", "Elowitz2000 - Repressilator", ("repressilator", "oscillat", "gene", "synthetic")),
+        ("BIOMD0000000005", "Tyson1991 - Cell Cycle 6 var", ("cell cycle", "cycle", "mitosis", "cdc")),
+        ("BIOMD0000000006", "Tyson1991 - Cell Cycle 2 var", ("cell cycle", "cycle", "mitosis", "cdc")),
+        ("BIOMD0000000043", "Borghans1997 - Calcium Oscillation - Model 1", ("calcium", "ca2", "oscillat")),
+        ("BIOMD0000000098", "Goldbeter1990_CalciumSpike_CICR", ("calcium", "ca2", "spike", "cicr")),
+        ("BIOMD0000000035", "Vilar2002_Oscillator", ("circadian", "oscillat", "clock")),
+        ("BIOMD0000000021", "Leloup1999_CircClock", ("circadian", "clock", "drosophila", "per")),
+    ]
+    hits = [(mid, name) for mid, name, keys in catalogue if any(k in q for k in keys)]
+    if not hits:
+        hits = [(mid, name) for mid, name, _ in catalogue[:3]]
+    return [{"id": mid, "name": name,
+             "description": "Offline example: BioModels did not respond to the search.",
+             "format": "SBML", "submitter": "", "publication": "", "offline": True}
+            for mid, name in hits]
 

@@ -1824,6 +1824,12 @@ document.getElementById("btn-db-search").addEventListener("click", async () => {
             updateStatus("Ready", "green");
             return;
         }
+        if (data.some(item => item && item.offline === true)) {
+            const note = document.createElement("p");
+            note.className = "placeholder-text warn";
+            note.textContent = `${db === 'reactome' ? 'Reactome' : 'BioModels'} did not respond, so these are offline examples.`;
+            container.appendChild(note);
+        }
 
         data.forEach(rawItem => {
             const item = rawItem && typeof rawItem === "object" ? rawItem : {};
@@ -1869,6 +1875,9 @@ async function loadReactomePathwayText(pathwayId, pathwayName) {
         if (!Array.isArray(reactions)) throw new Error("Reactome returned an unexpected response.");
 
         const lines = [`# Pathway: ${pathwayName} (${pathwayId})`];
+        if (reactions.some(r => r && r.offline === true)) {
+            lines.push(`# Reactome did not respond: these lines come from an offline summary of the cascade.`);
+        }
 
         // Derive protein pairs from reaction display names (uppercase gene-like tokens)
         const pairs = [];
@@ -3210,7 +3219,10 @@ async function importBioModelSbml() {
             showToast(`Imported ${modelId}, but the model needs correction before simulation.`, "warn", 8000);
             return false;
         }
-        showToast(`Successfully imported SBML model: ${modelId}`, "success");
+        const fromMirror = (Array.isArray(result.logs) ? result.logs : []).some(line => /GitHub mirror/.test(String(line)));
+        showToast(fromMirror
+            ? `Imported ${modelId} from the CC0 GitHub mirror of the curated BioModels collection (BioModels did not respond).`
+            : `Successfully imported SBML model: ${modelId}`, "success", fromMirror ? 8000 : undefined);
         return true;
     } catch(e) {
         console.error("SBML import failed", e);
@@ -3506,7 +3518,8 @@ function openConnModalWith(db, query) {
 function normalizeConn(item) {
     const raw = item && typeof item === "object" ? item : {};
     const rawType = String(raw.type || 'association').toLowerCase();
-    const score = Number(raw.score);
+    // Number(null) is 0, which rendered a missing score as "score 0.00".
+    const score = raw.score == null || raw.score === "" ? NaN : Number(raw.score);
     return {
         source: String(raw.source || '').trim(),
         target: String(raw.target || '').trim(),
@@ -3515,7 +3528,8 @@ function normalizeConn(item) {
         references: raw.references == null ? "" : String(raw.references),
         pmid: raw.pmid == null ? "" : String(raw.pmid),
         mechanism: raw.mechanism == null ? "" : String(raw.mechanism),
-        effect: raw.effect == null ? "" : String(raw.effect)
+        effect: raw.effect == null ? "" : String(raw.effect),
+        offline: raw.offline === true
     };
 }
 
@@ -3587,7 +3601,11 @@ function renderConnResults() {
         if (edgeExists(c.source, c.target, c.type)) counts.inModel++;
     });
     const newTotal = connState.results.length - counts.inModel;
-    let html = `<div class="conn-summary">
+    const offline = connState.results.some(c => c.offline);
+    let html = offline
+        ? `<p class="placeholder-text warn">${escapeHtml(connState.db)} did not respond, so these are offline example interactions, not database records.</p>`
+        : "";
+    html += `<div class="conn-summary">
         <span class="chip chip-strong">${connState.results.length} found</span>
         <span class="chip">${newTotal} new</span>
         <span class="chip">${counts.inModel} in model</span>

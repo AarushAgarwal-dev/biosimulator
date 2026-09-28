@@ -288,10 +288,17 @@ class MAPLEExtractor:
             # Delegated so the content checks live in one place: the '/{id}/download'
             # form answers 200 with an HTML landing page and the no-filename form
             # answers 200 with a ZIP, either of which used to be parsed as SBML.
-            sbml_content = db_interface.fetch_biomodel_sbml(model_id)
+            sbml_content, source = db_interface.fetch_biomodel_sbml_with_source(model_id)
+            self.last_fetch_source = source
             if not sbml_content:
-                logs.append("BioModels returned no SBML document for that id.")
+                if source == "unreachable":
+                    logs.append("BioModels (and its GitHub mirror) could not be reached.")
+                else:
+                    logs.append("BioModels returned no SBML document for that id.")
                 return None, logs
+            if source == "mirror":
+                logs.append("BioModels did not respond, so the SBML was taken from the CC0 GitHub mirror of "
+                            "the curated collection (github.com/sys-bio/temp-biomodels).")
 
             logs.append(f"Downloaded SBML ({len(sbml_content)} chars)")
             try:

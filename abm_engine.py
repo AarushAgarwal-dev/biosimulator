@@ -422,6 +422,131 @@ class CellularPottsModel:
             if target_id != 0 and target_id in self.cells:
                 self.cells[target_id].volume += 1
 
+    def _make_fast_kernel(self):
+        """Snapshot what stays fixed during one MCS of pixel copies, for the fast path.
+
+        Within the pixel-copy phase of an MCS only the lattice and cell volumes change:
+        cell types, targets, centres of mass and fields are updated afterwards. So the
+        per-cell constants are read once into flat lists, and the lattice is worked on as
+        a flat Python list (numpy scalar indexing and the ``random`` module were ~60% of
+        the run time). Returns (delta_h, state); delta_h(x, y, source, target) is the same
+        Hamiltonian change as ``_compute_delta_H`` (tests compare the two).
+        """
+        W, H = self.width, self.height
+        lat = self.lattice.ravel().tolist()                      # index = x * H + y
+        n_ids = max(self.next_cell_id, int(self.lattice.max()) + 1, 1)
+        in_cells = [False] * n_ids
+        type_of = [0] * n_ids
+        lam_v = [0.0] * n_ids
+        vt = [0.0] * n_ids
+        lam_s = [0.0] * n_ids
+        frozen = [False] * n_ids
+        chem = [0.0] * n_ids          # -lambda_chem for cells that follow a field
+        chem_grid = [None] * n_ids    # flat field values for that cell's field
+        chem_src = [0.0] * n_ids      # field value at the cell's centre of mass
+        vol = [0] * n_ids
+        grids = {name: f.grid.ravel().tolist() for name, f in self.fields.items() if f.grid is not None}
+        for cid, cell in self.cells.items():
+            if cid >= n_ids:
+                continue
+            ct = cell.cell_type
+            in_cells[cid] = True
+            type_of[cid] = ct.type_id
+            lam_v[cid] = float(ct.lambda_volume)
+            vt[cid] = float(ct.target_volume)
+            lam_s[cid] = float(ct.lambda_surface)
+            frozen[cid] = bool(ct.freeze)
+            vol[cid] = int(cell.volume)
+            grid = grids.get(ct.chemotaxis_field) if ct.chemotaxis_lambda else None
+            if grid is not None and cid != 0:
+                chem[cid] = -float(ct.chemotaxis_lambda)
+                chem_grid[cid] = grid
+                chem_src[cid] = grid[(int(cell.center_x) % W) * H + (int(cell.center_y) % H)]
+        n_types = max(self.cell_types) + 1 if self.cell_types else 1
+        n_types = max(n_types, max(type_of) + 1)
+        J = [[self.get_adhesion(a, b) for b in range(n_types)] for a in range(n_types)]
+        offsets = list(self._neighbor_offsets)
+
+        def delta_h(x, y, s, t):
+            ts, tt = type_of[s], type_of[t]
+            Js, Jt = J[ts], J[tt]
+            e_old = e_new = surf = 0.0
+            s_cell = s != 0 and in_cells[s]
+            t_cell = t != 0 and in_cells[t]
+            ls2 = 2.0 * lam_s[s] if s_cell else 0.0
+            lt2 = 2.0 * lam_s[t] if t_cell else 0.0
+            for dx, dy in offsets:
+                n = lat[((x + dx) % W) * H + (y + dy) % H]
+                tn = type_of[n]
+                if n != s:
+                    e_old += Js[tn]
+                if n != t:
+                    e_new += Jt[tn]
+                if s_cell:
+                    surf += ls2 if n == s else -ls2
+                if t_cell:
+                    surf += -lt2 if n == t else lt2
+            d = e_new - e_old
+            if s_cell:
+                v = vol[s]
+                d += lam_v[s] * ((v - 1 - vt[s]) ** 2 - (v - vt[s]) ** 2)
+            if t_cell:
+                v = vol[t]
+                d += lam_v[t] * ((v + 1 - vt[t]) ** 2 - (v - vt[t]) ** 2)
+            d += surf * 0.1
+            if chem[t]:
+                d += chem[t] * (chem_grid[t][x * H + y] - chem_src[t])
+            return d
+
+        state = {"lat": lat, "vol": vol, "in_cells": in_cells, "frozen": frozen, "offsets": offsets}
+        return delta_h, state
+
+    def _run_pixel_copies(self, attempts: int):
+        """``attempts`` Metropolis pixel-copy attempts, identical in rule to _attempt_pixel_copy.
+
+        Random numbers are drawn in one batch from numpy's global generator (which the ABM
+        adapter seeds, so a seeded run still repeats exactly).
+        """
+        if attempts <= 0:
+            return
+        W, H = self.width, self.height
+        delta_h, st = self._make_fast_kernel()
+        lat, vol, in_cells, frozen, offsets = st["lat"], st["vol"], st["in_cells"], st["frozen"], st["offsets"]
+        xs = np.random.randint(0, W, attempts).tolist()
+        ys = np.random.randint(0, H, attempts).tolist()
+        ks = np.random.randint(0, len(offsets), attempts).tolist()
+        us = np.random.random(attempts).tolist()
+        inv_t = 1.0 / max(self.temperature, 0.01)
+        exp = math.exp
+        changed = False
+        for i in range(attempts):
+            x = xs[i]
+            y = ys[i]
+            idx = x * H + y
+            s = lat[idx]
+            if s and in_cells[s] and frozen[s]:
+                continue
+            dx, dy = offsets[ks[i]]
+            t = lat[((x + dx) % W) * H + (y + dy) % H]
+            if s == t:
+                continue
+            if t and in_cells[t] and frozen[t]:
+                continue
+            d = delta_h(x, y, s, t)
+            if d > 0 and us[i] >= exp(-d * inv_t):
+                continue
+            lat[idx] = t
+            if s and in_cells[s]:
+                vol[s] -= 1
+            if t and in_cells[t]:
+                vol[t] += 1
+            changed = True
+        if changed:
+            self.lattice[:, :] = np.asarray(lat, dtype=self.lattice.dtype).reshape(W, H)
+            for cid, cell in self.cells.items():
+                if cid < len(vol):
+                    cell.volume = vol[cid]
+
     def run_mcs(self, pixel_attempts_per_mcs: Optional[int] = None):
         """
         Run one Monte Carlo Step (MCS).
@@ -430,8 +555,7 @@ class CellularPottsModel:
         if pixel_attempts_per_mcs is None:
             pixel_attempts_per_mcs = self.width * self.height
 
-        for _ in range(pixel_attempts_per_mcs):
-            self._attempt_pixel_copy()
+        self._run_pixel_copies(pixel_attempts_per_mcs)
 
         # Update cell statistics
         self._update_all_cells()
@@ -460,9 +584,15 @@ class CellularPottsModel:
 
     def _update_all_cells(self):
         """Recompute stats for all living cells."""
-        # Count volumes efficiently using bincount
-        flat = self.lattice.flatten()
-        counts = np.bincount(flat, minlength=self.next_cell_id)
+        # Volumes and centres of mass for every cell at once with bincount: a per-cell
+        # argwhere over the whole lattice was ~40% of a large run. Coordinates are integers,
+        # so sum/count equals the per-cell mean exactly.
+        flat = self.lattice.ravel()
+        n = max(self.next_cell_id, int(flat.max()) + 1 if flat.size else 1)
+        counts = np.bincount(flat, minlength=n)
+        xs, ys = self._flat_coordinates()
+        sum_x = np.bincount(flat, weights=xs, minlength=n)
+        sum_y = np.bincount(flat, weights=ys, minlength=n)
 
         for cell_id, cell in list(self.cells.items()):
             if not cell.alive:
@@ -474,13 +604,20 @@ class CellularPottsModel:
                 cell.alive = False
                 continue
 
-            # Update center of mass
-            mask = self.lattice == cell_id
-            coords = np.argwhere(mask)
-            if len(coords) > 0:
-                cell.center_x = float(np.mean(coords[:, 0]))
-                cell.center_y = float(np.mean(coords[:, 1]))
+            cell.center_x = float(sum_x[cell_id] / counts[cell_id])
+            cell.center_y = float(sum_y[cell_id] / counts[cell_id])
             cell.age += 1
+
+    def _flat_coordinates(self):
+        """x and y of every lattice site in ravel() order (cached per lattice shape)."""
+        shape = (self.width, self.height)
+        cached = getattr(self, "_flat_xy", None)
+        if cached is None or cached[0] != shape:
+            xs = np.repeat(np.arange(self.width, dtype=np.float64), self.height)
+            ys = np.tile(np.arange(self.height, dtype=np.float64), self.width)
+            cached = (shape, xs, ys)
+            self._flat_xy = cached
+        return cached[1], cached[2]
 
     # ----------------------------------------------------------
     # CELL BEHAVIORS
@@ -599,25 +736,31 @@ class CellularPottsModel:
 
     def _update_fields(self):
         """Update all diffusible fields: diffusion, decay, secretion, uptake."""
+        # Each pixel belongs to exactly one cell, so the per-cell loop (a full-lattice
+        # mask per cell per field) is the same as looking each pixel's rate up through
+        # the lattice: secretion first, then uptake clamped at zero, as before.
+        n = max(self.next_cell_id, int(self.lattice.max()) + 1 if self.lattice.size else 1)
+        alive = [(cid, cell.cell_type) for cid, cell in self.cells.items() if cell.alive and cid < n]
         for field_name, field_obj in self.fields.items():
-            # Cell secretion and uptake
-            for cell_id, cell in self.cells.items():
-                if not cell.alive:
-                    continue
-                ct = cell.cell_type
-
-                # Secretion: add to field at cell's pixels
-                if field_name in ct.secretion_rates:
-                    rate = ct.secretion_rates[field_name]
-                    mask = self.lattice == cell_id
-                    field_obj.grid[mask] += rate
-
-                # Uptake: remove from field at cell's pixels
-                if field_name in ct.uptake_rates:
-                    rate = ct.uptake_rates[field_name]
-                    mask = self.lattice == cell_id
+            if field_obj.grid is not None:
+                secretion = np.zeros(n)
+                uptake = np.zeros(n)
+                takes_up = np.zeros(n, dtype=bool)
+                any_secretion = any_uptake = False
+                for cid, ct in alive:
+                    if field_name in ct.secretion_rates:
+                        secretion[cid] = ct.secretion_rates[field_name]
+                        any_secretion = True
+                    if field_name in ct.uptake_rates:
+                        uptake[cid] = ct.uptake_rates[field_name]
+                        takes_up[cid] = True
+                        any_uptake = True
+                if any_secretion:
+                    field_obj.grid += secretion[self.lattice]
+                if any_uptake:
+                    mask = takes_up[self.lattice]
                     field_obj.grid[mask] = np.maximum(
-                        0, field_obj.grid[mask] - rate
+                        0, field_obj.grid[mask] - uptake[self.lattice][mask]
                     )
 
             # Diffusion + decay step
@@ -631,7 +774,8 @@ class CellularPottsModel:
         self,
         num_mcs: int = 100,
         save_every: int = 10,
-        pixel_attempts_factor: float = 1.0
+        pixel_attempts_factor: float = 1.0,
+        field_decimals: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Run the full CPM simulation.
@@ -640,11 +784,19 @@ class CellularPottsModel:
             num_mcs: Number of Monte Carlo steps
             save_every: Save state every N MCS
             pixel_attempts_factor: Multiply default pixel attempts (for speed tuning)
+            field_decimals: Round saved field snapshots to this many decimals (None = full
+                precision). For display payloads: full-precision fields were ~80% of a
+                42 MB response for the PDAC preset.
 
         Returns:
             Dict with lattice history, field history, cell counts, etc.
         """
         attempts_per_mcs = int(self.width * self.height * pixel_attempts_factor)
+
+        def snapshot(f):
+            if f.grid is None:
+                return []
+            return (np.round(f.grid, field_decimals) if field_decimals is not None else f.grid.copy()).tolist()
 
         lattice_history = []
         field_history = {name: [] for name in self.fields}
@@ -654,7 +806,7 @@ class CellularPottsModel:
         # Save initial state
         lattice_history.append(self._get_lattice_colored())
         for name, f in self.fields.items():
-            field_history[name].append(f.grid.copy().tolist() if f.grid is not None else [])
+            field_history[name].append(snapshot(f))
         cell_count_history.append(self._get_cell_counts())
         time_points.append(0)
 
@@ -664,9 +816,7 @@ class CellularPottsModel:
             if mcs_step % save_every == 0 or mcs_step == num_mcs:
                 lattice_history.append(self._get_lattice_colored())
                 for name, f in self.fields.items():
-                    field_history[name].append(
-                        f.grid.copy().tolist() if f.grid is not None else []
-                    )
+                    field_history[name].append(snapshot(f))
                 cell_count_history.append(self._get_cell_counts())
                 time_points.append(mcs_step)
 

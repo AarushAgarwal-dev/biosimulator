@@ -205,6 +205,26 @@ class BioModelsTests(unittest.TestCase):
     object; a fixed .get("name") chain raised AttributeError and silently
     substituted offline placeholder data for every live result."""
 
+    def setUp(self):
+        import db_interface
+        db_interface._biomodels_down_until = 0.0     # no outage carried over between tests
+
+    def tearDown(self):
+        import db_interface
+        db_interface._biomodels_down_until = 0.0
+
+    def test_an_outage_is_remembered_so_the_next_call_does_not_wait_again(self):
+        import db_interface
+
+        with patch.object(db_interface.requests, "get",
+                          side_effect=db_interface.requests.exceptions.ConnectionError("down")) as get:
+            db_interface.search_biomodels("calcium")
+            self.assertTrue(db_interface._biomodels_known_down())
+            calls = get.call_count
+            results = db_interface.search_biomodels("calcium")
+        self.assertEqual(get.call_count, calls, "a known outage must not be waited out again")
+        self.assertTrue(all(r.get("offline") for r in results))
+
     def test_string_valued_format_does_not_fall_back_to_offline_data(self):
         import db_interface
 
@@ -254,6 +274,113 @@ class BioModelsTests(unittest.TestCase):
         with patch.object(db_interface.requests, "get") as get:
             self.assertIsNone(db_interface.fetch_biomodel_sbml("../../etc/passwd"))
         get.assert_not_called()
+
+    def test_unreachable_biomodels_falls_back_to_the_curated_mirror(self):
+        """BioModels' host moved and timed out (2026-09-28); the CC0 mirror serves the same file."""
+        import db_interface
+
+        def fake_get(url, **kwargs):
+            if "raw.githubusercontent.com/sys-bio/temp-biomodels" in url:
+                return _fake_response(text="<?xml version='1.0'?><sbml level='2'><model/></sbml>")
+            raise db_interface.requests.exceptions.ReadTimeout("timed out")
+
+        with patch.object(db_interface.requests, "get", side_effect=fake_get):
+            text, source = db_interface.fetch_biomodel_sbml_with_source("BIOMD0000000012")
+        self.assertEqual(source, "mirror")
+        self.assertIn("<sbml", text)
+
+    def test_nothing_reachable_is_reported_as_unreachable_not_as_missing(self):
+        import db_interface
+
+        with patch.object(db_interface.requests, "get",
+                          side_effect=db_interface.requests.exceptions.ConnectionError("down")):
+            self.assertEqual(db_interface.fetch_biomodel_sbml_with_source("BIOMD0000000012"),
+                             (None, "unreachable"))
+            # The mirror only holds curated BIOMD ids; other ids are not looked up there.
+            self.assertEqual(db_interface.fetch_biomodel_sbml_with_source("MODEL1234567890"),
+                             (None, "unreachable"))
+
+    def test_import_route_says_unreachable_with_502(self):
+        import db_interface
+        import main
+        from fastapi.testclient import TestClient
+
+        with patch.object(db_interface.requests, "get",
+                          side_effect=db_interface.requests.exceptions.ConnectionError("down")):
+            response = TestClient(main.app).post("/api/biomodels/import", json={"model_id": "BIOMD0000000012"})
+        self.assertEqual(response.status_code, 502, response.text)
+        self.assertIn("could not be reached", response.json()["detail"])
+
+
+class SignorTests(unittest.TestCase):
+    """The '/API/getdata?type=pathwaydata' form answers 404, so every search was offline data."""
+
+    UNIPROT_TSV = "Entry\nP00533\n"
+    SIGNOR_TSV = ("EREG\tprotein\tO14944\tUNIPROT\tEGFR\tprotein\tP00533\tUNIPROT\tup-regulates\tbinding"
+                  "\t\t\t9606\t\t\t\t\t\t\t\t\t20513444\tt\t\tgcesareni\tnote\tSIGNOR-165782\t0.896\n"
+                  "CBLC\tprotein\tQ9ULV8\tUNIPROT\tEGFR\tprotein\tP00533\tUNIPROT\tdown-regulates quantity"
+                  "\tpolyubiquitination\t\t\t9534\t\t\t\t\t\t\t\t\t12226085\tt\t\tmiannu\tnote\tSIGNOR-272605\t0.758\n")
+
+    def test_gene_symbol_is_mapped_and_relations_are_parsed(self):
+        import db_interface
+
+        calls = []
+
+        def fake_get(url, params=None, **kwargs):
+            calls.append((url, dict(params or {})))
+            if "uniprot" in url:
+                return SimpleNamespace(status_code=200, text=self.UNIPROT_TSV, raise_for_status=lambda: None)
+            return SimpleNamespace(status_code=200, text=self.SIGNOR_TSV, raise_for_status=lambda: None)
+
+        with patch.object(db_interface.requests, "get", side_effect=fake_get):
+            rows = db_interface.search_signor_pathway("EGFR")
+        self.assertEqual(calls[1][0], db_interface.SIGNOR_DATA_URL)
+        self.assertEqual(calls[1][1]["id"], "P00533")
+        self.assertEqual([(r["source"], r["target"], r["type"]) for r in rows],
+                         [("EREG", "EGFR", "activation"), ("CBLC", "EGFR", "inhibition")])
+        self.assertEqual(rows[0]["pmid"], "20513444")
+        self.assertAlmostEqual(rows[0]["score"], 0.896)
+        self.assertNotIn("offline", rows[0])
+
+    def test_no_signor_result_is_an_empty_list_not_offline_data(self):
+        import db_interface
+
+        def fake_get(url, **kwargs):
+            text = self.UNIPROT_TSV if "uniprot" in url else "No result found."
+            return SimpleNamespace(status_code=200, text=text, raise_for_status=lambda: None)
+
+        with patch.object(db_interface.requests, "get", side_effect=fake_get):
+            self.assertEqual(db_interface.search_signor_pathway("EGFR"), [])
+
+
+class OfflineDataHonestyTests(unittest.TestCase):
+    """Offline examples must say they are offline and must not cite papers.
+
+    The previous offline set cited PMID 12345678 (the "Denpasar Declaration on Population
+    and Development") for EGFR interactions, SIGNOR PMIDs belonging to unrelated papers,
+    and labelled BIOMD0000000006 (Tyson 1991 cell cycle) as a Kholodenko EGFR model.
+    """
+
+    def test_every_offline_record_is_marked_and_carries_no_reference(self):
+        import db_interface
+
+        records = (db_interface.get_mock_pathway_search("EGFR") + db_interface.get_mock_reactions("R-HSA-177929")
+                   + db_interface.get_mock_string_network(["EGFR", "GRB2", "ERK"])
+                   + db_interface.get_mock_omnipath(["EGFR"]) + db_interface.get_mock_signor("EGFR")
+                   + db_interface.get_mock_biomodels("calcium") + db_interface.get_mock_biomodels("anything"))
+        self.assertTrue(records)
+        for record in records:
+            with self.subTest(record=record):
+                self.assertIs(record.get("offline"), True)
+                self.assertFalse(record.get("pmid"))
+                self.assertFalse(record.get("references"))
+
+    def test_offline_biomodels_names_match_the_curated_files(self):
+        import db_interface
+
+        names = {r["id"]: r["name"] for r in db_interface.get_mock_biomodels("cell cycle mapk egfr")}
+        self.assertEqual(names.get("BIOMD0000000006"), "Tyson1991 - Cell Cycle 2 var")
+        self.assertEqual(names.get("BIOMD0000000048"), "Kholodenko1999 - EGFR signaling")
 
 
 class MapleValidateTests(unittest.TestCase):
