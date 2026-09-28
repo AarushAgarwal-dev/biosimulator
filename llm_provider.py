@@ -18,8 +18,12 @@ Callers fall back to deterministic rule-based logic whenever the LLM is unavaila
 import os
 import re
 import ast
+import base64
+import inspect
 import json
+import random
 import threading
+import time
 from typing import Dict, Any, List, Optional
 
 
@@ -395,6 +399,367 @@ class RemoteLLM:
 
 
 # =============================================================================
+# Purdue GenAI Studio engine: OpenAI-compatible text and vision endpoints.
+# Authentication is server-side only; browser configuration never supplies a key.
+# =============================================================================
+PURDUE_GENAI_DEFAULT_BASE_URL = "https://genai.rcac.purdue.edu/api"
+PURDUE_GENAI_DEFAULT_MODEL = "gpt-oss:120b"
+PURDUE_GENAI_DEFAULT_VISION_MODELS = (
+    "gemma4:26b-a4b", "qwen3-vl:32b", "llava:latest",
+)
+
+
+def _purdue_api_key() -> str:
+    return (os.getenv("PURDUE_GENAI_API_KEY") or os.getenv("GENAI_API_KEY") or "").strip()
+
+
+def _purdue_base_url() -> str:
+    return (os.getenv("PURDUE_GENAI_BASE_URL") or PURDUE_GENAI_DEFAULT_BASE_URL).rstrip("/")
+
+
+def _purdue_model() -> str:
+    return (os.getenv("PURDUE_GENAI_MODEL") or PURDUE_GENAI_DEFAULT_MODEL).strip()
+
+
+def _purdue_vision_models() -> List[str]:
+    raw = os.getenv("PURDUE_GENAI_VISION_MODELS")
+    if raw is None:
+        return list(PURDUE_GENAI_DEFAULT_VISION_MODELS)
+    parsed = [item.strip() for item in raw.split(",") if item.strip()]
+    return parsed or list(PURDUE_GENAI_DEFAULT_VISION_MODELS)
+
+
+def purdue_env_ready() -> bool:
+    """True when a non-placeholder Purdue GenAI Studio API key is configured."""
+    return not _looks_like_placeholder(_purdue_api_key())
+
+
+class PurdueGenAILLM:
+    """Client for Purdue GenAI Studio's OpenAI-compatible API."""
+
+    _MAX_ATTEMPTS = 4
+    _MAX_TOTAL_BACKOFF = 40.0
+    _RATE_CAPACITY = 50.0
+    _RATE_PER_SECOND = _RATE_CAPACITY / 60.0
+    _rate_tokens = _RATE_CAPACITY
+    _rate_updated = time.monotonic()
+    _rate_lock = threading.Lock()
+    _in_flight = threading.BoundedSemaphore(6)
+    _structured_modes: Dict[tuple, str] = {}
+    _structured_modes_lock = threading.Lock()
+
+    def __init__(self, model: Optional[str] = None, base_url: Optional[str] = None):
+        key = _purdue_api_key()
+        if _looks_like_placeholder(key):
+            raise LLMError(
+                "Purdue GenAI Studio is not configured. Set PURDUE_GENAI_API_KEY "
+                "on the server and restart the application."
+            )
+        self.model = (model or _purdue_model()).strip() or PURDUE_GENAI_DEFAULT_MODEL
+        self.base_url = (base_url or _purdue_base_url()).rstrip("/")
+        self.active_model = self.model
+        self.vision_models = _purdue_vision_models()
+        self._api_key = key
+        self._models_cache: Optional[List[str]] = None
+        self._models_cached_at = 0.0
+        self._models_lock = threading.Lock()
+
+    @classmethod
+    def _acquire_rate_token(cls) -> None:
+        """Process-wide token bucket: 50 request starts per rolling minute-equivalent."""
+        while True:
+            with cls._rate_lock:
+                now = time.monotonic()
+                elapsed = max(0.0, now - cls._rate_updated)
+                cls._rate_tokens = min(
+                    cls._RATE_CAPACITY,
+                    cls._rate_tokens + elapsed * cls._RATE_PER_SECOND,
+                )
+                cls._rate_updated = now
+                if cls._rate_tokens >= 1.0:
+                    cls._rate_tokens -= 1.0
+                    return
+                wait_for = (1.0 - cls._rate_tokens) / cls._RATE_PER_SECOND
+            time.sleep(min(max(wait_for, 0.01), 1.2))
+
+    @classmethod
+    def _backoff(cls, attempt: int, total_wait: float) -> float:
+        delay = min(8.0, 2.0 ** max(0, attempt - 1)) + random.uniform(0.0, 0.25)
+        delay = min(delay, max(0.0, cls._MAX_TOTAL_BACKOFF - total_wait))
+        if delay:
+            time.sleep(delay)
+        return delay
+
+    @staticmethod
+    def _payload_variants(base: Dict[str, Any], model: str,
+                          structured_kind: Optional[str]) -> List[tuple]:
+        if not structured_kind:
+            return [("none", base)]
+        cache_key = (model, structured_kind)
+        with PurdueGenAILLM._structured_modes_lock:
+            cached = PurdueGenAILLM._structured_modes.get(cache_key)
+        modes = [cached] if cached else ["both"]
+        if not cached:
+            # gpt-oss is served by vLLM and needs response_format. Purdue's other
+            # current models are Ollama-backed and need format. If that service
+            # mapping changes, the final alternative still discovers it safely.
+            modes.extend(
+                ["response_format", "format"]
+                if model.lower().startswith("gpt-oss")
+                else ["format", "response_format"]
+            )
+        variants = []
+        for mode in modes:
+            payload = dict(base)
+            if mode in ("both", "response_format"):
+                payload["response_format"] = base["response_format"]
+            else:
+                payload.pop("response_format", None)
+            if mode in ("both", "format"):
+                payload["format"] = base["format"]
+            else:
+                payload.pop("format", None)
+            variants.append((mode, payload))
+        return variants
+
+    def _headers(self) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def _chat_for_model(self, model: str, messages: List[Dict[str, Any]],
+                        temperature: float, max_tokens: int, json_mode: bool,
+                        json_schema: Optional[Dict[str, Any]], schema_name: str) -> str:
+        import requests
+
+        base: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "temperature": float(temperature),
+            "max_tokens": int(max_tokens),
+        }
+        structured_kind: Optional[str] = None
+        if json_schema is not None:
+            structured_kind = "schema"
+            base["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": schema_name, "schema": json_schema},
+            }
+            base["format"] = json_schema
+        elif json_mode:
+            structured_kind = "json"
+            base["response_format"] = {"type": "json_object"}
+            base["format"] = "json"
+
+        variants = self._payload_variants(base, model, structured_kind)
+        url = self.base_url + "/chat/completions"
+        attempts = 0
+        total_wait = 0.0
+        variant_index = 0
+        last_status: Any = "unknown"
+        last_exception = "RequestException"
+
+        while attempts < self._MAX_ATTEMPTS:
+            mode, payload = variants[min(variant_index, len(variants) - 1)]
+            attempts += 1
+            self._acquire_rate_token()
+            try:
+                with self._in_flight:
+                    response = requests.post(
+                        url,
+                        headers=self._headers(),
+                        json=payload,
+                        timeout=(15, 180),
+                    )
+            except requests.RequestException as exc:
+                last_exception = type(exc).__name__
+                if attempts < self._MAX_ATTEMPTS:
+                    total_wait += self._backoff(attempts, total_wait)
+                    continue
+                raise LLMError(
+                    f"Purdue GenAI request failed after {attempts} attempts "
+                    f"({last_exception})."
+                ) from None
+
+            last_status = response.status_code
+            if response.status_code == 400 and structured_kind and variant_index + 1 < len(variants):
+                variant_index += 1
+                continue
+            if response.status_code == 429 or response.status_code >= 500:
+                if attempts < self._MAX_ATTEMPTS:
+                    total_wait += self._backoff(attempts, total_wait)
+                    continue
+                raise LLMError(
+                    f"Purdue GenAI returned HTTP {response.status_code} after "
+                    f"{attempts} attempts."
+                )
+            if response.status_code >= 400:
+                raise LLMError(f"Purdue GenAI returned HTTP {response.status_code}.")
+
+            try:
+                data = response.json()
+            except Exception as exc:
+                raise LLMError(
+                    f"Unexpected Purdue GenAI response ({type(exc).__name__})."
+                ) from None
+            if data is None:
+                if attempts < self._MAX_ATTEMPTS:
+                    total_wait += self._backoff(attempts, total_wait)
+                    continue
+                raise LLMError(
+                    f"Purdue GenAI returned an empty JSON body after {attempts} attempts."
+                )
+
+            try:
+                choice = data["choices"][0]
+                finish = (choice.get("finish_reason") or "").lower()
+                if finish == "length":
+                    raise LLMError(
+                        "Purdue GenAI output was truncated because the model reached "
+                        "its output token limit. Increase max_tokens or shorten the prompt."
+                    )
+                content = choice["message"].get("content") or ""
+                if not isinstance(content, str) or not content.strip():
+                    raise LLMError("Purdue GenAI returned empty model content.")
+            except LLMError:
+                raise
+            except Exception as exc:
+                raise LLMError(
+                    f"Unexpected Purdue GenAI response ({type(exc).__name__})."
+                ) from None
+
+            if structured_kind:
+                with self._structured_modes_lock:
+                    self._structured_modes[(model, structured_kind)] = mode
+            self.active_model = model
+            return content
+
+        raise LLMError(
+            f"Purdue GenAI request failed after {attempts} attempts "
+            f"(HTTP {last_status}; {last_exception})."
+        )
+
+    def chat(self, messages: List[Dict[str, Any]], temperature: float = 0.2,
+             max_tokens: int = 8192, json_mode: bool = False,
+             json_schema: Optional[Dict[str, Any]] = None,
+             schema_name: str = "output") -> str:
+        return self._chat_for_model(
+            self.model, messages, temperature, max_tokens,
+            json_mode, json_schema, schema_name,
+        )
+
+    def list_models(self, force: bool = False) -> List[str]:
+        """Return model IDs, caching a successful response for ten minutes."""
+        import requests
+
+        now = time.monotonic()
+        with self._models_lock:
+            if (not force and self._models_cache is not None
+                    and now - self._models_cached_at < 600.0):
+                return list(self._models_cache)
+
+            attempts = 0
+            total_wait = 0.0
+            while attempts < self._MAX_ATTEMPTS:
+                attempts += 1
+                self._acquire_rate_token()
+                try:
+                    with self._in_flight:
+                        response = requests.get(
+                            self.base_url + "/models",
+                            headers=self._headers(),
+                            timeout=(15, 180),
+                        )
+                except requests.RequestException as exc:
+                    if attempts < self._MAX_ATTEMPTS:
+                        total_wait += self._backoff(attempts, total_wait)
+                        continue
+                    raise LLMError(
+                        f"Purdue GenAI model listing failed after {attempts} attempts "
+                        f"({type(exc).__name__})."
+                    ) from None
+
+                if response.status_code == 429 or response.status_code >= 500:
+                    if attempts < self._MAX_ATTEMPTS:
+                        total_wait += self._backoff(attempts, total_wait)
+                        continue
+                    raise LLMError(
+                        f"Purdue GenAI model listing returned HTTP {response.status_code} "
+                        f"after {attempts} attempts."
+                    )
+                if response.status_code >= 400:
+                    raise LLMError(
+                        f"Purdue GenAI model listing returned HTTP {response.status_code}."
+                    )
+                data = object()
+                try:
+                    data = response.json()
+                    if data is None:
+                        raise TypeError("null")
+                    models = [
+                        item["id"] for item in data["data"]
+                        if isinstance(item, dict) and isinstance(item.get("id"), str)
+                    ]
+                except Exception as exc:
+                    if data is None and attempts < self._MAX_ATTEMPTS:
+                        total_wait += self._backoff(attempts, total_wait)
+                        continue
+                    raise LLMError(
+                        f"Unexpected Purdue GenAI model-list response "
+                        f"({type(exc).__name__})."
+                    ) from None
+                self._models_cache = models
+                self._models_cached_at = time.monotonic()
+                return list(models)
+
+        raise LLMError("Purdue GenAI model listing exhausted its retry limit.")
+
+    def transcribe_image(self, image_bytes: bytes, fmt: str, prompt: str,
+                         max_tokens: int = 4096) -> str:
+        """Transcribe an image with the first available Purdue vision model."""
+        fmt = (fmt or "png").strip().lower()
+        if fmt in ("jpg", "jpe"):
+            fmt = "jpeg"
+        if fmt not in ("png", "jpeg", "gif", "webp"):
+            fmt = "png"
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {
+                "url": f"data:image/{fmt};base64,{encoded}",
+            }},
+        ]
+        available: Optional[set] = None
+        try:
+            available = set(self.list_models())
+        except LLMError:
+            pass
+
+        attempted = False
+        for model in self.vision_models:
+            if available is not None and model not in available:
+                continue
+            attempted = True
+            try:
+                return self._chat_for_model(
+                    model,
+                    [{"role": "user", "content": content}],
+                    0.0,
+                    max_tokens,
+                    False,
+                    None,
+                    "output",
+                )
+            except LLMError:
+                continue
+        if not attempted:
+            raise LLMError("No configured Purdue vision model is available.")
+        raise LLMError("No configured Purdue vision model returned usable output.")
+
+
+# =============================================================================
 # AWS Bedrock engine: native Converse API (works with ANY Bedrock model, e.g.
 # Mistral, Llama, etc.). Auth uses the standard AWS credential chain
 # (env vars, ~/.aws/credentials, SSO cache, or an IAM role) — no API key in the app.
@@ -645,7 +1010,7 @@ class BedrockLLM:
 def build_client(config: Optional[Dict[str, Any]]):
     """
     Build an LLM client from a config dict:
-        {"engine": "local"|"remote"|"off",
+        {"engine": "local"|"remote"|"bedrock"|"purdue"|"off",
          "model": <registry key or remote model name>,
          "base_url": <remote only>, "api_key": <remote only, optional>}
     Raises LLMError if the requested engine is unavailable/misconfigured.
@@ -671,11 +1036,83 @@ def build_client(config: Optional[Dict[str, Any]]):
                           session_token=cfg.get("aws_session_token"),
                           bearer_token=cfg.get("aws_bearer_token"))
 
+    if engine == "purdue":
+        # Deliberately ignore cfg["api_key"] and cfg["base_url"]: Purdue access is
+        # server-managed and may not be supplied or redirected by a browser client.
+        return PurdueGenAILLM(cfg.get("model") or _purdue_model())
+
     raise LLMError("LLM engine is off.")
 
 
 def wants_llm(config: Optional[Dict[str, Any]]) -> bool:
-    return bool(config) and (config.get("engine") or "off").lower() in ("local", "remote", "bedrock")
+    return bool(config) and (config.get("engine") or "off").lower() in (
+        "local", "remote", "bedrock", "purdue",
+    )
+
+
+def engine_status() -> Dict[str, Any]:
+    """Return non-secret configuration status for every supported engine."""
+    return {
+        "purdue": {
+            "ready": purdue_env_ready(),
+            "model": _purdue_model(),
+            "base_url": _purdue_base_url(),
+        },
+        "bedrock": {
+            "ready": bedrock_env_ready(),
+            "model": BEDROCK_DEFAULT_MODEL,
+            "region": BEDROCK_DEFAULT_REGION,
+        },
+        "local": {
+            "ready": LocalLLM.runtime_available(),
+            "model": DEFAULT_MODEL_KEY,
+        },
+        "remote": {"ready": False},
+    }
+
+
+def generate_structured(client, prompt: str, schema: Dict[str, Any],
+                        system: Optional[str] = None, temperature: float = 0.0,
+                        max_tokens: int = 8192, name: str = "output") -> Any:
+    """Generate and parse JSON, using native schema constraints when supported."""
+    messages: List[Dict[str, str]] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+
+    accepts_schema = False
+    try:
+        signature = inspect.signature(client.chat)
+        accepts_schema = (
+            "json_schema" in signature.parameters
+            or any(p.kind == inspect.Parameter.VAR_KEYWORD
+                   for p in signature.parameters.values())
+        )
+    except (TypeError, ValueError):
+        pass
+
+    if accepts_schema:
+        messages.append({"role": "user", "content": prompt})
+        text = client.chat(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_schema=schema,
+            schema_name=name,
+        )
+    else:
+        schema_text = json.dumps(schema, separators=(",", ":"), ensure_ascii=False)
+        fallback_prompt = (
+            f"{prompt}\n\nReturn one JSON value matching this JSON Schema exactly: "
+            f"{schema_text}"
+        )
+        messages.append({"role": "user", "content": fallback_prompt})
+        text = client.chat(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=True,
+        )
+    return extract_json(text)
 
 
 def generate_json(client, prompt: str, system: Optional[str] = None,
