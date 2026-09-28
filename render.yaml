@@ -26,8 +26,9 @@
 # ---------------------------------------------------------------------------------------
 # READ THIS BEFORE EXPOSING THE URL: THE SITE IS PUBLIC; PAID OPERATIONS ARE TOKEN-GATED.
 #
-# Anyone can use bounded, local ODE/PDE/ABM/MPC work. AWS Batch CompuCell3D and
-# server-funded Bedrock calls are different: every one requires
+# Anyone can use bounded, local ODE/PDE/ABM/MPC work and the Umulis 2010 embryo model. AWS Batch
+# CompuCell3D, server-funded Bedrock calls, and (unless BIOSIM_PURDUE_PUBLIC=1) Purdue GenAI calls
+# are different: every one requires
 # `Authorization: Bearer <BIOSIM_PAID_ACCESS_TOKEN>`. The UI asks the researcher for this
 # app-level token and keeps it only in sessionStorage, so it clears with the browser tab.
 # AWS credentials never reach the browser.
@@ -91,11 +92,33 @@ services:
         sync: false
 
       # ---------------------------------------------------------------------------
-      # Natural-language model compilation through AWS Bedrock. The bearer credential
-      # stays server-side; requests also need the app-level token above.
+      # Natural-language model compilation. Purdue GenAI Studio is the default engine: the
+      # key belongs to one Purdue account (60 requests/min per user), stays server-side, and
+      # is never sent to the browser.
+      #
+      # BIOSIM_PURDUE_PUBLIC decides who may use it on this public URL:
+      #   "0" (default here): AI compilation needs the deployment token above, like Bedrock.
+      #       Visitors without it still get a model - the UI falls back to the rule-based
+      #       compiler and says so.
+      #   "1": anyone may use it, rate-limited to BIOSIM_LLM_RATE_PER_MIN per client and
+      #       BIOSIM_LLM_GLOBAL_RATE_PER_MIN overall. Only choose this if GenAI Studio's terms
+      #       allow the key owner to serve anonymous users.
       # ---------------------------------------------------------------------------
       - key: LLM_ENGINE
-        value: "bedrock"
+        value: "purdue"
+      - key: PURDUE_GENAI_API_KEY
+        sync: false
+      - key: PURDUE_GENAI_MODEL
+        value: "gpt-oss:120b"
+      - key: BIOSIM_PURDUE_PUBLIC
+        value: "0"
+      - key: BIOSIM_LLM_RATE_PER_MIN
+        value: "8"
+      - key: BIOSIM_LLM_GLOBAL_RATE_PER_MIN
+        value: "15"
+
+      # Optional legacy engine: AWS Bedrock. The bearer credential stays server-side; requests
+      # also need the app-level token above.
       - key: AWS_BEARER_TOKEN_BEDROCK
         sync: false
       - key: BEDROCK_REGION

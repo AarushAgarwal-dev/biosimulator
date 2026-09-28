@@ -55,12 +55,14 @@ class PaidAccessTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
 
     def test_bedrock_blueprint_is_rejected_before_the_provider_is_called(self):
-        with patch.object(main.agent, "parse_biological_text") as parse:
+        with patch.object(main.nl_compiler, "compile_text") as compile_text, \
+             patch.object(main.agent, "parse_biological_text") as parse:
             response = self.client.post(
                 "/api/blueprint",
                 json={"text": "A activates B.", "llm": {"engine": "bedrock"}},
             )
         self.assertEqual(response.status_code, 401)
+        compile_text.assert_not_called()
         parse.assert_not_called()
         self.assertIn("paid service", response.json()["detail"].lower())
 
@@ -74,7 +76,7 @@ class PaidAccessTests(unittest.TestCase):
 
     def test_correct_token_reaches_the_provider_path(self):
         expected = {"type": "ODE", "nodes": [{"id": "A"}], "edges": []}
-        with patch.object(main.agent, "parse_biological_text", return_value=expected) as parse:
+        with patch.object(main.nl_compiler, "compile_text", return_value=expected) as compile_text:
             response = self.client.post(
                 "/api/blueprint",
                 headers=self.auth(),
@@ -82,6 +84,17 @@ class PaidAccessTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), expected)
+        compile_text.assert_called_once()
+
+    def test_the_legacy_free_form_path_is_still_available_on_request(self):
+        expected = {"type": "ODE", "nodes": [{"id": "A"}], "edges": []}
+        with patch.object(main.agent, "parse_biological_text", return_value=expected) as parse:
+            response = self.client.post(
+                "/api/blueprint",
+                headers=self.auth(),
+                json={"text": "A exists.", "llm": {"engine": "bedrock"}, "compiler": "legacy"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
         parse.assert_called_once()
 
     def test_required_but_unconfigured_fails_closed(self):
@@ -156,7 +169,7 @@ class PaidAccessTests(unittest.TestCase):
         os.environ.pop(main.PAID_ACCESS_REQUIRED_ENV, None)
         os.environ.pop(main.PAID_ACCESS_TOKEN_ENV, None)
         expected = {"type": "ODE", "nodes": [{"id": "A"}], "edges": []}
-        with patch.object(main.agent, "parse_biological_text", return_value=expected):
+        with patch.object(main.nl_compiler, "compile_text", return_value=expected):
             response = self.client.post(
                 "/api/blueprint",
                 json={"text": "A exists.", "llm": {"engine": "bedrock"}},

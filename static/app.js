@@ -14,8 +14,12 @@ const state = {
     targets: [],
     currentDb: 'reactome',
     llm: { engine: 'off', model: 'llama-3.2-3b', remote_url: '', remote_model: '', remote_key: '',
+           purdue_model: 'gpt-oss:120b',
            bedrock_model: 'mistral.mistral-large-3-675b-instruct', bedrock_region: 'us-east-2',
            bedrock_bearer_token: '', bedrock_access_key: '', bedrock_secret_key: '', bedrock_session_token: '' },
+    llmEnv: null,           // non-secret server engine status from /api/llm/env
+    derivedEdgesAll: null,  // every equation-derived influence, weak ones flagged `minor`
+    showAllEdges: false,    // "Show every connection" toggle on the interaction graph
 
     // PDE Animation Player
     pdePlaying: false,
@@ -135,8 +139,9 @@ U diffuses slowly, V diffuses quickly.`,
     },
     oscillator: {
         // Goodwin (1965) three-stage negative-feedback loop: GENA -> GENB -> GENC -| GENA,
-        // in the Bliss, Painter & Marr (1982) form -- removal is SATURABLE,
-        // -d*X/(Km + X), not first-order.
+        // with SATURABLE (Michaelis-Menten) removal, -d*X/(Km + X), not first-order.
+        // Kurosawa & Iwasa (2002, J Biol Rhythms 17:568) proved that saturating the
+        // degradation steps of such a loop makes sustained oscillation more likely.
         //
         // Why the mechanism changed. Griffith (1968) proved that this loop with
         // FIRST-ORDER removal has a limit cycle only for Hill n > 8, and that is exactly
@@ -180,7 +185,7 @@ GENC starts at 0.268.`,
         t_max: 300.0,
         blueprint: {
             type: "ODE",
-            name: "Goodwin oscillator with saturable removal (Bliss-Painter-Marr)",
+            name: "Goodwin oscillator with saturable removal",
             nodes: [
                 { id: "GENA", name: "Gene A product", initial_value: 0.5885 },
                 { id: "GENB", name: "Gene B product", initial_value: 0.5482 },
@@ -261,7 +266,8 @@ CAMKII starts at 0.1.`,
         }
     },
     foldchange: {
-        // Incoherent feed-forward loop (Goentoro & Alon 2009): EGF drives AKT directly
+        // Incoherent feed-forward loop (Goentoro, Shoval, Kirschner & Alon 2009, Mol Cell
+        // 36:894): EGF drives AKT directly
         // AND drives an adapted background BG that divides it, so AKT tracks the RATIO
         // EGF/BG - the input's fold-change - and not its absolute level. BG adapts at a
         // level-INDEPENDENT rate (Weber's law), which is what makes the peak invariant.
@@ -322,24 +328,27 @@ AKT starts at 1.0.`,
 //
 // WITH ONE EXCEPTION, stated because misattributing a model is a citation error, not
 // a cosmetic one: `berridge` and `zhabotinsky` are faithful transcriptions -- the
-// published parameter sets, the published rate laws, and in Zhabotinsky's case total
-// CaMKII conserved to 2.000000 over 350 time units. `lyashenko` is NOT: it is a
+// published rate laws with the published parameter sets (Goldbeter, Dupont & Berridge
+// 1990 Fig. 2; Zhabotinsky 2000 Fig. 9), checked quantitatively against those papers
+// in test_paper_models.py; Zhabotinsky's 20 uM of CaMKII holoenzyme is conserved to
+// 20.000000 over the 1200 s run. `lyashenko` is NOT: it is a
 // three-equation reduced model that reproduces the hallmark (fold-change detection)
 // without the paper's receptor-trafficking kinetics. Its own description says so.
 // ==========================================================================
 const PaperModels = {
     berridge: {
-        title: "Ca²⁺ oscillations (Berridge & Goldbeter, 1990)",
+        title: "Ca²⁺ oscillations (Goldbeter, Dupont & Berridge, 1990)",
         hallmark: "sustained cytosolic Ca²⁺ oscillations",
         description:
-`Published model: Berridge–Goldbeter (1990) two-pool Ca²⁺ oscillator.
-Cytosolic Ca²⁺ (Z) and internal-store Ca²⁺ (Y) exchange via CICR.
-This loads the exact rate laws (v2 pump, v3 store release) as a
-mass-conserving ODE system. Click "Run Simulation" to see the
-self-sustained calcium spikes.`,
+`Published model: Goldbeter, Dupont & Berridge (1990) PNAS 87:1461 minimal
+two-pool Ca²⁺ oscillator. Cytosolic Ca²⁺ (Z) and InsP3-insensitive store Ca²⁺ (Y)
+exchange via Ca²⁺-induced Ca²⁺ release. This loads the paper's rate laws (v2 pump,
+v3 store release, Eqs. 1-2) and the Fig. 2 parameter values. Checked against the
+paper: oscillations for β = 28.9–77.4% (paper: 29.1–77.5%), and period and
+amplitude within 3% of Fig. 3. Click "Run Simulation" to see the calcium spikes.`,
         blueprint: {
             type: "ODE",
-            name: "Berridge–Goldbeter Ca2+ oscillator",
+            name: "Goldbeter-Dupont-Berridge Ca2+ oscillator",
             nodes: [
                 { id: "Z", name: "Cytosolic Ca2+", initial_value: 0.1 },
                 { id: "Y", name: "Internal-store Ca2+", initial_value: 0.1 }
@@ -372,18 +381,21 @@ self-sustained calcium spikes.`,
         title: "CaMKII bistable memory (Zhabotinsky, 2000)",
         hallmark: "a transient Ca²⁺ pulse that latches CaMKII permanently ON",
         description:
-`Published model: Zhabotinsky (2000) CaMKII autophosphorylation switch.
+`Published model: Zhabotinsky (2000) CaMKII autophosphorylation switch, Biophys J 79:2211.
 An 11-state holoenzyme (P0..P10) with Ca²⁺/CaM-driven phosphorylation and
-saturable PP1 dephosphorylation — the exact mechanism that makes the kinase
-bistable. Baseline Ca²⁺ is held at 2.0, inside the bistable window (~1.8-2.15),
-so both OFF and ON states are stable. A brief Ca²⁺ pulse (t=20-60) to 3.0 flips
-the switch; active CaMKII (A) then stays ON permanently = molecular memory.`,
+saturable phosphatase dephosphorylation (Eqs. 6, 12, 15, 17), with the paper's own
+parameters for a Ca²⁺-independent phosphatase (Fig. 9: KM = 0.4 µM, 20 µM CaMKII
+holoenzymes, 0.3 µM phosphatase; k1 = 0.5 s⁻¹, k2 = 2 s⁻¹, KH1 = 4 µM).
+Baseline Ca²⁺ is 1.8 µM, inside the bistable window (~1.65–2.05 µM), so both OFF
+and ON states are stable. As in Fig. 9B, Ca²⁺ steps to 2.3 µM (t = 20–220 s) and
+back to 1.8 µM: the kinase stays on the top branch (A ≈ 161 µM phosphorylated
+subunits) = molecular memory. Without the step it stays OFF (A ≈ 0.14 µM).`,
         blueprint: {
             type: "ODE",
             name: "Zhabotinsky CaMKII bistable switch",
             nodes: [
-                { id: "Ca", name: "Calcium stimulus", initial_value: 2.0 },
-                { id: "P0", name: "Unphosphorylated CaMKII", initial_value: 2.0 },
+                { id: "Ca", name: "Calcium stimulus", initial_value: 1.8 },
+                { id: "P0", name: "Unphosphorylated CaMKII", initial_value: 20.0 },
                 { id: "P1", initial_value: 0.0 }, { id: "P2", initial_value: 0.0 },
                 { id: "P3", initial_value: 0.0 }, { id: "P4", initial_value: 0.0 },
                 { id: "P5", initial_value: 0.0 }, { id: "P6", initial_value: 0.0 },
@@ -396,8 +408,8 @@ the switch; active CaMKII (A) then stays ON permanently = molecular memory.`,
                 { id: "e2", source: "A", target: "A", type: "activation" }
             ],
             parameters: {
-                k1: 0.5, k2: 2.0, KH1: 4.0, KM: 0.4, ep: 0.05,
-                kca: 5.0, Cabase: 2.0, amp: 1.0, sr: 2.0, t_on: 20.0, t_off: 60.0, kobs: 50.0
+                k1: 0.5, k2: 2.0, KH1: 4.0, KM: 0.4, ep: 0.3,
+                kca: 5.0, Cabase: 1.8, amp: 0.5, sr: 2.0, t_on: 20.0, t_off: 220.0, kobs: 50.0
             },
             fluxes: {
                 v1: "10*k1*(Ca/KH1)**8*P0/(1 + (Ca/KH1)**4)**2",
@@ -421,10 +433,10 @@ the switch; active CaMKII (A) then stays ON permanently = molecular memory.`,
                 A: "kobs*(Ssum - A)"
             },
             plot_species: ["Ca", "A"],
-            simulation_config: { t_max: 350.0 }
+            simulation_config: { t_max: 1200.0 }
         },
         targets: [
-            { species: "A", type: "steady_state", value: 15.0, tolerance: 4.0 }
+            { species: "A", type: "steady_state", value: 160.0, tolerance: 20.0 }
         ]
     },
 
@@ -436,8 +448,9 @@ the switch; active CaMKII (A) then stays ON permanently = molecular memory.`,
 a three-equation caricature that captures the IDEA (the receptor pool remembers the
 background, the response tracks L/R) but not the paper's receptor-trafficking kinetics.
 It is a legitimate reduced model and it reproduces the hallmark; it should not be cited
-as the published equations. The Berridge and Zhabotinsky entries above ARE faithful
-transcriptions -- this one is not, and the distinction matters if you publish.
+as the published equations. The Ca²⁺ (Goldbeter, Dupont & Berridge 1990) and Zhabotinsky
+entries above ARE faithful transcriptions, checked against their papers' figures -- this one
+is not, and the distinction matters if you publish.
 
 The receptor pool R adapts to (remembers) the ambient ligand background, and the
 downstream response S is driven by the RATIO ligand/background (L/R). So a given
@@ -527,14 +540,18 @@ function initTabs() {
             
             btn.classList.add("active");
             document.getElementById(`tab-${tabId}`).classList.add("active");
-            
-            // Re-layout cytoscape graph if entering blueprint tab
-            if (tabId === 'blueprint' && cyInstance) {
-                cyInstance.resize();
-                cyInstance.layout({ name: 'cose' }).run();
-            }
+
+            // Re-layout the graph when entering the blueprint tab: while hidden its container
+            // had no size, so the first layout had nothing to fit into.
+            if (tabId === 'blueprint') refreshGraphView();
+            document.dispatchEvent(new CustomEvent("biosim:tab", { detail: { tab: tabId } }));
         });
     });
+}
+
+function openTab(tabId) {
+    const btn = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
+    if (btn) btn.click();
 }
 
 function initPresets() {
@@ -553,6 +570,17 @@ function initPresets() {
         const b = document.getElementById(id);
         if (b) b.addEventListener("click", () => loadPaperModel(key));
     });
+    const embryoBtn = document.getElementById("open-embryo-btn");
+    if (embryoBtn) embryoBtn.addEventListener("click", () => openTab("embryo"));
+    const guidesBtn = document.getElementById("btn-open-guides");
+    if (guidesBtn) guidesBtn.addEventListener("click", () => openTab("guides"));
+    const showAll = document.getElementById("graph-show-all");
+    if (showAll) showAll.addEventListener("change", () => {
+        state.showAllEdges = !!showAll.checked;
+        renderCytoscape();
+    });
+    const fitBtn = document.getElementById("graph-fit-btn");
+    if (fitBtn) fitBtn.addEventListener("click", () => refreshGraphView());
 }
 
 // Load a published-paper model directly as a custom-kinetics blueprint (no text parse).
@@ -580,6 +608,7 @@ async function loadPaperModel(name) {
         });
 
     // Blueprint JSON + graph + targets + compile (equations & sliders)
+    resetModelViews();
     document.getElementById("blueprint-json-viewer").textContent = JSON.stringify(state.blueprint, null, 2);
     renderCytoscape();
     renderTargets();
@@ -623,12 +652,33 @@ async function loadPreset(name) {
         // own description" and does not throw the curated model away.
         state.presetName = name;
         state.presetText = preset.text;
+        resetModelViews();
         document.getElementById("blueprint-json-viewer").textContent = JSON.stringify(state.blueprint, null, 2);
         renderCytoscape();
         renderTargets();
         await compileBlueprint();
         document.querySelector("[data-tab='blueprint']").click();
         updateStatus("Ready", "green");
+    } else {
+        // A text-only preset (Turing) defines its model by its description. Build that
+        // model now with the deterministic compiler: otherwise the PREVIOUS model stayed
+        // loaded under the new preset's targets, and "Run Simulation" simulated the old
+        // model and then failed evaluating a target species it does not contain.
+        state.presetName = null;
+        state.presetText = null;
+        updateStatus("Building the preset's model…", "yellow");
+        try {
+            const data = await apiJson("/api/blueprint", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text: preset.text, llm: { engine: "off" } })
+            });
+            await loadBlueprintIntoUI(data);
+        } catch (e) {
+            console.error("Preset compilation failed", e);
+            updateStatus("Preset failed to compile", "red");
+            if (typeof showToast === "function") showToast("Could not build the preset's model: " + e.message, "error", 8000);
+        }
     }
 }
 
@@ -825,6 +875,10 @@ function escapeHtml(value) {
 // Resolve the current AI-engine configuration sent with LLM-backed requests.
 function getLlmConfig() {
     const l = state.llm || {};
+    if (l.engine === 'purdue') {
+        // The Purdue key is server-side only; the browser names the model and nothing else.
+        return { engine: 'purdue', model: l.purdue_model || (state.llmEnv && state.llmEnv.purdue_model) || 'gpt-oss:120b' };
+    }
     if (l.engine === 'local') {
         return { engine: 'local', model: l.model || 'llama-3.2-3b' };
     }
@@ -861,6 +915,135 @@ function showModelNotice(text) {
     const message = String(text || "").trim();
     body.textContent = message;
     card.hidden = !message;
+}
+
+// The compiler attaches its working record (_ir, _provenance, _verification, ...) to the
+// blueprint so it travels with the model. The JSON viewer shows the MODEL; the record is
+// shown in readable form in the "How this model was built" card instead.
+function blueprintForDisplay(bp) {
+    const out = {};
+    Object.keys(bp || {}).forEach(k => {
+        if (!["_ir", "_provenance", "_process_table", "_verification", "_llm_meta"].includes(k)) out[k] = bp[k];
+    });
+    return out;
+}
+
+// A newly loaded model must not be drawn with the previous model's derived arrows or described
+// by the previous model's provenance card while its own compile is still running.
+function resetModelViews() {
+    state.derivedEdges = null;
+    state.derivedEdgesAll = null;
+    renderProvenance(state.blueprint);
+}
+
+function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = String(text);
+    return node;
+}
+
+function renderProvenance(bp) {
+    const card = document.getElementById("provenance-card");
+    if (!card) return;
+    const ir = bp && bp._ir;
+    if (!ir || !Array.isArray(bp._process_table)) { card.hidden = true; return; }
+    card.hidden = false;
+
+    const meta = bp._llm_meta || {};
+    const usedAi = bp._engine && bp._engine !== "rules";
+    let engineText = usedAi ? `AI engine: ${bp._engine}` : "Deterministic rule-based compiler";
+    if (usedAi && meta.seconds != null) engineText += ` · ${meta.seconds} s · ${meta.attempts} model call(s)`;
+    if (!usedAi && meta.requested_engine && meta.requested_engine !== "off")
+        engineText += ` (the ${meta.requested_engine} engine's output was not used — see the notice above)`;
+    document.getElementById("provenance-engine").textContent = engineText;
+
+    const assumedIds = new Set((ir.processes || []).filter(p => p.assumed).map(p => p.id));
+    const list = document.getElementById("provenance-processes");
+    list.innerHTML = "";
+    bp._process_table.forEach(row => {
+        const text = String(row);
+        const id = text.split(" ")[0];
+        const [what, rest] = text.split(" — ");
+        const li = el("li", assumedIds.has(id) ? "is-assumed" : "");
+        li.appendChild(el("span", "proc-what", what.replace(/^\S+\s·\s/, "")));
+        if (rest) {
+            const folded = rest.match(/\[(.*)\]\s*$/);
+            const quote = rest.replace(/\s*\[.*\]\s*$/, "");
+            li.appendChild(el("q", assumedIds.has(id) ? "proc-reason" : "proc-quote", quote.replace(/^'|'$/g, "")));
+            if (folded) li.appendChild(el("span", "proc-note", folded[1]));
+        }
+        if (assumedIds.has(id)) li.appendChild(el("span", "tag tag-warn", "assumed"));
+        list.appendChild(li);
+    });
+
+    const checks = document.getElementById("provenance-checks");
+    checks.innerHTML = "";
+    const v = bp._verification || {};
+    const addCheck = (ok, text) => {
+        const li = el("li", ok === true ? "ok" : ok === false ? "bad" : "warn");
+        li.appendChild(el("span", "check-icon", ok === true ? "✓" : ok === false ? "✗" : "!"));
+        li.appendChild(el("span", "", text));
+        checks.appendChild(li);
+    };
+    const signs = Array.isArray(v.sign_checks) ? v.sign_checks : [];
+    if (signs.length) {
+        const good = signs.filter(c => c.ok).length;
+        addCheck(good === signs.length, `Every stated interaction has the right sign in the equations (${good}/${signs.length} partial derivatives checked).`);
+    }
+    if (v.simulation && v.simulation.success !== undefined) {
+        const s = v.simulation;
+        addCheck(!!s.success, s.success
+            ? (s.min !== undefined ? `Simulates to t = ${Number(s.end_time).toPrecision(3)}: finite, non-negative (min ${Number(s.min).toPrecision(3)}), bounded (max ${Number(s.max).toPrecision(3)}).`
+                                   : `A short smoke run of the spatial model is finite.`)
+            : "The simulation was not finite, went negative, or grew without bound.");
+    }
+    if (v.pde_stability) addCheck(!!v.pde_stability.stable, `Explicit PDE step is stable (diffusion number ${Number(v.pde_stability.diffusion_number).toFixed(3)} ≤ 0.5).`);
+    const missing = (v.coverage && v.coverage.missing) || [];
+    addCheck(missing.length ? null : true, missing.length
+        ? `Named in your text but not in the model: ${missing.join(", ")}.`
+        : "Every entity named in the description is represented.");
+    (v.frozen_species || []).forEach(f => addCheck(null, `${f.species} never changes (${f.reason}).`));
+
+    const params = document.getElementById("provenance-params");
+    params.innerHTML = "";
+    const prov = bp._provenance || {};
+    const species = ir.species || [];
+    species.forEach(s => {
+        const chip = el("span", "pchip " + (s.initial_source === "text" ? "from-text" : "from-default"));
+        chip.title = s.initial_source === "text" ? "Initial value taken from your description" : "Initial value chosen by the compiler";
+        chip.textContent = `${s.id}(0) = ${s.initial}`;
+        params.appendChild(chip);
+    });
+    Object.keys(prov).forEach(name => {
+        const p = prov[name];
+        const chip = el("span", "pchip " + (p.unused ? "unused" : p.source === "text" ? "from-text" : "from-default"));
+        chip.title = (p.meaning || name) + (p.unused ? " — not used by any rate law" : p.source === "text" ? " — from your text" : " — default value");
+        chip.textContent = `${name} = ${Number(p.value).toPrecision(4).replace(/\.?0+$/, "")}`;
+        params.appendChild(chip);
+    });
+    const legend = el("p", "hint-text");
+    legend.innerHTML = '<span class="pchip from-text">from your text</span> <span class="pchip from-default">default — edit it in the Model Summary</span>';
+    params.appendChild(legend);
+
+    const assumptions = document.getElementById("provenance-assumptions");
+    assumptions.innerHTML = "";
+    const items = (ir.assumptions || []).concat((ir.unmodeled || []).map(u => `Not modelled: "${u}"`));
+    if (!items.length) assumptions.appendChild(el("li", "", "None."));
+    items.forEach(a => assumptions.appendChild(el("li", "", a)));
+}
+
+// A long AI compile must look alive: disable the button and count seconds.
+function setBusy(button, label) {
+    if (!button) return () => {};
+    const original = button.textContent;
+    const started = Date.now();
+    button.disabled = true;
+    button.classList.add("is-busy");
+    const tick = () => { button.textContent = `${label} ${Math.round((Date.now() - started) / 1000)} s`; };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => { clearInterval(timer); button.disabled = false; button.classList.remove("is-busy"); button.textContent = original; };
 }
 
 // Shared: take a freshly parsed/extracted blueprint and load it into the whole UI.
@@ -916,7 +1099,18 @@ async function loadBlueprintIntoUI(parsedData, { switchTab = true } = {}) {
 
     state.blueprint = parsedData;
     ensureSimulationConfig(state.blueprint);
-    document.getElementById("blueprint-json-viewer").textContent = JSON.stringify(state.blueprint, null, 2);
+    resetModelViews();
+    // Targets belong to a model. Ones naming species this model does not have (e.g. a preset's
+    // ERK targets after compiling a p53 description) cannot be evaluated; drop them and say so.
+    const speciesNow = new Set((state.blueprint.nodes || []).map(n => String(n.id)));
+    const kept = (state.targets || []).filter(t => !t || !t.species || speciesNow.has(String(t.species)));
+    if (kept.length !== (state.targets || []).length) {
+        const dropped = (state.targets || []).length - kept.length;
+        state.targets = kept;
+        showToast(`${dropped} target behaviour${dropped === 1 ? "" : "s"} from the previous model referred to species this model does not contain and ${dropped === 1 ? "was" : "were"} removed.`, "info", 6000);
+    }
+    document.getElementById("blueprint-json-viewer").textContent = JSON.stringify(blueprintForDisplay(state.blueprint), null, 2);
+    renderProvenance(state.blueprint);
     renderCytoscape();
     renderTargets();
     const compiled = await compileBlueprint();
@@ -957,13 +1151,35 @@ document.getElementById("btn-parse-text").addEventListener("click", async () => 
     }
 
     updateStatus("Parsing text...", "yellow");
+    const llm = getLlmConfig();
+    const usingAi = llm.engine !== 'off';
+    const stopBusy = setBusy(document.getElementById("btn-parse-text"),
+        usingAi ? `Compiling with ${engineDisplayName(state.llm)}…` : "Compiling…");
 
     try {
-        const data = await apiJson("/api/blueprint", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: text, llm: getLlmConfig() })
-        });
+        let data;
+        try {
+            data = await apiJson("/api/blueprint", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text: text, llm: llm })
+            });
+        } catch (err) {
+            // A public visitor without the deployment token, or a rate-limited burst, should
+            // still get a model: fall back to the deterministic compiler and say so.
+            const msg = String(err && err.message || "");
+            if (usingAi && /access token|Too many|paid service|disabled because/i.test(msg)) {
+                showToast(`${engineDisplayName(state.llm)} is not available right now (${msg.slice(0, 160)}). `
+                          + `Compiled with the rule-based compiler instead.`, "warn", 9000);
+                data = await apiJson("/api/blueprint", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ text: text, llm: { engine: "off" } })
+                });
+            } else {
+                throw err;
+            }
+        }
         // The text is now the source of truth, so a later press must not fall back to
         // the preset's curated model.
         state.presetText = null;
@@ -974,6 +1190,8 @@ document.getElementById("btn-parse-text").addEventListener("click", async () => 
         updateStatus("Parsing failed", "red");
         if (typeof showToast === "function") showToast("Could not build blueprint: " + e.message, "error", 8000);
         return false;
+    } finally {
+        stopBusy();
     }
 });
 
@@ -983,8 +1201,8 @@ async function handleEquationImageFile(file) {
     if (!file) return;
     if (!/^image\//.test(file.type)) { statusEl.textContent = "Please choose an image file."; return; }
     const llm = getLlmConfig();
-    if (llm.engine !== 'bedrock') {
-        statusEl.textContent = "Photo reading needs the AWS Bedrock engine (set it in the model config).";
+    if (llm.engine !== 'bedrock' && llm.engine !== 'purdue') {
+        statusEl.textContent = "Reading a photo needs an engine with a vision model: choose Purdue GenAI (or AWS Bedrock) in the AI engine settings (🧠 in the header).";
         return;
     }
     if (file.size > 12 * 1024 * 1024) { statusEl.textContent = "That image is too large (max 12 MB)."; return; }
@@ -1139,6 +1357,7 @@ async function compileBlueprint() {
         // The interaction graph derived from these equations. Null for a generic-Hill
         // model, where the blueprint's own edges are the compiled topology.
         state.derivedEdges = Array.isArray(data.derived_edges) ? data.derived_edges : null;
+        state.derivedEdgesAll = Array.isArray(data.derived_edges_all) ? data.derived_edges_all : null;
 
         // loadBlueprintIntoUI draws once BEFORE this request so the user is not staring
         // at an empty panel while compilation runs. That first draw necessarily has no
@@ -2041,12 +2260,41 @@ function deriveEdgesFromOdes(bp) {
     return edges;
 }
 
+// A running cose layout keeps stepping asynchronously; destroying the instance under it made
+// Cytoscape call positions() on a torn-down renderer ("Cannot read properties of null
+// (reading 'notify')"). Every layout here is synchronous and is stopped before teardown.
+let cyLayout = null;
+
+function destroyCytoscape() {
+    try { if (cyLayout && typeof cyLayout.stop === "function") cyLayout.stop(); } catch { /* already stopped */ }
+    cyLayout = null;
+    if (cyInstance) {
+        try { cyInstance.stop(true, true); } catch { /* no running animation */ }
+        try { cyInstance.destroy(); } catch { /* already destroyed */ }
+    }
+    cyInstance = null;
+}
+
+function runGraphLayout() {
+    if (!cyInstance || cyInstance.destroyed()) return;
+    try { if (cyLayout) cyLayout.stop(); } catch { /* ignore */ }
+    const n = cyInstance.nodes().length;
+    cyLayout = cyInstance.layout(n <= 2
+        ? { name: "circle", animate: false, padding: 30, fit: true }
+        : { name: "cose", animate: false, randomize: false, padding: 30, fit: true,
+            nodeRepulsion: () => 9000, idealEdgeLength: () => 95, numIter: 1500 });
+    cyLayout.run();
+}
+
+function refreshGraphView() {
+    if (!cyInstance || cyInstance.destroyed()) return;
+    cyInstance.resize();
+    runGraphLayout();
+}
+
 function renderCytoscape() {
     const container = document.getElementById("cy-container");
-    if (cyInstance && typeof cyInstance.destroy === "function") {
-        cyInstance.destroy();
-        cyInstance = null;
-    }
+    destroyCytoscape();
     if (!state.blueprint || !Array.isArray(state.blueprint.nodes)) return;
 
     // Format nodes and edges for Cytoscape
@@ -2075,9 +2323,12 @@ function renderCytoscape() {
     // `derived_edges` comes from /api/compile, built from the Jacobian of each equation's
     // PRODUCTION terms, so an arrow means "this species appears in that one's rate of
     // change, with this sign". It is null for a generic-Hill model, where the edges are
-    // the compiled topology and are already true.
+    // the compiled topology and are already true. `derived_edges_all` is the same
+    // derivation with nothing folded away; "Show every connection" draws it.
     const hasDerivedGraph = Array.isArray(state.derivedEdges);
-    const derived = (state.derivedEdges || []).filter(
+    const showAll = !!state.showAllEdges && Array.isArray(state.derivedEdgesAll);
+    const derivedSource = showAll ? state.derivedEdgesAll : (state.derivedEdges || []);
+    const derived = derivedSource.filter(
         e => nodeIds.has(e.source) && nodeIds.has(e.target));
     // An EMPTY derived list is authoritative too: equations containing only independent
     // production and first-order turnover genuinely have no regulatory arrows. The old
@@ -2099,15 +2350,34 @@ function renderCytoscape() {
         const type = (rawType === "activation" || rawType === "inhibition")
             ? rawType
             : "association";
+        const strength = Number.isFinite(Number(edge.strength)) ? Number(edge.strength) : 0.6;
         elements.push({
             data: {
                 id: `e${index}`,
                 source: edge.source,
                 target: edge.target,
-                type
+                type,
+                strength: Math.max(0, Math.min(1, strength)),
+                minor: (edge.minor || edge.kept_to_avoid_orphan) ? 1 : 0,
+                tip: (edge.partial != null ? `∂(d${edge.target}/dt)/∂${edge.source} = ${Number(edge.partial).toPrecision(3)}` : "")
+                     + (edge.minor ? " · weak (< 5% of the strongest influence on " + edge.target + ")" : "")
+                     + (edge.kept_to_avoid_orphan ? " · kept so no species is left unconnected" : "")
             }
         });
     });
+
+    const toggle = document.getElementById("graph-show-all");
+    const minorTotal = Array.isArray(state.derivedEdgesAll)
+        ? state.derivedEdgesAll.filter(e => e.minor).length : 0;
+    const rescued = (state.derivedEdges || []).filter(e => e.kept_to_avoid_orphan).length;
+    const hiddenCount = Math.max(0, minorTotal - rescued);
+    if (toggle) {
+        toggle.disabled = !Array.isArray(state.derivedEdgesAll);
+        toggle.checked = showAll;
+        const lbl = toggle.parentElement && toggle.parentElement.querySelector(".toggle__label");
+        if (lbl) lbl.textContent = hiddenCount && !showAll
+            ? `Show every connection (+${hiddenCount} weak)` : "Show every connection";
+    }
 
     // The badge distinguishes three scientifically different states:
     //   * no explicit ODEs: the blueprint edge list is the compiled topology;
@@ -2129,27 +2399,26 @@ function renderCytoscape() {
         // [] is a successful derivation with no regulatory interactions; only null means
         // the backend could not derive a graph.
         const isDerived = Array.isArray(state.derivedEdges);
-        let omitted = 0;
-        if (isDerived) {
-            state.derivedEdges.forEach(function (e) {
-                omitted = Math.max(omitted, Number(e.minor_influences_omitted) || 0);
-            });
-        }
         badge.hidden = !explicit;
         if (!explicit) {
             badge.textContent = "";
         } else if (isDerived) {
-            badge.textContent = state.derivedEdges.length === 0
+            badge.textContent = state.derivedEdges.length === 0 && !showAll
                 ? "Derived from the equations: these rate laws contain no cross-species "
                   + "regulatory interactions or positive autoregulation, so the correct "
                   + "graph has no arrows. First-order turnover is intentionally not drawn."
-                : "Derived from the equations: an arrow means that species appears in the "
-                  + "other's rate of change, and its direction is the sign of the partial "
-                  + "derivative. A self-arrow is autoregulation, not turnover."
-                  + (omitted
-                      ? " Up to " + omitted + " weak influences per species are folded away"
-                        + " to keep this readable; the Equations tab is complete."
-                      : "");
+                : "Derived from the equations: an arrow means the source appears in the target's "
+                  + "rate of change; green = positive partial derivative (activation), pink tee = "
+                  + "negative (inhibition), thicker = stronger. A self-arrow is autoregulation, "
+                  + "not turnover."
+                  + (showAll
+                      ? " Showing every influence; dashed arrows are weak (under 5% of the strongest"
+                        + " influence on that species)."
+                      : (hiddenCount
+                          ? ` ${hiddenCount} weak influence${hiddenCount === 1 ? " is" : "s are"} folded away`
+                            + " to keep this readable; tick \"Show every connection\" to draw them."
+                          : ""))
+                  + " The Equations tab is always complete.";
         } else {
             badge.textContent =
                 "Schematic - this model's equations are written explicitly and a graph "
@@ -2162,11 +2431,13 @@ function renderCytoscape() {
     cyInstance = cytoscape({
         container: container,
         elements: elements,
+        minZoom: 0.3,
+        maxZoom: 3,
         style: [
             {
                 selector: 'node',
                 style: {
-                    'background-color': 'rgba(138, 43, 226, 0.8)',
+                    'background-color': 'rgba(138, 43, 226, 0.85)',
                     // Emphasis is carried by the border alone. Cytoscape draws to
                     // canvas with its own style vocabulary, and this build accepts
                     // neither CSS 'box-shadow' nor 'outline-*': both were parsed,
@@ -2181,28 +2452,33 @@ function renderCytoscape() {
                     'text-wrap': 'wrap',
                     'text-valign': 'center',
                     'text-halign': 'center',
-                    'width': '65px',
-                    'height': '65px'
+                    'width': '62px',
+                    'height': '62px'
+                }
+            },
+            {
+                selector: 'edge',
+                style: {
+                    'width': 'mapData(strength, 0, 1, 1.4, 4.5)',
+                    'curve-style': 'bezier',
+                    'arrow-scale': 1.1,
+                    'opacity': 0.95
                 }
             },
             {
                 selector: 'edge[type="activation"]',
                 style: {
-                    'width': 3,
                     'line-color': '#00ff87',
                     'target-arrow-color': '#00ff87',
-                    'target-arrow-shape': 'triangle',
-                    'curve-style': 'bezier'
+                    'target-arrow-shape': 'triangle'
                 }
             },
             {
                 selector: 'edge[type="inhibition"]',
                 style: {
-                    'width': 3,
                     'line-color': '#ff007f',
                     'target-arrow-color': '#ff007f',
-                    'target-arrow-shape': 'tee',
-                    'curve-style': 'bezier'
+                    'target-arrow-shape': 'tee'
                 }
             },
             {
@@ -2212,16 +2488,32 @@ function renderCytoscape() {
                     'line-color': '#94a3b8',
                     'target-arrow-color': '#94a3b8',
                     'target-arrow-shape': 'none',
-                    'line-style': 'dashed',
-                    'curve-style': 'bezier'
+                    'line-style': 'dashed'
                 }
+            },
+            {
+                selector: 'edge[minor = 1]',
+                style: {
+                    'line-style': 'dashed',
+                    'line-dash-pattern': [6, 4],
+                    'opacity': 0.55,
+                    'width': 1.3
+                }
+            },
+            {
+                selector: 'edge.hovered',
+                style: { 'opacity': 1, 'label': 'data(tip)', 'font-size': '10px', 'color': '#e5e7eb',
+                         'text-background-color': '#0b0f1a', 'text-background-opacity': 0.85,
+                         'text-background-padding': '3px', 'text-rotation': 'autorotate' }
             }
         ],
-        layout: {
-            name: state.blueprint.nodes.length <= 2 ? 'circle' : 'cose',
-            padding: 30
-        }
+        // The layout is run explicitly (synchronously) below, never animated, so nothing is
+        // left running if the graph is redrawn a moment later.
+        layout: { name: 'preset' }
     });
+    cyInstance.on('mouseover', 'edge', evt => evt.target.addClass('hovered'));
+    cyInstance.on('mouseout', 'edge', evt => evt.target.removeClass('hovered'));
+    runGraphLayout();
 }
 
 // ==========================================
@@ -3466,18 +3758,29 @@ async function loadLlmSettings() {
     } catch (e) { /* ignore */ }
     updateEngineLabel();
 
-    // If the server has a pre-configured .env for Bedrock, adopt its model/region
-    // and auto-select the Bedrock engine. Credential values remain server-side.
+    // Adopt the server's engine configuration (booleans and model names only; every
+    // credential stays server-side). Purdue GenAI is preferred when the server has a key,
+    // unless the researcher deliberately chose another engine in this browser.
     try {
         const env = await apiJson('/api/llm/env');
         if (!env || typeof env !== "object") return;
+        state.llmEnv = env;
         if (env.model) state.llm.bedrock_model = String(env.model);
         if (env.region) state.llm.bedrock_region = String(env.region);
-        const wantBedrock = env.bedrock_env_ready &&
+        if (env.purdue_model && (!hadSaved || !state.llm.purdue_model)) state.llm.purdue_model = String(env.purdue_model);
+        const saved = hadSaved ? state.llm.engine : null;
+        const wantPurdue = env.purdue_env_ready && env.engine_default !== 'bedrock' &&
+            (!hadSaved || saved === 'bedrock' || saved === 'purdue');
+        const wantBedrock = !wantPurdue && env.bedrock_env_ready &&
             (env.engine_default === 'bedrock' || !hadSaved);
-        if (wantBedrock && state.llm.engine !== 'bedrock') {
+        if (wantPurdue && state.llm.engine !== 'purdue') {
+            state.llm.engine = 'purdue';
+            saveLlmSettings();
+        } else if (wantBedrock && state.llm.engine !== 'bedrock') {
             state.llm.engine = 'bedrock';
             saveLlmSettings();
+        } else if (state.llm.engine === 'purdue' && !env.purdue_env_ready) {
+            state.llm.engine = 'off';     // a stale saved choice for an engine this server lacks
         }
         updateEngineLabel();
     } catch (e) {
@@ -3503,6 +3806,7 @@ function saveLlmSettings() {
 
 function engineDisplayName(cfg) {
     const l = cfg || state.llm || {};
+    if (l.engine === 'purdue') return 'Purdue GenAI: ' + (l.purdue_model || 'gpt-oss:120b');
     if (l.engine === 'local') {
         const m = llmModelsInfo && llmModelsInfo.models.find(x => x.key === l.model);
         return m ? m.label : (l.model || 'Local model');
@@ -3512,9 +3816,29 @@ function engineDisplayName(cfg) {
     return 'Rule-based';
 }
 
+function aiNeedsToken() {
+    const env = state.llmEnv || {};
+    const access = env.paid_access || {};
+    const engine = (state.llm || {}).engine;
+    if (engine === 'bedrock') return !!access.required;
+    if (engine === 'purdue') return !!access.required && !env.purdue_public;
+    return false;
+}
+
 function updateEngineLabel() {
     const el = document.getElementById('ai-engine-label');
     if (el) el.textContent = engineDisplayName(state.llm);
+    const hint = document.getElementById('compile-engine-hint');
+    if (!hint) return;
+    const engine = (state.llm || {}).engine;
+    if (engine === 'off') {
+        hint.textContent = "Compiled by the offline rule-based compiler. Choose an AI engine (🧠) for free-form wording.";
+    } else {
+        let text = `Compiled by ${engineDisplayName(state.llm)} → verified intermediate representation → deterministic equations.`;
+        if (aiNeedsToken() && !paidAccessToken())
+            text += " This deployment needs an access token for AI compilation; without one the rule-based compiler is used.";
+        hint.textContent = text;
+    }
 }
 
 function openLlmModal() {
@@ -3538,7 +3862,53 @@ function openLlmModal() {
     if (bsk) bsk.value = llmDraft.bedrock_secret_key || '';
     if (bst) bst.value = llmDraft.bedrock_session_token || '';
     loadLlmModels();
+    loadPurdueModels();
     updateLlmNote();
+}
+
+async function loadPurdueModels() {
+    const select = document.getElementById('llm-purdue-model');
+    const status = document.getElementById('llm-purdue-status');
+    if (!select || !status) return;
+    const current = (llmDraft && llmDraft.purdue_model) || state.llm.purdue_model || 'gpt-oss:120b';
+    select.innerHTML = '';
+    const addOption = (id, label) => {
+        const o = document.createElement('option');
+        o.value = id; o.textContent = label || id;
+        if (id === current) o.selected = true;
+        select.appendChild(o);
+    };
+    try {
+        const info = await apiJson('/api/llm/purdue/models');
+        if (!info.configured) {
+            status.className = 'llm-status bad';
+            status.textContent = 'Not configured on this server: set PURDUE_GENAI_API_KEY in the server environment and restart.';
+            addOption(current);
+            return;
+        }
+        const env = state.llmEnv || {};
+        status.className = 'llm-status ok';
+        status.textContent = `Connected · ${info.models.length} models available to this key`
+            + (aiNeedsTokenFor('purdue') ? ' · this deployment requires the access token below' : '');
+        const rec = new Set(info.recommended || []);
+        (info.recommended || []).forEach(id => addOption(id, id + (id === 'gpt-oss:120b' ? '  (fastest, recommended)' : '')));
+        info.models.filter(id => !rec.has(id)).forEach(id => addOption(id));
+        if (![...select.options].some(o => o.value === current)) addOption(current);
+        select.value = current;
+    } catch (e) {
+        status.className = 'llm-status bad';
+        status.textContent = 'Could not reach Purdue GenAI Studio: ' + e.message;
+        addOption(current);
+    }
+    select.onchange = () => { if (llmDraft) llmDraft.purdue_model = select.value; updateLlmNote(); };
+}
+
+function aiNeedsTokenFor(engine) {
+    const env = state.llmEnv || {};
+    const access = env.paid_access || {};
+    if (engine === 'bedrock') return !!access.required;
+    if (engine === 'purdue') return !!access.required && !env.purdue_public;
+    return false;
 }
 
 function closeLlmModal() {
@@ -3557,6 +3927,8 @@ function selectEngineTab(engine) {
     document.getElementById('llm-panel-off').hidden = engine !== 'off';
     document.getElementById('llm-panel-local').hidden = engine !== 'local';
     document.getElementById('llm-panel-remote').hidden = engine !== 'remote';
+    const pp = document.getElementById('llm-panel-purdue');
+    if (pp) pp.hidden = engine !== 'purdue';
     const bp = document.getElementById('llm-panel-bedrock');
     if (bp) bp.hidden = engine !== 'bedrock';
     if (llmDraft) llmDraft.engine = engine;
@@ -3670,6 +4042,13 @@ function pollDownload(key) {
 
 function saveLlmFromModal() {
     if (!llmDraft) { closeLlmModal(); return; }
+    if (llmDraft.engine === 'purdue') {
+        const sel = document.getElementById('llm-purdue-model');
+        if (sel && sel.value) llmDraft.purdue_model = sel.value;
+        if (state.llmEnv && state.llmEnv.purdue_env_ready === false) {
+            showToast('Purdue GenAI is not configured on this server; compilation will use the rule-based compiler.', 'warn', 7000);
+        }
+    }
     if (llmDraft.engine === 'remote') {
         llmDraft.remote_url = document.getElementById('llm-remote-url').value.trim();
         llmDraft.remote_model = document.getElementById('llm-remote-model').value.trim();
@@ -3743,8 +4122,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const paidTokenInput = document.getElementById("paid-access-token");
     if (paidTokenInput) {
         paidTokenInput.value = paidAccessToken();
-        paidTokenInput.addEventListener("input", () =>
-            rememberPaidAccessToken(paidTokenInput.value));
+        paidTokenInput.addEventListener("input", () => {
+            rememberPaidAccessToken(paidTokenInput.value);
+            updateEngineLabel();
+        });
     }
     loadLlmSettings();
     const aiBtn = document.getElementById("btn-ai-settings");

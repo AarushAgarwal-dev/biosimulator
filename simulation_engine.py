@@ -18,7 +18,13 @@ _trapz = getattr(np, "trapezoid", getattr(np, "trapz", None))
 # 1. ODE COMPILER & SOLVER
 # ==========================================
 
-def derive_edges_from_odes(blueprint: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+# An influence smaller than this fraction of the strongest influence on the same target is
+# "minor": folded out of the readable graph, but still returned (flagged) on request.
+MINOR_INFLUENCE_FRACTION = 0.05
+
+
+def derive_edges_from_odes(blueprint: Dict[str, Any],
+                           include_minor: bool = False) -> Optional[List[Dict[str, Any]]]:
     """Derive the interaction graph FROM THE EQUATIONS, so the diagram cannot lie.
 
     When a blueprint carries explicit ``odes``, ODEModel integrates those rate laws and
@@ -86,7 +92,9 @@ def derive_edges_from_odes(blueprint: Dict[str, Any]) -> Optional[List[Dict[str,
         except (TypeError, ValueError):
             continue
 
-    def _production_part(expr, own):
+    species_symbols = set(model.vars.values())
+
+    def _production_part(expr, own, keep_regulated_loss=False):
         """The equation with the species' own first-order turnover removed.
 
         A REGULATORY ARROW DESCRIBES INFLUENCE ON PRODUCTION. Turnover is not an arrow:
@@ -107,6 +115,11 @@ def derive_edges_from_odes(blueprint: Dict[str, Any]) -> Optional[List[Dict[str,
         unambiguous first-order removal. Saturable removal (-k*X/(Km + X)) is a
         mechanism, not turnover, so it stays and shows up as a self-inhibition, which is
         true of it.
+
+        REGULATED removal (-k*X*Hill(M), "M promotes the degradation of X") is first-order in
+        X but its rate depends on M, so M -> X is a real inhibitory interaction. With
+        keep_regulated_loss=True such a term is kept, so the cross-species partial finds it;
+        the self-derivative still ignores it, because it is not autoregulation.
         """
         try:
             kept = []
@@ -120,7 +133,8 @@ def derive_edges_from_odes(blueprint: Dict[str, Any]) -> Optional[List[Dict[str,
                                 value = float(coeff.subs(point).evalf())
                             except Exception:
                                 value = -1.0        # symbolic: assume a decay constant
-                            if value < 0:
+                            regulated = bool(coeff.free_symbols & (species_symbols - {own}))
+                            if value < 0 and not (keep_regulated_loss and regulated):
                                 continue            # pure first-order loss -- not an arrow
                     except Exception:
                         pass
@@ -130,15 +144,18 @@ def derive_edges_from_odes(blueprint: Dict[str, Any]) -> Optional[List[Dict[str,
             return expr
 
     edges: List[Dict[str, Any]] = []
+    everything: List[Dict[str, Any]] = []
     for target in model.node_ids:
         raw = model.deriv_exprs.get(target)
         if raw is None:
             continue
-        expr = _production_part(raw, model.vars[target])
+        expr_self = _production_part(raw, model.vars[target])
+        expr_cross = _production_part(raw, model.vars[target], keep_regulated_loss=True)
 
         candidates = []
         for source in model.node_ids:
             symbol = model.vars[source]
+            expr = expr_self if source == target else expr_cross
             if symbol not in expr.free_symbols:
                 continue
             try:
@@ -161,27 +178,57 @@ def derive_edges_from_odes(blueprint: Dict[str, Any]) -> Optional[List[Dict[str,
         # states into every equation, deriving 122 edges -- a hairball that communicates
         # less than the two hand-drawn arrows it replaced. Mass conservation genuinely
         # couples them, but a diagram is for reading, so keep each target's dominant
-        # influences and record how many were folded away.
+        # influences and record how many were folded away. `include_minor=True` returns
+        # the folded ones too, flagged, for the "show every connection" view.
         finite = [abs(v) for _s, v in candidates if v == v and abs(v) > 0]
-        cutoff = (max(finite) * 0.05) if finite else 0.0
+        strongest = max(finite) if finite else 0.0
+        cutoff = strongest * MINOR_INFLUENCE_FRACTION if finite else 0.0
         kept, dropped = [], 0
+        per_target: List[Dict[str, Any]] = []
         for source, value in candidates:
-            if value == value and abs(value) < cutoff:
-                dropped += 1
-                continue
-            kept.append((source, value))
-
-        for source, value in kept:
             if value != value or abs(value) < 1e-12:
                 kind = "association"        # present in the equation, sign not fixed here
             elif value > 0:
                 kind = "activation"
             else:
                 kind = "inhibition"
-            edge = {"source": source, "target": target, "type": kind, "derived": True}
+            strength = (abs(value) / strongest) if (strongest and value == value) else None
+            minor = bool(value == value and abs(value) < cutoff)
+            edge = {"source": source, "target": target, "type": kind, "derived": True,
+                    "strength": strength, "partial": value if value == value else None,
+                    "minor": minor}
+            per_target.append(edge)
+            if minor:
+                dropped += 1
+                continue
+            kept.append(edge)
+        for edge in kept:
+            out = dict(edge)
             if dropped:
-                edge["minor_influences_omitted"] = dropped
-            edges.append(edge)
+                out["minor_influences_omitted"] = dropped
+            edges.append(out)
+        everything.extend(per_target)
+
+    if include_minor:
+        return everything
+
+    # NEVER ORPHAN A NODE. Folding weak influences can strip every arrow from a species that
+    # genuinely participates (a ligand whose only effect is a small partial on its receptor
+    # showed up as a detached circle). If a node appears in the full derivation but in no kept
+    # edge, keep its single strongest connection, flagged minor so the UI can draw it faintly.
+    touched = {e["source"] for e in edges} | {e["target"] for e in edges if e["source"] != e["target"]}
+    for nid in model.node_ids:
+        if nid in touched:
+            continue
+        linked = [e for e in everything if (e["source"] == nid or e["target"] == nid)
+                  and e["source"] != e["target"]]
+        if not linked:
+            continue
+        best = max(linked, key=lambda e: abs(e["partial"]) if e["partial"] is not None else 0.0)
+        rescued = dict(best)
+        rescued["kept_to_avoid_orphan"] = True
+        edges.append(rescued)
+        touched |= {rescued["source"], rescued["target"]}
     return edges
 
 

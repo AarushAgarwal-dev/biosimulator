@@ -146,6 +146,7 @@ class RenderConfigTests(unittest.TestCase):
             document = yaml.safe_load(handle)
         secret_keys = {
             "BIOSIM_PAID_ACCESS_TOKEN",
+            "PURDUE_GENAI_API_KEY",
             "AWS_BEARER_TOKEN_BEDROCK",
             "AWS_ACCESS_KEY_ID",
             "AWS_SECRET_ACCESS_KEY",

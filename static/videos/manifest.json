@@ -1,0 +1,32 @@
+[
+  {
+    "id": "pipeline",
+    "title": "From plain language to a runnable model",
+    "description": "A deterministic description-to-equations workflow using the app's compiler, equation-derived graph, solver, and semantic verification.",
+    "file": "pipeline.mp4",
+    "poster": "pipeline-poster.png",
+    "captions": "pipeline.vtt",
+    "duration_s": 42.0,
+    "source_note": "Generated from nl_compiler.compile_text on the displayed p53/Mdm2 text, bp['_process_table'], bp['odes']/bp['fluxes'], simulation_engine.derive_edges_from_odes, ODEModel.simulate, and bp['_verification']."
+  },
+  {
+    "id": "bmp_embryo",
+    "title": "BMP shuttling patterns the Drosophila embryo",
+    "description": "The Umulis et al. 2010 SBP mechanism: the solver is verified against the fully specified 2006 predecessor, then the 2010 model forms the contracting dorsal BMP stripe; every check is shown with its measured numbers.",
+    "file": "bmp_embryo.mp4",
+    "poster": "bmp_embryo-poster.png",
+    "captions": "bmp_embryo.vtt",
+    "duration_s": 48.0,
+    "source_note": "Generated from bmp_embryo.simulate_surface(wt, SBP, 40x24, 0-60 min), simulate_cross_section(wt at 20/30/40/60 min; sog+/-, sog-/- and tld-/- at 60 min) with the default umulis2010 parameter set, and static/data/bmp/validation.json."
+  },
+  {
+    "id": "graph_guide",
+    "title": "Reading the interaction graph",
+    "description": "A precise guide to equation-derived edge signs, self-regulation, turnover omission, and the 5% readability threshold.",
+    "file": "graph_guide.mp4",
+    "poster": "graph_guide-poster.png",
+    "captions": "graph_guide.vtt",
+    "duration_s": 40.0,
+    "source_note": "Generated from a four-species ODE blueprint evaluated by simulation_engine.ODEModel and derive_edges_from_odes; edge signs and strengths are Jacobian partial derivatives at the displayed initial state."
+  }
+]

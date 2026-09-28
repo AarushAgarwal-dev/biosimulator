@@ -1,0 +1,254 @@
+"""Regression tests for the reliability guards added to nl_compiler after review.
+
+* An LLM must not be able to recycle one sentence as evidence for a process of a different kind
+  (e.g. quote "Y is converted to X" to justify an invented degradation of Y).
+* A custom rate law that consumes a species must vanish when that species is exhausted.
+* Active-voice conversion prose with an explicit rate law (SIR) compiles deterministically.
+"""
+import copy
+import unittest
+
+import numpy as np
+
+import nl_compiler as nc
+from simulation_engine import ODEModel
+
+CALCIUM = ("CalciumStore is converted to CytosolicCalcium at rate 0.2. CytosolicCalcium is converted "
+           "to CalciumStore at rate 0.1. CalciumStore starts at 10 and CytosolicCalcium starts at 0.")
+SIR = ("SIR model: infection converts S to I at rate beta*S*I with beta 0.3, and recovery converts I to R "
+       "at rate gamma*I with gamma 0.1. S starts at 999, I at 1, R at 0. Simulate 160 days.")
+
+
+class KindEvidenceGuardTests(unittest.TestCase):
+    def test_recycled_evidence_for_an_invented_degradation_is_rejected(self):
+        ir = nc.extract_ir_rules(CALCIUM)
+        self.assertEqual(nc.validate_ir(ir, CALCIUM), [])
+        bad = copy.deepcopy(ir)
+        bad["parameters"].append({"name": "k_leak", "value": 0.05, "source": "default", "unit": "1/s", "meaning": "leak"})
+        bad["processes"].append({"id": "p_leak", "kind": "degradation", "species": "CytosolicCalcium", "k": "k_leak",
+                                 "evidence": "CytosolicCalcium is converted to CalciumStore", "assumed": False})
+        errors = nc.validate_ir(bad, CALCIUM)
+        self.assertTrue(any("p_leak" in e and "degradation" in e for e in errors), errors)
+
+    def test_genuine_degradation_wording_is_accepted(self):
+        text = "A is produced at rate 1. A is degraded at rate 0.2."
+        self.assertEqual(nc.validate_ir(nc.extract_ir_rules(text), text), [])
+
+    def test_assumed_processes_are_exempt_but_must_say_why(self):
+        ir = nc.extract_ir_rules("A activates B.")
+        self.assertTrue(any(p["assumed"] for p in ir["processes"]))
+        self.assertEqual(nc.validate_ir(ir, "A activates B."), [])
+
+    def test_a_negated_statement_cannot_support_a_process(self):
+        text = "A does not activate B. A is degraded at rate 0.1."
+        ir = nc.extract_ir_rules(text)
+        self.assertEqual(nc.validate_ir(ir, text), [])
+        bad = copy.deepcopy(ir)
+        bad["species"].append({"id": "B", "name": "B", "initial": 0.1, "initial_source": "default",
+                               "diffusion": None, "role": "state"})
+        bad["parameters"] += [{"name": n, "value": 1.0, "source": "default", "unit": "a", "meaning": n}
+                              for n in ("k_prod_B", "K_AB", "n_AB")]
+        bad["processes"].append({"id": "p_neg", "kind": "production", "target": "B", "k": "k_prod_B",
+                                 "evidence": "A does not activate B", "assumed": False,
+                                 "regulators": [{"species": "A", "effect": "activate", "K": "K_AB", "n": "n_AB"}]})
+        errors = nc.validate_ir(bad, text)
+        self.assertTrue(any("p_neg" in e and "negated" in e for e in errors), errors)
+
+
+class CustomRatePositivityTests(unittest.TestCase):
+    def test_consumption_rate_must_vanish_at_zero(self):
+        ir = nc.extract_ir_rules(SIR)
+        self.assertEqual(nc.validate_ir(ir, SIR), [])
+        bad = copy.deepcopy(ir)
+        for proc in bad["processes"]:
+            if proc["kind"] == "custom" and proc["reactants"][0]["species"] == "S":
+                proc["rate"] = "beta*I"            # does not vanish when S = 0
+        errors = nc.validate_ir(bad, SIR)
+        self.assertTrue(any("does not vanish" in e and "'S'" in e for e in errors), errors)
+
+
+class SIRRuleTests(unittest.TestCase):
+    def test_sir_compiles_conserves_and_matches_the_stated_numbers(self):
+        bp = nc.compile_text(SIR)
+        self.assertNotIn("validation_errors", bp)
+        self.assertEqual(bp["parameters"], {"beta": 0.3, "gamma": 0.1})
+        self.assertEqual({n["id"]: n["initial_value"] for n in bp["nodes"]}, {"S": 999.0, "I": 1.0, "R": 0.0})
+        result = ODEModel(bp).simulate(20.0, 200)
+        total = sum(np.asarray(result["species"][k]) for k in ("S", "I", "R"))
+        self.assertLess(float(np.ptp(total)), 1e-6 * 1000.0)
+        self.assertGreater(max(result["species"]["I"]), 1.0)      # the epidemic takes off (R0 = 3)
+
+
+class RegulatorSourceGuardTests(unittest.TestCase):
+    TEXT = "p53 activates Mdm2 transcription. Mdm2 promotes p53 degradation."
+
+    def llm_style_ir(self):
+        """The shape Purdue gpt-oss:120b returned: p53 has losses but no production."""
+        return {
+            "model_type": "ode", "time_unit": "arbitrary", "t_end": None,
+            "species": [{"id": "p53", "name": "p53", "initial": 0.5, "initial_source": "default", "diffusion": None, "role": "state"},
+                        {"id": "Mdm2", "name": "Mdm2", "initial": 1.0, "initial_source": "default", "diffusion": None, "role": "state"}],
+            "parameters": [{"name": n, "value": v, "source": "default", "unit": "a", "meaning": n}
+                           for n, v in (("k_prod_Mdm2", 1.0), ("K_a", 1.0), ("n_a", 2.0), ("k_deg_p53", 0.1),
+                                        ("K_b", 1.0), ("n_b", 2.0), ("k_deg_Mdm2", 0.1))],
+            "stimuli": [],
+            "processes": [
+                {"id": "p1", "kind": "production", "target": "Mdm2", "k": "k_prod_Mdm2", "evidence": "p53 activates Mdm2 transcription",
+                 "assumed": False, "regulators": [{"species": "p53", "effect": "activate", "K": "K_a", "n": "n_a"}]},
+                {"id": "p2", "kind": "degradation", "species": "p53", "k": "k_deg_p53", "evidence": "Mdm2 promotes p53 degradation",
+                 "assumed": False, "regulators": [{"species": "Mdm2", "effect": "activate", "K": "K_b", "n": "n_b"}]},
+                {"id": "p3", "kind": "degradation", "species": "Mdm2", "k": "k_deg_Mdm2", "evidence": "", "assumed": True,
+                 "reason": "turnover"}],
+            "assumptions": [], "unmodeled": [],
+        }
+
+    def test_source_less_regulator_gets_a_disclosed_supply(self):
+        ir = nc._auto_repair_ir(self.llm_style_ir(), self.TEXT)
+        supplies = [p for p in ir["processes"] if p["kind"] == "production" and p["target"] == "p53"]
+        self.assertEqual(len(supplies), 1)
+        self.assertTrue(supplies[0]["assumed"])
+        self.assertTrue(any("p53 has a basal supply" in a for a in ir["assumptions"]))
+        bp = nc.compile_ir(ir)
+        result = ODEModel(bp).simulate(200.0, 400)
+        self.assertGreater(result["species"]["p53"][-1], 0.01)       # no longer decays to zero
+
+    def test_a_species_with_a_source_is_left_alone(self):
+        ir = self.llm_style_ir()
+        before = len(ir["processes"])
+        ir = nc._auto_repair_ir(ir, self.TEXT)
+        self.assertFalse(any(p["kind"] == "production" and p["target"] == "Mdm2" and p.get("assumed") for p in ir["processes"]))
+        self.assertEqual(len(ir["processes"]), before + 1)            # only the p53 supply was added
+
+    def test_produced_but_never_lost_species_gets_disclosed_turnover(self):
+        ir = self.llm_style_ir()
+        ir["processes"] = [p for p in ir["processes"] if p["id"] != "p3"]      # the AI omitted Mdm2 turnover
+        ir = nc._auto_repair_ir(ir, self.TEXT)
+        turnover = [p for p in ir["processes"] if p["kind"] == "degradation" and p["species"] == "Mdm2"]
+        self.assertEqual(len(turnover), 1)
+        self.assertTrue(turnover[0]["assumed"])
+        result = ODEModel(nc.compile_ir(ir)).simulate(400.0, 400)
+        mdm2 = result["species"]["Mdm2"]
+        self.assertLess(abs(mdm2[-1] - mdm2[-40]), 1e-2 * max(1.0, mdm2[-1]))   # settles instead of climbing
+
+
+class CatalystGuardTests(unittest.TestCase):
+    TEXT = "E starts at 1. S starts at 10. E catalyzes the conversion of S to P with kcat 2 and Km 3."
+
+    def test_invented_turnover_of_a_pure_catalyst_is_removed(self):
+        ir = nc.extract_ir_rules(self.TEXT)
+        ir["parameters"].append({"name": "k_deg_E", "value": 0.1, "source": "default", "unit": "1/min", "meaning": "x"})
+        ir["processes"].append({"id": "pX", "kind": "degradation", "species": "E", "k": "k_deg_E", "evidence": "",
+                                "assumed": True, "reason": "invented"})
+        repaired = nc._auto_repair_ir(ir, self.TEXT)
+        self.assertFalse(any(p["id"] == "pX" for p in repaired["processes"]))
+        result = ODEModel(nc.compile_ir(repaired)).simulate(20.0, 100)
+        self.assertLess(float(np.ptp(result["species"]["E"])), 1e-12)
+
+
+class CoverageWordsTests(unittest.TestCase):
+    def test_instruction_words_are_not_reported_as_missing_entities(self):
+        text = ("p53 activates Mdm2 transcription. Mdm2 promotes p53 degradation. "
+                "p53 is produced at rate 1. Simulate for 100 minutes.")
+        bp = nc.compile_text(text, None)
+        missing = bp["_verification"]["coverage"]["missing"]
+        self.assertEqual(missing, [], missing)
+
+    def test_a_genuinely_absent_entity_is_still_reported(self):
+        ir = nc.extract_ir_rules("A activates B.")
+        report = nc.verify(nc.compile_ir(ir), ir, "A activates B. Glucokinase is mentioned.")
+        self.assertIn("Glucokinase", report["coverage"]["missing"])
+
+
+class DuplicateProcessTests(unittest.TestCase):
+    TEXT = ("p53 activates Mdm2 transcription. Mdm2 promotes p53 degradation. DNA damage stabilizes p53. "
+            "p53 is produced at rate 1.")
+
+    @staticmethod
+    def _ir(extra):
+        params = ["k_prod_p53", "k_prod_Mdm2", "k_deg_Mdm2", "k_deg_p53", "k_deg_p53_2", "k_deg_p53_3",
+                  "K1", "n1", "K2", "n2", "K3", "n3", "K4", "n4"]
+        base = [
+            {"id": "p1", "kind": "production", "target": "p53", "k": "k_prod_p53", "evidence": "p53 is produced at rate 1", "assumed": False},
+            {"id": "p2", "kind": "production", "target": "Mdm2", "k": "k_prod_Mdm2", "evidence": "p53 activates Mdm2 transcription",
+             "assumed": False, "regulators": [{"species": "p53", "effect": "activate", "K": "K1", "n": "n1"}]},
+            {"id": "p3", "kind": "degradation", "species": "Mdm2", "k": "k_deg_Mdm2", "evidence": "", "assumed": True, "reason": "turnover"},
+            {"id": "q", "kind": "degradation", "species": "p53", "k": "k_deg_p53", "evidence": "Mdm2 promotes p53 degradation",
+             "assumed": False, "regulators": [{"species": "Mdm2", "effect": "activate", "K": "K2", "n": "n2"},
+                                              {"stimulus": "DNA_damage", "effect": "repress", "K": "K3", "n": "n3"}]},
+        ]
+        return {"model_type": "ode", "time_unit": "min", "t_end": 100.0,
+                "species": [{"id": s, "name": s, "initial": 0.0, "initial_source": "default", "diffusion": None, "role": "state"}
+                            for s in ("p53", "Mdm2")],
+                "parameters": [{"name": n, "value": 1.0, "source": "text" if n == "k_prod_p53" else "default",
+                                "unit": "a", "meaning": n} for n in params],
+                "stimuli": [{"name": "DNA_damage", "profile": "constant", "level": 1.0, "t_on": None, "t_off": None,
+                             "evidence": "DNA damage stabilizes p53"}],
+                "processes": base + extra, "assumptions": [], "unmodeled": []}
+
+    def test_a_process_repeated_inside_a_merged_one_is_removed(self):
+        dup = {"id": "dup", "kind": "degradation", "species": "p53", "k": "k_deg_p53_2", "evidence": "Mdm2 promotes p53 degradation",
+               "assumed": False, "regulators": [{"species": "Mdm2", "effect": "activate", "K": "K4", "n": "n4"}]}
+        separate = {"id": "sep", "kind": "degradation", "species": "p53", "k": "k_deg_p53_3", "evidence": "DNA damage stabilizes p53",
+                    "assumed": False, "regulators": [{"stimulus": "DNA_damage", "effect": "repress", "K": "K3", "n": "n3"}]}
+        repaired = nc._auto_repair_ir(self._ir([dup, separate]), self.TEXT)
+        ids = [p["id"] for p in repaired["processes"]]
+        self.assertNotIn("dup", ids)
+        self.assertIn("q", ids)
+        self.assertIn("sep", ids)            # a different sentence is a separately described channel
+        self.assertTrue(any("'dup'" in a and "counted twice" in a for a in repaired["assumptions"]))
+        self.assertEqual(nc.validate_ir(repaired, self.TEXT), [])
+
+    def test_exact_duplicates_keep_one_copy(self):
+        twin = dict(self._ir([])["processes"][3], id="twin", k="k_deg_p53_2")
+        repaired = nc._auto_repair_ir(self._ir([twin]), self.TEXT)
+        ids = [p["id"] for p in repaired["processes"]]
+        self.assertEqual(ids.count("q") + ids.count("twin"), 1)
+        self.assertIn("q", ids)
+
+    def test_a_basal_process_is_never_removed(self):
+        repaired = nc._auto_repair_ir(self._ir([]), self.TEXT)
+        self.assertIn("p1", [p["id"] for p in repaired["processes"]])
+
+    def test_rule_cross_check_does_not_re_add_an_interaction_the_ai_merged(self):
+        ir = nc._auto_repair_ir(self._ir([]), self.TEXT)
+        merged, added = nc._merge_rule_crosscheck(ir, nc.extract_ir_rules(self.TEXT))
+        p53_losses = [p["id"] for p in merged["processes"] if p.get("kind") == "degradation" and p.get("species") == "p53"]
+        self.assertEqual(p53_losses, ["q"], merged["processes"])
+
+    def test_rule_cross_check_still_restores_a_missing_interaction(self):
+        ir = self._ir([])
+        ir["processes"][3]["regulators"] = [{"species": "Mdm2", "effect": "activate", "K": "K2", "n": "n2"}]
+        ir["stimuli"] = []                                     # the AI missed DNA damage entirely
+        merged, added = nc._merge_rule_crosscheck(ir, nc.extract_ir_rules(self.TEXT))
+        self.assertGreaterEqual(added, 1)
+        self.assertTrue(any(p.get("kind") == "degradation" and p.get("species") == "p53" and
+                            any((r.get("stimulus") or r.get("species")) == "DNA_damage" for r in p.get("regulators", []))
+                            for p in merged["processes"]))
+
+
+class UnevidencedSpeciesTests(unittest.TestCase):
+    TEXT = "A does not activate B. A is degraded at rate 0.1."
+
+    def test_species_only_in_assumed_processes_is_removed(self):
+        ir = {
+            "model_type": "ode", "time_unit": "min", "t_end": 10.0,
+            "species": [{"id": s, "name": s, "initial": 1.0, "initial_source": "default", "diffusion": None, "role": "state"}
+                        for s in ("A", "B")],
+            "parameters": [{"name": n, "value": 0.1, "source": "text" if n == "k_deg_A" else "default", "unit": "1/min",
+                            "meaning": n} for n in ("k_deg_A", "k_prod_B", "k_deg_B")],
+            "stimuli": [],
+            "processes": [
+                {"id": "p1", "kind": "degradation", "species": "A", "k": "k_deg_A", "evidence": "A is degraded at rate 0.1", "assumed": False},
+                {"id": "p2", "kind": "production", "target": "B", "k": "k_prod_B", "evidence": "", "assumed": True, "reason": "completeness"},
+                {"id": "p3", "kind": "degradation", "species": "B", "k": "k_deg_B", "evidence": "", "assumed": True, "reason": "completeness"}],
+            "assumptions": [], "unmodeled": [],
+        }
+        repaired = nc._auto_repair_ir(ir, self.TEXT)
+        self.assertEqual([s["id"] for s in repaired["species"]], ["A"])
+        self.assertEqual([p["id"] for p in repaired["processes"]], ["p1"])
+        self.assertTrue(any("Removed B" in a for a in repaired["assumptions"]))
+        self.assertEqual(nc.validate_ir(repaired, self.TEXT), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

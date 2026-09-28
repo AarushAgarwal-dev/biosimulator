@@ -1,0 +1,518 @@
+{
+  "citation": "Umulis DM, Shimmi O, O'Connor MB, Othmer HG (2010), Developmental Cell 18:260-274, doi:10.1016/j.devcel.2010.01.006",
+  "citation_2006": "Umulis DM, Serpe M, O'Connor MB, Othmer HG (2006), PNAS 103:11613-11618, doi:10.1073/pnas.0510398103 (Supporting Information)",
+  "include_surface": true,
+  "parameter_set": "umulis2010",
+  "checks": [
+    {
+      "id": "S1",
+      "kind": "solver_verification",
+      "claim": "The solver reproduces the fully specified 2006 predecessor model (Case 4)",
+      "citation": "Umulis 2006 PNAS Supp. Fig. 13 + Table 1",
+      "how_measured": "Same kernel and BDF solver with the 2006 Table 1 parameters; dorsal-midline BMP and BR vs the digitised figure (pass: every point from 30 min to steady state within 12%, steady-state stripe half-width within 10 um of 25 um)",
+      "measured": {
+        "model_dm_BMP_nM": {
+          "15": 0.3194579879490236,
+          "30": 3.059859663913244,
+          "45": 1.4716710006231588,
+          "60": 0.9426547826891297,
+          "s.s.": 0.6019076772482572
+        },
+        "paper_dm_BMP_nM": {
+          "15": 1.955,
+          "30": 2.867,
+          "45": 1.478,
+          "60": 0.964,
+          "s.s.": 0.592
+        },
+        "model_dm_BR_nM": {
+          "15": 0.5629132743846068,
+          "30": 18.418389982760807,
+          "45": 30.102631495999894,
+          "60": 31.124549349796162,
+          "s.s.": 30.971708984869732
+        },
+        "paper_dm_BR_nM": {
+          "15": 3.95,
+          "30": 19.17,
+          "45": 33.24,
+          "60": 33.24,
+          "s.s.": 31.12
+        },
+        "relative_error_BMP": {
+          "30.0": 0.06726880499241152,
+          "45.0": -0.004282137602734216,
+          "60.0": -0.022142341608786562,
+          "s.s.": 0.016735941297731843
+        },
+        "relative_error_BR": {
+          "30.0": -0.03920761696605082,
+          "45.0": -0.09438533405535823,
+          "60.0": -0.06364171631178821,
+          "s.s.": -0.004765135447630751
+        },
+        "steady_state_half_width_um": 22.62750804531912,
+        "paper_half_width_um": 25.0,
+        "steady_state_drift_480_to_600_min": 0.0013820114365331144,
+        "known_mismatch_15_min": "at 15 min the paper's profile is already higher (BMP 1.96 vs model 0.32 nM); from 30 min on the curves agree",
+        "mass_balance_relative_error": 7.836050325970807e-07
+      },
+      "pass": true
+    },
+    {
+      "id": "D1",
+      "kind": "diagnostic",
+      "claim": "Table S1's printed Sog secretion (1.36 uM/min), used literally, abolishes the dorsal stripe",
+      "citation": "Umulis 2010 Table S1 vs main text p.260",
+      "how_measured": "Same model with phi_S = 1360 nM/min: 60-min BR FWHM as % of circumference",
+      "measured": {
+        "fwhm_percent_circumference": 100.0,
+        "peak_BR_nM": 0.06009533304843472,
+        "dm_BR_nM": 0.06009533304843472
+      },
+      "pass": true
+    },
+    {
+      "id": "F1",
+      "kind": "paper_figure",
+      "claim": "Dorsal-midline BR level at 60 min (Fig. 4F: 37.9 nM)",
+      "citation": "Umulis 2010 Fig. 4F",
+      "how_measured": "Model DM BR at 60 min on the embryo surface at x/L = 0.5 (48x32), as Fig. 4F vs the digitised figure (pass: within 25%)",
+      "measured": {
+        "model_nM": 29.47991588463637,
+        "paper_nM": 37.9,
+        "relative_error": -0.2221658077932356,
+        "evaluated_on": "embryo surface at x/L = 0.5 (48x32), as Fig. 4F",
+        "cross_section_model_nM": {
+          "15": 0.12059157988789618,
+          "30": 15.178158238168816,
+          "45": 23.684639997735076,
+          "60": 30.657658742690412
+        },
+        "surface_model_nM": {
+          "15": 0.31340661616379306,
+          "30": 15.858945406693692,
+          "45": 23.542840576856356,
+          "60": 29.47991588463637
+        }
+      },
+      "pass": true
+    },
+    {
+      "id": "F2",
+      "kind": "paper_figure",
+      "claim": "Dorsal-midline BR time course (Fig. 4F: 16.8, 30.1, 35.3, 37.9 nM at 15-60 min)",
+      "citation": "Umulis 2010 Fig. 4F",
+      "how_measured": "Each time point within 25% on the embryo surface at x/L = 0.5 (48x32), as Fig. 4F (depends on the unpublished Sog field and initial conditions)",
+      "measured": {
+        "model_nM": {
+          "15": 0.31340661616379306,
+          "30": 15.858945406693692,
+          "45": 23.542840576856356,
+          "60": 29.47991588463637
+        },
+        "paper_nM": {
+          "15": 16.8,
+          "30": 30.1,
+          "45": 35.3,
+          "60": 37.9
+        },
+        "relative_error": {
+          "15": -0.9813448442759647,
+          "30": -0.47312473731914645,
+          "45": -0.33306400632134964,
+          "60": -0.2221658077932356
+        },
+        "model_ne_BR_60_nM": 0.1888033287683481,
+        "paper_ne_floor_nM": 2.5,
+        "evaluated_on": "embryo surface at x/L = 0.5 (48x32), as Fig. 4F",
+        "cross_section_model_nM": {
+          "15": 0.12059157988789618,
+          "30": 15.178158238168816,
+          "45": 23.684639997735076,
+          "60": 30.657658742690412
+        },
+        "surface_model_nM": {
+          "15": 0.31340661616379306,
+          "30": 15.858945406693692,
+          "45": 23.542840576856356,
+          "60": 29.47991588463637
+        },
+        "why": "For the first ~20 min, Sog/Tsg secreted in the lateral neuroectoderm floods the dorsal side and holds free BMP - and so BR - near zero until Tld has cleared it; the paper's curve already reads 16.8 nM at 15 min. That needs less Sog on the dorsal side early (the FISH-derived Sog field, Supp. Eq. 82, whose coefficients were not published) or a non-zero, image-derived initial state (p.266, not published)."
+      },
+      "pass": false
+    },
+    {
+      "id": "F3",
+      "kind": "paper_figure",
+      "claim": "The paper's refit for the ellipsoidal geometry (Table S11) reproduces the 60-min dorsal-midline BR of Fig. 4F",
+      "citation": "Umulis 2010 Table S11 (Supplemental p.15) and Fig. 4F",
+      "how_measured": "Table S11 Case 1 (lambda*Tld 24.48 min^-1, Rtot 480.5 nM; all else as the default set) on the embryo surface at x/L = 0.5 (48x32), as Fig. 4F: 60-min DM BR vs the digitised figure (pass: within 10%)",
+      "measured": {
+        "model_nM": {
+          "15": 0.21705577508773502,
+          "30": 17.98424932955412,
+          "45": 28.832316531362153,
+          "60": 37.83268951347836
+        },
+        "paper_nM": {
+          "15": 16.8,
+          "30": 30.1,
+          "45": 35.3,
+          "60": 37.9
+        },
+        "relative_error": {
+          "15": -0.9870800133876347,
+          "30": -0.4025166335696306,
+          "45": -0.18322049486226188,
+          "60": -0.0017760022828929188
+        },
+        "evaluated_on": "embryo surface at x/L = 0.5 (48x32), as Fig. 4F",
+        "note": "Only the 60-min level is scored. Before 60 min this set lags the figure for the same reason as F2 (the early Sog/Tsg flood)."
+      },
+      "pass": true
+    },
+    {
+      "id": "V1",
+      "kind": "paper_claim",
+      "claim": "BR begins broad and low and contracts in time: the DM rises while lateral signal is lost",
+      "citation": "Umulis 2010 Fig. 4E-F, p.266; O'Connor et al. 2006 ('rapid loss of pMad signal from nearby lateral cells')",
+      "how_measured": "DM BR and FWHM at 30 vs 60 min, and BR 60 um from the DM (~12 nuclei): must fall after its peak",
+      "measured": {
+        "width30_um": 127.3582320013701,
+        "width60_um": 103.35207999823993,
+        "peak30_nM": 15.178158238168816,
+        "peak60_nM": 30.657658742690412,
+        "flank60um_BR_nM": {
+          "30.0": 8.563930212750499,
+          "45.0": 12.707461196954734,
+          "60.0": 9.072338015228572
+        }
+      },
+      "pass": true
+    },
+    {
+      "id": "V2",
+      "kind": "paper_claim",
+      "claim": "High BR is a narrow stripe at the dorsal midline (~10% of the circumference)",
+      "citation": "Umulis 2010 p.260",
+      "how_measured": "60-min FWHM as % of circumference (pass band 4-25%) and peak position",
+      "measured": {
+        "fwhm_percent_circumference": 18.276660456165434,
+        "peak_location_um_from_dm": 0.0,
+        "paper_percent": 10.0
+      },
+      "pass": true
+    },
+    {
+      "id": "V3",
+      "kind": "paper_claim",
+      "claim": "sog+/- is wider than wt at T = 0.2 and closer to wt at T = 0.4 (direction)",
+      "citation": "Umulis 2010 p.265, Fig. 3E-F",
+      "how_measured": "Full widths at 0.2 and 0.4 of the wt maximum, in 5-um cells",
+      "measured": {
+        "wt_width20_cells": 25.97639207296524,
+        "sog_het_width20_cells": 44.54126358236436,
+        "difference20_cells": 18.56487150939912,
+        "difference40_cells": 7.5770533161872216,
+        "paper_difference20_cells": [
+          2.0,
+          4.0
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "V3b",
+      "kind": "paper_claim",
+      "claim": "sog+/- is 2-4 nuclei wider than wt at T = 0.2 (magnitude)",
+      "citation": "Umulis 2010 p.265",
+      "how_measured": "Width difference at 0.2 of the wt maximum (pass: 1-8 cells, i.e. within 2x of the measured range)",
+      "measured": {
+        "wt_width20_cells": 25.97639207296524,
+        "sog_het_width20_cells": 44.54126358236436,
+        "difference20_cells": 18.56487150939912,
+        "difference40_cells": 7.5770533161872216,
+        "paper_difference20_cells": [
+          2.0,
+          4.0
+        ]
+      },
+      "pass": false
+    },
+    {
+      "id": "V4",
+      "kind": "paper_claim",
+      "claim": "tld-/- has essentially no signaling",
+      "citation": "Umulis 2006 Fig. 3a",
+      "how_measured": "Mutant peak BR / wt peak BR (pass < 0.2)",
+      "measured": {
+        "wt_peak_nM": 30.657658742690412,
+        "tld_null_peak_nM": 0.0007600060439313449,
+        "peak_ratio": 2.479008753767116e-05
+      },
+      "pass": true
+    },
+    {
+      "id": "V5",
+      "kind": "paper_claim",
+      "claim": "sog-/- signaling is broader but weaker at the midline",
+      "citation": "O'Connor et al. 2006 Development (review)",
+      "how_measured": "DM BR and width at 0.2 of the wt maximum",
+      "measured": {
+        "wt_dm_nM": 30.657658742690412,
+        "sog_null_dm_nM": 14.437903437655251,
+        "wt_width20_um": 129.8819603648262,
+        "sog_null_width20_um": 310.7161109044811
+      },
+      "pass": true
+    },
+    {
+      "id": "V6",
+      "kind": "paper_claim",
+      "claim": "With the in-vitro Sog/BMP on-rate the pattern no longer matches (localisation lost)",
+      "citation": "Umulis 2010 p.267-268, Fig. 5B",
+      "how_measured": "k3 = 0.0168 nM^-1 min^-1: FWHM ratio, peak position, DM ratio to wt",
+      "measured": {
+        "wt_fwhm_um": 103.35207999823993,
+        "invitro_fwhm_um": 329.85815036207845,
+        "fwhm_ratio": 3.1915966313178785,
+        "peak_location_um_from_dm": 0.0,
+        "dm_ratio_to_wt": 0.37914285866988184
+      },
+      "pass": true
+    },
+    {
+      "id": "V7",
+      "kind": "paper_claim",
+      "claim": "Without positive feedback lateral signal is not attenuated and the DM accumulates less",
+      "citation": "Umulis 2010 p.260-261 ('a loss of ... positive feedback impedes the attenuation of pMad laterally as well as the accumulation of pMad signaling at the dorsal midline')",
+      "how_measured": "Same Table S8 set with the SBP feedback removed (Lambda = 0): 60-min DM BR and BR 60 um from the DM vs wt",
+      "measured": {
+        "wt_dm_60_nM": 30.657658742690412,
+        "no_feedback_dm_60_nM": 17.1097984461186,
+        "wt_flank60um_60_nM": 9.072338015228572,
+        "no_feedback_flank60um_60_nM": 16.640445645992894,
+        "no_feedback_flank60um_nM": {
+          "30.0": 10.120990178700024,
+          "45.0": 14.771614347885139,
+          "60.0": 16.640445645992894
+        }
+      },
+      "pass": true
+    },
+    {
+      "id": "M1",
+      "kind": "paper_claim",
+      "claim": "The fitted no-feedback set (Table S2) also forms a dorsal stripe with the shared Sog source",
+      "citation": "Umulis 2010 Fig. 4B (every mechanism fits the wt data comparably, RMSD/mu 0.35-0.40)",
+      "how_measured": "Table S2 parameters with the default Sog source on the embryo surface at x/L = 0.5 (48x32): 60-min FWHM (pass < 50% of the circumference, maximum in the dorsal-midline cell). Needs the surface model, so the 1D-only report does not score it.",
+      "measured": {
+        "cross_section_fwhm_percent_circumference": 100.0,
+        "cross_section_peak_BR_nM": 0.2337935975794995,
+        "explanation": "Tsg is secreted only in a central AP block (Fig. 4A). On the embryo surface it diffuses out along the AP axis, so less Sog/Tsg forms at mid-embryo and the Table S2 set localises; the paper compared the mechanisms in this full model (Fig. 4B). The 1D cross-section treats the block as if it covered the whole AP axis, over-supplies Tsg and stays flat, so it is shown for reference and not scored.",
+        "fwhm_percent_circumference": 12.592059223194477,
+        "peak_BR_nM": 65.56225877033661,
+        "peak_location_um_from_dm": 4.415499289039083,
+        "first_cell_um": 8.835729338221293
+      },
+      "pass": true
+    },
+    {
+      "id": "V8",
+      "kind": "paper_claim",
+      "claim": "A 750-um embryo with fixed production/receptor concentrations (shuttling only) splits into two stripes",
+      "citation": "Umulis 2010 Fig. 7, p.271-272 ('splits at ~25% embryo length ... two parallel stripes')",
+      "how_measured": "48x32 surface at 60/90/120 min: AP positions where the BR maximum lies off the dorsal midline (midline < 95% of the maximum); the paper does not state the time of its Fig. 7 snapshot",
+      "measured": {
+        "grid": "48x32",
+        "split_ap_fractions_400": {
+          "60.0": [],
+          "90.0": [],
+          "120.0": []
+        },
+        "split_ap_fractions_750": {
+          "60.0": [],
+          "90.0": [
+            0.002,
+            0.007,
+            0.013,
+            0.022,
+            0.032,
+            0.045,
+            0.209,
+            0.236,
+            0.264,
+            0.294,
+            0.324,
+            0.355,
+            0.386,
+            0.419,
+            0.451,
+            0.484,
+            0.516,
+            0.549,
+            0.581,
+            0.614,
+            0.645,
+            0.676,
+            0.706,
+            0.736,
+            0.764,
+            0.791,
+            0.955,
+            0.968,
+            0.978,
+            0.987,
+            0.993,
+            0.998
+          ],
+          "120.0": [
+            0.002,
+            0.007,
+            0.013,
+            0.022,
+            0.032,
+            0.045,
+            0.158,
+            0.183,
+            0.209,
+            0.236,
+            0.264,
+            0.294,
+            0.324,
+            0.355,
+            0.386,
+            0.419,
+            0.451,
+            0.484,
+            0.516,
+            0.549,
+            0.581,
+            0.614,
+            0.645,
+            0.676,
+            0.706,
+            0.736,
+            0.764,
+            0.791,
+            0.817,
+            0.842,
+            0.955,
+            0.968,
+            0.978,
+            0.987,
+            0.993,
+            0.998
+          ]
+        },
+        "first_split_time_750_min": 90.0,
+        "interior_split_ap_range_750": [
+          0.209,
+          0.791
+        ],
+        "paper_split_start_ap_fraction": 0.25,
+        "note": "cells within 5% of the poles are excluded from the range (the DV direction degenerates there); the paper's split rejoins at the posterior pole on the reconstructed, non-symmetric embryo, while on this symmetric spheroid it is symmetric about mid-embryo"
+      },
+      "pass": true
+    },
+    {
+      "id": "V8b",
+      "kind": "paper_claim",
+      "claim": "With the conservation conditions a large embryo loses signal at the poles and its maximum moves to ~1/2 EL",
+      "citation": "Umulis 2010 p.272 (575-750 um predictions; consistent with D. virilis pMad)",
+      "how_measured": "48x32 surface, 750 um, Supp. Eqs 95-104: pole/max DM BR ratio (< 0.5) and AP position of the maximum (0.4-0.6); plus RMS deviation of the AP-midline DV profile from 400 um with and without conservation",
+      "measured": {
+        "grid": "48x32",
+        "pole_to_max_ratio": 0.180616579271709,
+        "peak_ap_fraction": 0.4836404585891118,
+        "rms_750_unconserved": 0.1121107540551575,
+        "rms_750_conserved": 0.10266978607930492
+      },
+      "pass": true
+    },
+    {
+      "id": "V9",
+      "kind": "paper_claim",
+      "claim": "On the embryo surface, dorsal-midline BR varies along the AP axis",
+      "citation": "Umulis 2010 Fig. 4E, 6, p.264",
+      "how_measured": "Min/max ratio of 60-min DM BR along AP and the AP position of the maximum",
+      "measured": {
+        "grid": "48x32",
+        "dm_min_max_ratio": 0.8851502357555301,
+        "peak_ap_fraction": 0.006678333957560512,
+        "note": "the maximum sits at the termini, where Fig. 4A places dpp around the whole circumference"
+      },
+      "pass": true
+    }
+  ],
+  "passed": 15,
+  "total": 17,
+  "required_ids": [
+    "S1",
+    "D1",
+    "V1",
+    "V2",
+    "V4",
+    "V6",
+    "V7"
+  ],
+  "required_pass": true,
+  "wall_time_s": 36.875842499997816,
+  "assumptions": [
+    "Equations and Tables S1/S2/S3/S8 are used exactly; diffusivities converted from um^2/s to um^2/min.",
+    "Table S1 prints 'phi_S 1.36 uM*min^1'. Used literally (1360 nM/min) with the 2010 Sog equation (no Sog decay term) it floods the PV space with Sog/Tsg and abolishes the dorsal BMP stripe entirely (validation D1). The 2010 Sog source was a FISH-derived field (Supplemental Eq. 82) whose coefficients were not published, so the Sog secretion rate the same authors published for the predecessor model is used.",
+    "Source domains follow Umulis 2010 p.260 and Fig. 4A: BMP in the dorsal-most 40% of the circumference (plus the termini on the surface), Tsg in a central AP block spanning the DV height, Sog in the lateral neuroectoderm (40%-80% of the DM->VM arc). Boundaries are tanh-smoothed over ~5 um.",
+    "Case 1 of the paper: uniform Tkv (receptor) and uniform Tld (p.266).",
+    "Two published parameter sets fit the same data: Table S8 (= Table S12 Case 1, the reconstructed embryo, used by the paper for the mechanism comparison and the scaling predictions) is the default; Table S11 Case 1 is the paper's refit for the symmetric ellipsoid (lambda*Tld 24.48 min^-1, Rtot 480.5 nM) and is offered as 'umulis2010_ellipse'. On this ellipsoid neither set reproduces every published result: the ellipse refit matches the 60-min Fig. 4F level, Table S8 reproduces the 750-um split and the conserved large-embryo profile.",
+    "Initial conditions: all species zero except free receptor = total receptor (the 2010 image-derived initial conditions were not published; the 2006 predecessor used the same zero start).",
+    "The 1D cross-section is the AP midline (x/L = 0.5) with the circular approximation L_half = pi*diameter/2 and mirror symmetry at the dorsal and ventral midlines.",
+    "Surface species (C, BC, BCR, BR) do not diffuse; B, S, T, I and IB diffuse on the PV sheet.",
+    "The 60-min horizon follows the 2010 Fig. 4E-F time axis (15-60 min).",
+    "Observation, not a tuned choice: with uniform Tld (Case 1) and no Sog in the ventral mesoderm, shuttling also concentrates some BMP at the VENTRAL midline (BR about 18% of the dorsal value at 60 min). The paper's training images were dorsal projections, so this region was not constrained by its data; extending Sog to the ventral midline removes it (and raises the dorsal value to ~34 nM)."
+  ],
+  "paper_data": {
+    "umulis2010_fig4F": {
+      "source": "Umulis 2010 Fig. 4F (BR at x/Lx = 0.5), digitised; x-axis NE->DM carries no scale",
+      "times_min": [
+        15.0,
+        30.0,
+        45.0,
+        60.0
+      ],
+      "dm_BR_nM": [
+        16.8,
+        30.1,
+        35.3,
+        37.9
+      ],
+      "ne_floor_BR_nM": 2.5
+    },
+    "umulis2006_fig13": {
+      "source": "Umulis 2006 PNAS Supp. Fig. 13 (Case 4, Rtot = 320 nM), digitised at the dorsal midline",
+      "times_min": [
+        15.0,
+        30.0,
+        45.0,
+        60.0,
+        "s.s."
+      ],
+      "dm_BMP_nM": [
+        1.955,
+        2.867,
+        1.478,
+        0.964,
+        0.592
+      ],
+      "dm_BR_nM": [
+        3.95,
+        19.17,
+        33.24,
+        33.24,
+        31.12
+      ],
+      "note": "At the midline the 45- and 60-min BR curves overlap (both ~33.2 nM).",
+      "ss_stripe_half_width_um": 25.0
+    }
+  }
+}

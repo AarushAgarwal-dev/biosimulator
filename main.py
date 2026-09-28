@@ -13,8 +13,11 @@ import contextlib
 import hashlib
 import hmac
 import math
+import re
+import threading
 import time
 import traceback
+from collections import deque
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +31,8 @@ from simulation_engine import (ODEModel, solve_pde, explore_parameter_space,
                                derive_edges_from_odes)
 import agent
 import llm_provider
+import nl_compiler
+import bmp_embryo
 
 app = FastAPI(title="BioSimulateAI - Biological Modeling & Simulation Copilot")
 
@@ -116,6 +121,94 @@ def _paid_llm_requested(config: Optional[Dict[str, Any]]) -> bool:
     return str((config or {}).get("engine") or "off").strip().lower() == "bedrock"
 
 
+# --- Purdue GenAI Studio: a personal, rate-limited credential ---------------------------
+#
+# The Purdue key is not billed per call, but it acts with the key owner's GenAI Studio
+# identity and the service allows 60 requests/minute per user. So it is protected in two
+# independent ways:
+#   * ACCESS: when paid access is required (the public Render deployment), Purdue calls need
+#     the same deployment token as Bedrock UNLESS the operator deliberately sets
+#     BIOSIM_PURDUE_PUBLIC=1 to offer the AI compiler to anonymous visitors.
+#   * RATE: every LLM-backed request is counted per client and globally, so one visitor (or a
+#     script) cannot exhaust the owner's minute budget. Each compile can make up to three model
+#     calls (one extraction + two repairs), which is why the global default is 15/minute.
+PURDUE_PUBLIC_ENV = "BIOSIM_PURDUE_PUBLIC"
+
+
+class _SlidingWindowLimiter:
+    """In-memory sliding-window counter keyed by client; one process (Render runs one worker)."""
+
+    def __init__(self) -> None:
+        self._hits: Dict[str, deque] = {}
+        self._lock = threading.Lock()
+
+    def check(self, key: str, limit: int, window_s: float = 60.0) -> Optional[float]:
+        """Record a hit and return None, or return the seconds to wait if over the limit."""
+        now = time.monotonic()
+        with self._lock:
+            hits = self._hits.setdefault(key, deque())
+            while hits and now - hits[0] > window_s:
+                hits.popleft()
+            if len(hits) >= limit:
+                return max(0.5, window_s - (now - hits[0]))
+            hits.append(now)
+            if len(self._hits) > 5000:            # bound memory under a key-spraying client
+                for stale in [k for k, v in self._hits.items() if not v or now - v[-1] > window_s]:
+                    self._hits.pop(stale, None)
+            return None
+
+
+_LIMITER = _SlidingWindowLimiter()
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _client_key(request: Request) -> str:
+    """The address the platform proxy saw. Render APPENDS the real peer to X-Forwarded-For, so
+    the right-most entry is the trustworthy one; a client-supplied left-hand value is ignored."""
+    forwarded = str(request.headers.get("x-forwarded-for", "") or "")
+    if forwarded.strip():
+        return forwarded.split(",")[-1].strip()[:64]
+    return str(getattr(request.client, "host", "") or "unknown")[:64]
+
+
+def _rate_limit(request: Request, bucket: str, per_client: int, global_limit: int) -> None:
+    for key, limit in ((f"{bucket}:client:{_client_key(request)}", per_client),
+                       (f"{bucket}:global", global_limit)):
+        wait = _LIMITER.check(key, limit)
+        if wait is not None:
+            scope = "this client" if ":client:" in key else "this deployment"
+            raise HTTPException(
+                status_code=429, headers={"Retry-After": str(int(math.ceil(wait)))},
+                detail=(f"Too many {bucket.replace('_', ' ')} requests from {scope} in the last minute "
+                        f"(limit {limit}/min). Retry in about {int(math.ceil(wait))} s."))
+
+
+def _purdue_public() -> bool:
+    return _env_truthy(PURDUE_PUBLIC_ENV)
+
+
+def _require_llm_access(request: Request, engine: str, operation: str) -> None:
+    """Authorize and rate-limit one LLM-backed request for a server-held credential."""
+    engine = (engine or "off").strip().lower()
+    if engine == "bedrock":
+        _require_paid_access(request, operation)
+    elif engine == "purdue":
+        if not _purdue_public():
+            _require_paid_access(request, operation)
+    else:
+        return
+    _rate_limit(request, "ai_model",
+                _env_positive_int("BIOSIM_LLM_RATE_PER_MIN", 8),
+                _env_positive_int("BIOSIM_LLM_GLOBAL_RATE_PER_MIN", 15))
+
+
 def _run_approach(project: Dict[str, Any], explicit: Optional[str]) -> str:
     return str(explicit or (project or {}).get("selected_approach") or "").strip().lower()
 
@@ -144,6 +237,10 @@ class ParseRequest(BaseModel):
     text: str
     llm: Optional[Dict[str, Any]] = None
     api_key: Optional[str] = None  # deprecated (Gemini); ignored
+    # "ir" (default, every engine): the LLM fills a strict intermediate representation and the
+    # equations are assembled deterministically and verified.
+    # "legacy": the older free-form path (agent.parse_biological_text), kept only on request.
+    compiler: Optional[str] = None
 
 class CompileRequest(BaseModel):
     blueprint: Dict[str, Any]
@@ -426,9 +523,20 @@ def _validated_ode_model(blueprint: Dict[str, Any], where: str = "blueprint"):
     if odes and not isinstance(odes, dict):
         _reject(f"{where}.odes must be an object mapping a species id to its rate "
                 f"expression; got {type(odes).__name__}.")
+    # Resolve names exactly as ODEModel does: species, declared parameters and named
+    # fluxes are plain symbols. Without this, a parameter called e.g. `beta`, `gamma`
+    # or `zeta` parses as the SymPy special function of that name and a valid model
+    # (the Goldbeter 1990 Ca2+ oscillator uses `beta`) was rejected with a 422.
+    declared = {str(node.get("id")) for node in nodes if isinstance(node, dict)}
+    params = blueprint.get("parameters") or {}
+    fluxes = blueprint.get("fluxes") or {}
+    declared |= {str(name) for name in (params if isinstance(params, dict) else {})}
+    declared |= {str(name) for name in (fluxes if isinstance(fluxes, dict) else {})}
+    declared.add("t")
+    symbol_table = {name: sympy.Symbol(name) for name in declared if name.isidentifier()}
     for species, expression in (odes.items() if isinstance(odes, dict) else ()):
         try:
-            parsed = sympy.sympify(str(expression))
+            parsed = sympy.sympify(str(expression), locals=symbol_table)
         except (sympy.SympifyError, SyntaxError, TypeError, AttributeError) as exc:
             _reject(f"{where}.odes[{species!r}] is not a readable expression "
                     f"({type(exc).__name__}): {expression!r}.")
@@ -553,16 +661,53 @@ def _validated_monte_carlo(num_mcs: Any, save_every: Any, where: str) -> Dict[st
 
 # --- Existing Endpoints ---
 
+MAX_DESCRIPTION_CHARS = 8000
+COMPILERS = ("ir", "legacy")
+
+
+def _llm_engine(config: Optional[Dict[str, Any]]) -> str:
+    return str((config or {}).get("engine") or "off").strip().lower()
+
+
+def _choose_compiler(engine: str, requested: Optional[str]) -> str:
+    """The verified IR compiler for every engine; the old free-form path only when asked for."""
+    choice = str(requested or "").strip().lower()
+    if choice and choice not in COMPILERS:
+        _reject(f"compiler must be one of {', '.join(COMPILERS)}; got {requested!r}.")
+    return choice or "ir"
+
+
 @app.post("/api/blueprint")
 def generate_blueprint(req: ParseRequest, request: Request):
-    """Generate a blueprint; require access only when this request selects Bedrock."""
-    if _paid_llm_requested(req.llm):
-        _require_paid_access(request, "Bedrock-backed model compilation")
+    """Compile a description into a blueprint.
+
+    Rule-based and Purdue requests use the verified IR compiler (nl_compiler): the model only
+    names species and processes with verbatim evidence, the equations are assembled
+    deterministically, and signs, conservation and boundedness are checked before anything is
+    returned. Server-held AI credentials (Bedrock, Purdue) are access-controlled and rate-limited.
+    """
+    engine = _llm_engine(req.llm)
+    text = req.text or ""
+    if len(text) > MAX_DESCRIPTION_CHARS:
+        _reject(f"The description is {len(text):,} characters; the limit is {MAX_DESCRIPTION_CHARS:,}. "
+                f"Split it into the part you want modelled.")
+    if engine in ("bedrock", "purdue"):
+        _require_llm_access(request, engine,
+                            "Bedrock-backed model compilation" if engine == "bedrock"
+                            else "Purdue GenAI model compilation")
+    compiler = _choose_compiler(engine, req.compiler)
     try:
-        blueprint = agent.parse_biological_text(req.text, req.llm)
-        return blueprint
+        if compiler == "legacy":
+            return agent.parse_biological_text(text, req.llm)
+        config = dict(req.llm or {}) if llm_provider.wants_llm(req.llm) else None
+        if config is not None and engine == "purdue":
+            config.pop("api_key", None)          # the Purdue key is server-side only
+        return nl_compiler.compile_text(text, config)
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Blueprint compilation failed ({type(e).__name__}).")
+        raise HTTPException(status_code=500, detail=f"Model compilation failed ({type(e).__name__}).")
 
 @app.post("/api/equations-to-model")
 def equations_to_model(req: EquationsRequest):
@@ -574,10 +719,40 @@ def equations_to_model(req: EquationsRequest):
     return agent.build_blueprint_from_equations(text)
 
 
+_EQUATION_LINE = re.compile(r"(?im)^\s*(?:d\s*[A-Za-z_]\w*\s*/\s*d\s*t|[A-Za-z_]\w*\s*')\s*=")
+
+
+def _clean_transcription(text: str) -> str:
+    """Turn a vision model's transcription into the plain syntax build_blueprint_from_equations reads.
+
+    Vision models answer in Markdown or LaTeX despite being asked not to: bullets, **bold**,
+    `code`, $...$, \\frac{a}{b}, \\cdot, x^{2}. None of those change the mathematics, so they are
+    normalised here rather than handed to the parser as unknown symbols.
+    """
+    s = str(text or "")
+    s = re.sub(r"```[a-zA-Z]*", "", s).replace("`", "")
+    s = s.replace("**", "").replace("$", "")
+    s = re.sub(r"\\(?:left|right)", "", s)
+    for _ in range(4):
+        s = re.sub(r"\\d?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}", r"(\1)/(\2)", s)
+    s = re.sub(r"\\frac\s*\{\s*d\s*([A-Za-z_]\w*)\s*\}\s*\{\s*d\s*t\s*\}", r"d\1/dt", s)
+    s = s.replace("\\cdot", "*").replace("\\times", "*").replace("\u00b7", "*").replace("\u2212", "-")
+    s = re.sub(r"\^\{([^{}]*)\}", r"^(\1)", s)
+    s = re.sub(r"_\{([^{}]*)\}", r"_\1", s)
+    s = re.sub(r"\\([A-Za-z]+)", r"\1", s)                 # \alpha -> alpha, \beta -> beta
+    s = re.sub(r"(?m)^\s*(?:[-*\u2022]|\d+[.)])\s+", "", s)  # list bullets / numbering
+    s = s.replace("{", "(").replace("}", ")")
+    return s.strip()
+
+
 @app.post("/api/extract-equations")
 def extract_equations(req: ExtractEquationsRequest, request: Request):
-    """Read equations from an image through Bedrock, which is a metered operation."""
-    _require_paid_access(request, "Bedrock equation extraction")
+    """Read equations from a photo with a server-held vision model (Purdue or Bedrock)."""
+    engine = _llm_engine(req.llm)
+    if engine == "purdue":
+        _require_llm_access(request, "purdue", "Purdue GenAI image reading")
+    else:
+        _require_paid_access(request, "Bedrock equation extraction")
     import base64, re as _re
     data = (req.image or "").strip()
     fmt = req.format
@@ -594,15 +769,36 @@ def extract_equations(req: ExtractEquationsRequest, request: Request):
     if len(image_bytes) > 12 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Image is too large (max 12 MB). Please use a smaller photo.")
     try:
+        if engine in ("purdue", "bedrock"):
+            config = dict(req.llm or {})
+            if engine == "purdue":
+                config = {"engine": "purdue", "model": config.get("model")}
+            client = llm_provider.build_client(config)
+            if not hasattr(client, "transcribe_image"):
+                raise ValueError("The selected engine cannot read images.")
+            transcription = client.transcribe_image(image_bytes, fmt or "png", agent._IMAGE_TRANSCRIBE_PROMPT)
+            cleaned = _clean_transcription(transcription)
+            if not cleaned:
+                raise ValueError("No equations could be read from the image. Try a sharper, better-lit photo.")
+            if _EQUATION_LINE.search(cleaned):
+                # Written equations are compiled EXACTLY as read - no LLM reinterpretation.
+                blueprint = agent.build_blueprint_from_equations(cleaned)
+                blueprint["_compiler"] = "equations/exact"
+            else:
+                blueprint = nl_compiler.compile_text(cleaned, config)
+            blueprint["_transcription"] = transcription
+            blueprint["_engine"] = getattr(client, "active_model", None) or config.get("model") or engine
+            return blueprint
         return agent.parse_image_to_blueprint(image_bytes, fmt or "png", req.llm)
     except ValueError as e:
         # Known, user-actionable problems (no engine, bad image, unreadable) -> 400
         raise HTTPException(status_code=400, detail=str(e))
-    except llm_provider.LLMError:
-        # Provider response bodies can contain account or credential diagnostics.
+    except llm_provider.LLMError as e:
+        # Our own LLMError messages carry status codes only, never provider bodies or keys.
         raise HTTPException(
             status_code=502,
-            detail=("The AI model could not read this image. Check the configured "
+            detail=("The AI model could not read this image. " + str(e) if engine == "purdue" else
+                    "The AI model could not read this image. Check the configured "
                     "Bedrock credential and model access, then try again."),
         )
     except Exception as e:
@@ -647,15 +843,21 @@ def compile_blueprint(req: CompileRequest):
         # None for a generic-Hill model, where the edges ARE the compiled topology and are
         # already true.
         derived_edges = None
+        derived_edges_all = None
         try:
             derived_edges = derive_edges_from_odes(req.blueprint)
+            derived_edges_all = derive_edges_from_odes(req.blueprint, include_minor=True)
         except Exception:
             derived_edges = None
+            derived_edges_all = None
         return {
             "equations": latex_eqs,
             "equations_verbose": latex_eqs_verbose,
             "parameters": model.params_dict,
             "derived_edges": derived_edges,
+            # Every influence in the equations, each flagged `minor` when it is under 5% of the
+            # strongest influence on the same target. The "show every connection" toggle draws it.
+            "derived_edges_all": derived_edges_all,
         }
     except HTTPException:
         raise
@@ -895,14 +1097,20 @@ def simulate_abm(req: ABMSimulateRequest):
 
 @app.post("/api/maple/extract")
 def maple_extract(req: MAPLEExtractRequest, request: Request):
-    """Run MAPLE extraction; Bedrock use requires the deployment access token."""
-    if _paid_llm_requested(req.llm):
-        _require_paid_access(request, "Bedrock-backed MAPLE extraction")
+    """Run MAPLE extraction; server-held AI credentials (Bedrock, Purdue) are access-controlled."""
+    engine = _llm_engine(req.llm)
+    if engine in ("bedrock", "purdue"):
+        _require_llm_access(request, engine,
+                            "Bedrock-backed MAPLE extraction" if engine == "bedrock"
+                            else "Purdue GenAI MAPLE extraction")
+    llm_config = dict(req.llm or {})
+    if engine == "purdue":
+        llm_config.pop("api_key", None)          # the Purdue key is server-side only
     try:
         from maple_extractor import MAPLEExtractor
         from maple_schemas import submodel_target_to_dict, validation_report_to_dict
         
-        extractor = MAPLEExtractor(llm=req.llm)
+        extractor = MAPLEExtractor(llm=llm_config or None)
         target, report, logs = extractor.extract_submodel_target(
             param_name=req.param_name,
             param_units=req.param_units or "",
@@ -1007,15 +1215,46 @@ class EvaluateRequest(BaseModel):
 
 @app.get("/api/llm/env")
 def llm_env():
-    """Report whether the server environment (.env / env vars / AWS profile) is
-    pre-configured for Bedrock, so the UI can auto-select it with no key entry.
-    Never returns any credential value — only booleans and non-secret config."""
+    """Report which server-held AI engines are configured, so the UI can pre-select one with
+    no key entry. Never returns any credential value - only booleans and non-secret config."""
+    try:
+        purdue_ready = bool(llm_provider.purdue_env_ready())
+    except Exception:
+        purdue_ready = False
     return {
         "bedrock_env_ready": llm_provider.bedrock_env_ready(),
         "model": llm_provider.BEDROCK_DEFAULT_MODEL,
         "region": llm_provider.BEDROCK_DEFAULT_REGION,
         "engine_default": (os.getenv("LLM_ENGINE", "").strip().lower() or None),
+        "purdue_env_ready": purdue_ready,
+        "purdue_model": llm_provider._purdue_model(),
+        "purdue_public": _purdue_public(),
+        "paid_access": _paid_access_status(),
+        "compiler_default": "ir",
     }
+
+
+# Models that are useful for model compilation, fastest first (measured 2026-09: gpt-oss:120b
+# answers a structured IR request in ~10-20 s; the 70B Ollama models take 50+ s cold).
+PURDUE_RECOMMENDED = ("gpt-oss:120b", "qwen3:32b", "llama3.3:70b", "gemma3:27b", "qwen2.5:72b",
+                      "gpt-oss:latest")
+
+
+@app.get("/api/llm/purdue/models")
+def purdue_models(request: Request):
+    """Model IDs the configured Purdue key can use (cached for ten minutes by the client)."""
+    if not llm_provider.purdue_env_ready():
+        return {"configured": False, "models": [], "recommended": list(PURDUE_RECOMMENDED),
+                "default": llm_provider._purdue_model()}
+    _rate_limit(request, "model_list", 10, 30)
+    try:
+        client = llm_provider.build_client({"engine": "purdue"})
+        models = client.list_models()
+    except llm_provider.LLMError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"configured": True, "models": models,
+            "recommended": [m for m in PURDUE_RECOMMENDED if m in models],
+            "default": llm_provider._purdue_model()}
 
 
 @app.post("/api/evaluate")
@@ -1732,6 +1971,150 @@ def export_run_metadata_endpoint(run_id: str):
 # Serve Static files - must be loaded after api routes
 os.makedirs("static", exist_ok=True)
 
+
+# --- Umulis et al. (2010) Drosophila BMP embryo model --------------------------------------
+#
+# Public, bounded local compute. The 1D cross-section solves in well under a second; the
+# organism-scale surface solve takes seconds to tens of seconds, so it is size-capped, runs one
+# at a time, and is rate-limited per client. The browser normally reads the precomputed
+# static/data/bmp/cache.json (rebuilt by verify_bmp_umulis2010.py) and only calls these routes
+# for a scenario the cache does not contain.
+
+BMP_MAX_T_END = 180.0
+BMP_SURFACE_LIMITS = {"nu": 48, "nv": 32, "t_end": 120.0}
+_BMP_SURFACE_SLOT = threading.BoundedSemaphore(1)
+BMP_VALIDATION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "data", "bmp",
+                                   "validation.json")
+
+
+class BMPRequest(BaseModel):
+    mechanism: str = "sbp"
+    perturbation: str = "wt"
+    parameter_set: str = bmp_embryo.DEFAULT_PARAMETER_SET
+    overrides: Optional[Dict[str, float]] = None
+    t_end: float = 60.0
+    save_times: Optional[List[float]] = None
+    length_ap: float = 400.0
+    conserve: bool = False
+    n_nodes: Optional[int] = None
+    nu: int = 32
+    nv: int = 24
+    species: Optional[List[str]] = None
+
+
+def _bmp_species(requested: Optional[List[str]]) -> List[str]:
+    names = list(requested or ["BR", "B", "S", "IB"])
+    unknown = [n for n in names if n not in bmp_embryo.SPECIES]
+    if unknown:
+        _reject(f"Unknown BMP model species {unknown}; valid: {', '.join(bmp_embryo.SPECIES)}.")
+    return names
+
+
+def _bmp_common(req: BMPRequest) -> None:
+    t_end = _finite_number("t_end", req.t_end)
+    if not 0.0 < t_end <= BMP_MAX_T_END:
+        _reject(f"t_end must be in (0, {BMP_MAX_T_END:g}] minutes; got {req.t_end!r}.")
+    if req.save_times is not None and len(req.save_times) > 61:
+        _reject("save_times may list at most 61 time points.")
+    if not 100.0 <= float(req.length_ap) <= 1000.0:
+        _reject("length_ap must be between 100 and 1000 um.")
+
+
+@app.get("/api/bmp/info")
+def bmp_info():
+    """Equations, every parameter with its source, perturbations, assumptions and paper data."""
+    return bmp_embryo.model_info()
+
+
+@app.get("/api/bmp/validation")
+def bmp_validation(request: Request, fresh: bool = False):
+    """The model-vs-paper validation report. `fresh=true` recomputes the 1D checks live (~10 s)."""
+    if fresh:
+        _rate_limit(request, "bmp_validation", 2, 6)
+        report = bmp_embryo.validate(include_surface=False)
+        report["source"] = "computed live for this request (1D checks; surface checks are in the precomputed report)"
+        return report
+    try:
+        with open(BMP_VALIDATION_PATH, encoding="utf-8") as handle:
+            import json as _json
+            report = _json.load(handle)
+        report["source"] = "precomputed by verify_bmp_umulis2010.py (includes the organism-scale surface checks)"
+        return report
+    except FileNotFoundError:
+        report = bmp_embryo.validate(include_surface=False)
+        report["source"] = "computed live (no precomputed report was found)"
+        return report
+
+
+@app.post("/api/bmp/cross-section")
+def bmp_cross_section(req: BMPRequest, request: Request):
+    """1D DV cross-section at the AP midline for any mechanism / perturbation / parameter change."""
+    _bmp_common(req)
+    names = _bmp_species(req.species)
+    if req.n_nodes is not None and not 21 <= int(req.n_nodes) <= 201:
+        _reject("n_nodes must be between 21 and 201.")
+    _rate_limit(request, "bmp_cross_section", 60, 240)
+    try:
+        result = bmp_embryo.simulate_cross_section(
+            mechanism=req.mechanism, perturbation=req.perturbation, overrides=req.overrides,
+            n_nodes=req.n_nodes, t_end=float(req.t_end), save_times=req.save_times,
+            length_ap=float(req.length_ap), conserve=bool(req.conserve), parameter_set=req.parameter_set)
+    except ValueError as e:
+        _reject(str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=422, detail=f"The BMP model could not be integrated: {e}")
+    return {
+        "grid": result["grid"], "times": result["times"],
+        "fields": {name: result["fields"][name] for name in names},
+        "sources": result["sources"],
+        "readouts": {"final": {k: v for k, v in result["readouts"]["final"].items() if k != "normalised_BR"},
+                     "by_time": {t: {"peak": r["peak"], "dm_value": r["dm_value"],
+                                     "fwhm_percent_circumference": r.get("fwhm_percent_circumference"),
+                                     "widths_own_max": r["widths_own_max"]}
+                                 for t, r in result["readouts"]["by_time"].items()}},
+        "diagnostics": {k: v for k, v in result["diagnostics"].items()
+                        if k not in ("ligand_mass_actual", "ligand_mass_expected")},
+        "params": result["params"], "mechanism": result["mechanism"],
+        "perturbation": result["perturbation"], "parameter_set": result["parameter_set"],
+    }
+
+
+@app.post("/api/bmp/surface")
+def bmp_surface(req: BMPRequest, request: Request):
+    """Organism-scale solve on the embryo surface (size-capped, one at a time)."""
+    _bmp_common(req)
+    limits = BMP_SURFACE_LIMITS
+    if not (8 <= int(req.nu) <= limits["nu"] and 8 <= int(req.nv) <= limits["nv"]):
+        _reject(f"nu must be 8-{limits['nu']} and nv 8-{limits['nv']} on this server.")
+    if float(req.t_end) > limits["t_end"]:
+        _reject(f"Surface runs are limited to t_end <= {limits['t_end']:g} min on this server.")
+    _rate_limit(request, "bmp_surface", 4, 12)
+    if not _BMP_SURFACE_SLOT.acquire(blocking=False):
+        raise HTTPException(status_code=429, headers={"Retry-After": "15"},
+                            detail="Another embryo-surface simulation is running; retry in a few seconds.")
+    try:
+        result = bmp_embryo.simulate_surface(
+            mechanism=req.mechanism, perturbation=req.perturbation, overrides=req.overrides,
+            nu=int(req.nu), nv=int(req.nv), t_end=float(req.t_end), save_times=req.save_times,
+            length_ap=float(req.length_ap), conserve=bool(req.conserve), time_budget_s=90.0,
+            parameter_set=req.parameter_set)
+    except ValueError as e:
+        _reject(str(e))
+    except TimeoutError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=422, detail=f"The BMP model could not be integrated: {e}")
+    finally:
+        _BMP_SURFACE_SLOT.release()
+    grid = {k: result["grid"][k] for k in ("kind", "nu", "nv", "a_um", "b_um", "u", "v")}
+    return {"grid": grid, "times": result["times"], "BR": result["fields"]["BR"],
+            "readouts": result["readouts"],
+            "diagnostics": {k: v for k, v in result["diagnostics"].items()
+                            if k not in ("ligand_mass_actual", "ligand_mass_expected")},
+            "mechanism": result["mechanism"], "perturbation": result["perturbation"],
+            "parameter_set": result["parameter_set"], "length_ap": float(req.length_ap),
+            "conserve": bool(req.conserve)}
+
 @app.get("/api/health")
 def health():
     """Liveness plus a truthful summary of what this deployment can actually do.
@@ -1771,10 +2154,18 @@ def health():
         # redeploy loop on Render.
         bedrock_ready = False
 
+    try:
+        purdue_ready = bool(llm_provider.purdue_env_ready())
+    except Exception:
+        purdue_ready = False
+
     return {
         "status": "ok",
         "llm_engine": os.environ.get("LLM_ENGINE", "off") or "off",
         "bedrock_configured": bedrock_ready,
+        "purdue_configured": purdue_ready,
+        "purdue_public": _purdue_public(),
+        "compiler": nl_compiler.COMPILER_VERSION,
         # Booleans only. The token and even its length never leave the process.
         "paid_access": _paid_access_status(),
         "approaches": approaches,

@@ -163,9 +163,11 @@ class OscillatorWorksAtBiologicalCooperativityTests(unittest.TestCase):
     physiological oscillator, and the optimizer could not find one either, because the
     _param_bounds cap for *_n is (1.0, 8.0), BELOW the old Hopf point.
 
-    The fix was mechanistic, not a retune: saturable removal, -d*X/(Km + X), after Bliss,
-    Painter & Marr (1982). Near saturation that is zero-order in X, and the resulting
-    ultrasensitivity supplies what high cooperativity was standing in for.
+    The fix was mechanistic, not a retune: saturable removal, -d*X/(Km + X); Kurosawa &
+    Iwasa (2002, J Biol Rhythms 17:568) proved that saturating the degradation steps of
+    such a loop makes sustained oscillation more likely. Near saturation that is
+    zero-order in X, and the resulting ultrasensitivity supplies what high cooperativity
+    was standing in for.
 
     These tests exist because a future retune could silently walk the preset back into
     needing n > 8, and the shipped oscillation target would still pass.

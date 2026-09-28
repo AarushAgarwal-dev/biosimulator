@@ -13,10 +13,75 @@ BioSimulateAI is a web-based platform that translates natural-language descripti
 ## Features
 
 ### Natural Language → Mathematical Model
-- Type biological descriptions like *"EGF binds to EGFR and activates it. EGFR activates RAS."*
-- **Rule-based parser** (regex) or an **open-source LLM** (bundled local model, or a remote endpoint) compiles text into structured JSON blueprints
-- Automatic generation of Hill-function ODE systems with symbolic math (SymPy)
-- LaTeX equation rendering via KaTeX
+- Type biological descriptions like *"p53 activates Mdm2 transcription. Mdm2 promotes p53 degradation. DNA damage stabilizes p53."*
+- **Verified IR compiler** (`nl_compiler.py`): the AI engine (Purdue GenAI Studio by default) only
+  fills a strict intermediate representation - species, processes (production, degradation,
+  conversion, binding, custom rate law) and parameters, each process with a verbatim quote from
+  your text. The equations are then assembled **deterministically**, so conversions and binding
+  conserve mass by construction.
+- **Checked before it is shown**: every stated interaction's sign is verified on the compiled
+  equations (∂(dX/dt)/∂A), the model must simulate finite, non-negative and bounded, and every
+  entity you named must be represented. Failures are repaired (up to two AI rounds) or the
+  deterministic compiler's verified model is used, and the UI says which happened.
+- **Provenance panel**: which engine built the model, the sentence behind each process, which
+  numbers came from your text and which are defaults, and every assumption the compiler made.
+- **Offline rule-based compiler** for common phrasings, and **exact equations** (`dX/dt = …`,
+  typed or read from a photo by a vision model) compiled with no reinterpretation.
+- Benchmark: `python verify_nl_compiler.py [--engine purdue|bedrock] [--rules-only]` (21 descriptions
+  with numeric behavioural checks, run on the rules path and on the live AI engine).
+
+### Organism-scale BMP patterning (Umulis et al. 2010)
+The **Embryo BMP** tab implements Umulis, Shimmi, O'Connor & Othmer (2010), *Developmental Cell*
+18:260-274 (`bmp_embryo.py`): the reaction-transport equations and every fitted parameter of
+Supplemental Tables S1/S2/S3/S8, solved on the surface of a 400 × 180 µm prolate-spheroid embryo
+and on the AP-midline cross-section (BDF with an analytic sparse Jacobian; ligand mass balance
+checked to 10⁻³). The paper's separate refit for the ellipsoid (Table S11, Case 1) is available
+as a second parameter set.
+- **Solver verification**: the same code reproduces the fully specified predecessor model
+  (Umulis et al. 2006 PNAS, Supp. Fig. 13) within 10 % from 30 min to steady state.
+- **Paper claims** (`python verify_bmp_umulis2010.py`): the contracting dorsal stripe, sog+/-
+  widening, tld-/- loss of signal, loss of localisation with the in-vitro Sog/BMP on-rate, the
+  role of feedback, the no-feedback set also forming a stripe, and scaling behaviour (a 750 µm
+  embryo splits into two stripes from ~21 % EL; paper: ~25 %) are each measured and reported
+  pass/fail - 15 of 17 pass. Claims about the paper's 3D model are checked on the embryo surface
+  at x/L = 0.5. The ellipsoid refit reproduces the 60-min dorsal-midline level of Fig. 4F
+  (37.8 vs 37.9 nM).
+  The two that do not pass - the Fig. 4F time course before 60 min, and the size of the sog+/-
+  widening - depend on inputs the paper did not publish (the FISH-derived Sog field and the
+  image-derived initial state). In the model, laterally secreted Sog/Tsg floods the dorsal side for
+  the first ~20 min and holds the signal near zero; the paper's curve already reads 16.8 nM at
+  15 min. Both failures are shown in the app with that explanation.
+- **What had to be interpreted** is listed in the app: Table S1's printed Sog secretion
+  (1.36 µM/min) abolishes the stripe when used literally, so the 2006 value (400 nM/min) is the
+  default and the printed value is selectable.
+
+### Interaction graph
+Arrows are derived from the equations (sign of the partial derivative of each species' production
+terms). Weak influences (< 5 % of the strongest on a target) are folded away for readability;
+**Show every connection** draws all of them, and no species is ever left unconnected.
+
+### Guides
+Three short motion-graphic explainers (Guides tab) rendered from the app's own outputs by
+`python tools/make_videos.py` (needs matplotlib and ffmpeg, which the web service itself does not):
+the language-to-model pipeline, the embryo model, and reading the graph.
+
+### Exact SBML import
+BioModels / SBML models are translated exactly (`sbml_import.py`: MathML kinetic laws,
+stoichiometry, compartments, local parameters, function definitions, assignment and rate rules).
+`python tools/verify_sbml_import.py` compares 8 curated BioModels entries against libroadrunner;
+all agree to better than 10⁻⁴. Events and delays are reported as not imported.
+
+### Published-model presets
+Two presets are the papers' own equations and parameter sets, checked against the numbers in
+those papers (`test_paper_models.py`):
+- **Goldbeter, Dupont & Berridge (1990)** PNAS 87:1461 - Ca²⁺ oscillations. Oscillations occur
+  for β = 28.9-77.4 % (paper: 29.1-77.5 %), the steady state above that range is 0.67 µM
+  (paper: "close to 0.7 µM"), and the period and amplitude are within 3 % of the digitised Fig. 3.
+- **Zhabotinsky (2000)** Biophys J 79:2211 - CaMKII bistability, with the Fig. 9 parameters
+  (Ca²⁺-independent phosphatase). The four step experiments of Fig. 9B come out as published,
+  and the cytosolic set of Fig. 10A is single-valued.
+
+The fold-change preset (after Lyashenko et al. 2020) is a reduced model and says so.
 
 ### Multi-Scale Simulation Engine
 | Scale | Method | Implementation |
@@ -105,20 +170,22 @@ pip install huggingface_hub
 python main.py
 ```
 
-### AI language model (open source)
+### AI engine
 
-The natural-language features are powered by an **open-source LLM**, with no proprietary
-API key required. Open the **🧠 AI** control in the header and choose:
+Open the **🧠** control in the header and choose:
 
-- **Rule-based (offline)**: deterministic regex parser, no model, instant.
-- **Local model**: a GGUF model (Llama 3.2 3B, Gemma 2 2B, Qwen2.5 3B, Llama 3.1 8B,
-  or gpt-oss 20B) downloaded once from HuggingFace and run **in-process on your CPU**
-  via `llama-cpp-python`. Pick a model and click **Download**.
-- **Remote endpoint**: any OpenAI-compatible server (a model you host on AWS with
-  vLLM/TGI, Ollama, LM Studio, Groq, …). Best when accuracy/speed matter most.
+- **Purdue GenAI Studio** (recommended): put `PURDUE_GENAI_API_KEY` in `.env` (see
+  `.env.example`). The key stays on the server. `gpt-oss:120b` compiles a model in ~10-30 s;
+  photos of equations are read by a Purdue vision model (gemma4 / qwen3-vl).
+- **Rule-based (offline)**: deterministic compiler, instant, no model.
+- **AWS Bedrock**, **Remote endpoint** (any OpenAI-compatible server) or **Local model**
+  (GGUF via `llama-cpp-python`) remain available. Every engine goes through the same verified
+  IR compiler (the older free-form path is kept only as `"compiler": "legacy"` on the API), and
+  Bedrock's vision models can read photos of equations too.
 
-> Local CPU inference of a 3B model takes tens of seconds to ~2 minutes per call on a
-> laptop; use a smaller model or a remote endpoint for faster responses.
+On a public deployment (`BIOSIM_REQUIRE_PAID_ACCESS_TOKEN=1`) AI engines need the deployment
+access token unless `BIOSIM_PURDUE_PUBLIC=1`; without it the UI falls back to the rule-based
+compiler and says so. AI requests are rate-limited per client and globally.
 
 The app will be available at **http://127.0.0.1:8000**
 
@@ -176,8 +243,11 @@ Extract quantitative parameters from literature:
 ```
 biosimulator/
 ├── main.py                 # FastAPI server & API routes
-├── llm_provider.py         # Open-source LLM backend (local GGUF + remote endpoints)
-├── agent.py                # NLP text parser & open-source LLM agent
+├── nl_compiler.py          # Verified plain-language -> IR -> equations compiler
+├── bmp_embryo.py           # Umulis et al. 2010 Drosophila BMP embryo model + validation
+├── llm_provider.py         # AI engines: Purdue GenAI Studio, Bedrock, remote, local GGUF
+├── agent.py                # Legacy parser, refinement and target evaluation
+├── tools/make_videos.py    # Renders the Guides videos from real outputs
 ├── simulation_engine.py    # ODE compiler (SymPy) & PDE solver
 ├── abm_engine.py           # Cellular Potts Model engine
 ├── abm_blueprints.py       # Preset ABM configurations
@@ -202,8 +272,14 @@ biosimulator/
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/blueprint` | POST | Parse natural language → blueprint JSON |
-| `/api/compile` | POST | Compile blueprint → LaTeX equations + parameters |
+| `/api/blueprint` | POST | Description → verified blueprint (`llm.engine`: `purdue` / `off` / `bedrock` …) |
+| `/api/compile` | POST | Compile blueprint → LaTeX equations, parameters, derived graph (`derived_edges`, `derived_edges_all`) |
+| `/api/llm/env` | GET | Configured engines (booleans and model names only) |
+| `/api/llm/purdue/models` | GET | Models available to the server's Purdue key |
+| `/api/bmp/info` | GET | Umulis 2010 equations, parameters with sources, assumptions |
+| `/api/bmp/validation` | GET | Model-vs-paper checks (`?fresh=true` recomputes the 1D checks) |
+| `/api/bmp/cross-section` | POST | Solve the DV cross-section for a mechanism / genotype / parameter change |
+| `/api/bmp/surface` | POST | Solve on the embryo surface (size-capped, one at a time) |
 | `/api/simulate` | POST | Run ODE or PDE simulation |
 | `/api/sample` | POST | Latin-Hypercube parameter-space exploration |
 | `/api/llm/models` | GET | List open-source LLMs + download status |
