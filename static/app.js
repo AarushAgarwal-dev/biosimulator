@@ -139,8 +139,9 @@ U diffuses slowly, V diffuses quickly.`,
     },
     oscillator: {
         // Goodwin (1965) three-stage negative-feedback loop: GENA -> GENB -> GENC -| GENA,
-        // in the Bliss, Painter & Marr (1982) form -- removal is SATURABLE,
-        // -d*X/(Km + X), not first-order.
+        // with SATURABLE (Michaelis-Menten) removal, -d*X/(Km + X), not first-order.
+        // Kurosawa & Iwasa (2002, J Biol Rhythms 17:568) proved that saturating the
+        // degradation steps of such a loop makes sustained oscillation more likely.
         //
         // Why the mechanism changed. Griffith (1968) proved that this loop with
         // FIRST-ORDER removal has a limit cycle only for Hill n > 8, and that is exactly
@@ -184,7 +185,7 @@ GENC starts at 0.268.`,
         t_max: 300.0,
         blueprint: {
             type: "ODE",
-            name: "Goodwin oscillator with saturable removal (Bliss-Painter-Marr)",
+            name: "Goodwin oscillator with saturable removal",
             nodes: [
                 { id: "GENA", name: "Gene A product", initial_value: 0.5885 },
                 { id: "GENB", name: "Gene B product", initial_value: 0.5482 },
@@ -265,7 +266,8 @@ CAMKII starts at 0.1.`,
         }
     },
     foldchange: {
-        // Incoherent feed-forward loop (Goentoro & Alon 2009): EGF drives AKT directly
+        // Incoherent feed-forward loop (Goentoro, Shoval, Kirschner & Alon 2009, Mol Cell
+        // 36:894): EGF drives AKT directly
         // AND drives an adapted background BG that divides it, so AKT tracks the RATIO
         // EGF/BG - the input's fold-change - and not its absolute level. BG adapts at a
         // level-INDEPENDENT rate (Weber's law), which is what makes the peak invariant.
