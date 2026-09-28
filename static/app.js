@@ -634,14 +634,14 @@ async function loadPreset(name) {
     state.tmaxOverride = preset.t_max || null;
     if (preset.t_max) document.getElementById("sim-tmax").value = preset.t_max;
 
-    // Toggle active classes on buttons
-    document.getElementById("load-egfr-btn").classList.toggle("active", name === 'egfr');
-    document.getElementById("load-turing-btn").classList.toggle("active", name === 'turing');
-    [["load-oscillator-btn", "oscillator"], ["load-bistable-btn", "bistable"],
-     ["load-foldchange-btn", "foldchange"]].forEach(([id, key]) => {
-        const b = document.getElementById(id);
-        if (b) b.classList.toggle("active", name === key);
-    });
+    // Toggle active classes on every preset button, including the published-model ones:
+    // clearing only these five left e.g. Lyashenko highlighted next to EGF/EGFR.
+    ["load-egfr-btn", "load-turing-btn", "load-oscillator-btn", "load-bistable-btn",
+     "load-foldchange-btn", "load-berridge-btn", "load-zhabotinsky-btn", "load-lyashenko-btn"]
+        .forEach(id => {
+            const b = document.getElementById(id);
+            if (b) b.classList.toggle("active", id === `load-${name}-btn`);
+        });
 
     // If the preset ships a ready blueprint, load it directly (no LLM). This keeps the
     // species exactly matching the targets, so the closed-loop optimizer works reliably.
@@ -934,6 +934,15 @@ function resetModelViews() {
     state.derivedEdges = null;
     state.derivedEdgesAll = null;
     renderProvenance(state.blueprint);
+    // The Feedback tab kept the last model's target results (e.g. "S steady state -- could
+    // not be evaluated" after a p53 model replaced the fold-change preset). They describe
+    // a model that is no longer loaded, so clear them until the new model is evaluated.
+    const evalList = document.getElementById("target-eval-list");
+    if (evalList) evalList.innerHTML = "";
+    const score = document.getElementById("target-score-percentage");
+    if (score) score.textContent = "0%";
+    const ring = document.getElementById("target-progress-bar");
+    if (ring) ring.style.strokeDashoffset = "";
 }
 
 function el(tag, className, text) {
@@ -1151,8 +1160,9 @@ document.getElementById("btn-parse-text").addEventListener("click", async () => 
     }
 
     updateStatus("Parsing text...", "yellow");
-    const llm = getLlmConfig();
+    const llm = requestLlmConfig();
     const usingAi = llm.engine !== 'off';
+    if (!usingAi && (state.llm || {}).engine !== 'off') noteRulesInsteadOfAi();
     const stopBusy = setBusy(document.getElementById("btn-parse-text"),
         usingAi ? `Compiling with ${engineDisplayName(state.llm)}…` : "Compiling…");
 
@@ -1203,6 +1213,10 @@ async function handleEquationImageFile(file) {
     const llm = getLlmConfig();
     if (llm.engine !== 'bedrock' && llm.engine !== 'purdue') {
         statusEl.textContent = "Reading a photo needs an engine with a vision model: choose Purdue GenAI (or AWS Bedrock) in the AI engine settings (🧠 in the header).";
+        return;
+    }
+    if (aiBlockedWithoutToken()) {
+        statusEl.textContent = `Reading a photo uses ${engineDisplayName(state.llm)}, which on this deployment needs the deployment access token (🧠 AI engine settings). You can type the equations in "Write equations" instead.`;
         return;
     }
     if (file.size > 12 * 1024 * 1024) { statusEl.textContent = "That image is too large (max 12 MB)."; return; }
@@ -2751,7 +2765,9 @@ async function runClosedLoopFeedback() {
                     blueprint: state.blueprint,
                     simulation_results: state.simulationResults,
                     targets: state.targets,
-                    llm: getLlmConfig()
+                    // Refinement is numerical; a token-gated engine a visitor cannot use
+                    // would only turn every round into a 401.
+                    llm: requestLlmConfig()
                 })
             });
 
@@ -3087,6 +3103,13 @@ function toggleAbmPlayback(play) {
 async function extractMapleParameters() {
     const paramName = document.getElementById("maple-param-name").value;
     if (!paramName) return alert("Parameter Name is required.");
+    // Literature extraction needs a language model. Sending the rule-based engine instead
+    // would return MAPLE's demo target, which must never pass for an extraction.
+    if (aiBlockedWithoutToken()) {
+        showToast(`MAPLE extraction uses ${engineDisplayName(state.llm)}, which on this deployment needs `
+                  + `the deployment access token (🧠 AI engine settings).`, "warn", 9000);
+        return false;
+    }
 
     const units = document.getElementById("maple-param-units").value;
     const desc = document.getElementById("maple-param-desc").value;
@@ -3825,6 +3848,28 @@ function aiNeedsToken() {
     return false;
 }
 
+// True when the selected AI engine is token-gated on this deployment and this browser has
+// no token, so the server is certain to refuse it.
+function aiBlockedWithoutToken() {
+    return aiNeedsToken() && !paidAccessToken();
+}
+
+// The engine configuration a request should actually send. A visitor without the token
+// used to send the token-gated engine anyway and receive a guaranteed 401 -- a console
+// error on every compile, a second request, and a closed loop that stopped with
+// "requires the deployment access token" although refinement is numerical only.
+function requestLlmConfig() {
+    return aiBlockedWithoutToken() ? { engine: 'off' } : getLlmConfig();
+}
+
+let rulesInsteadOfAiNoticeShown = false;
+function noteRulesInsteadOfAi() {
+    if (rulesInsteadOfAiNoticeShown || typeof showToast !== "function") return;
+    rulesInsteadOfAiNoticeShown = true;
+    showToast(`Compiled with the rule-based compiler: ${engineDisplayName(state.llm)} on this deployment `
+              + `needs the deployment access token (🧠 AI engine settings).`, "info", 8000);
+}
+
 function updateEngineLabel() {
     const el = document.getElementById('ai-engine-label');
     if (el) el.textContent = engineDisplayName(state.llm);
@@ -3833,11 +3878,11 @@ function updateEngineLabel() {
     const engine = (state.llm || {}).engine;
     if (engine === 'off') {
         hint.textContent = "Compiled by the offline rule-based compiler. Choose an AI engine (🧠) for free-form wording.";
+    } else if (aiBlockedWithoutToken()) {
+        hint.textContent = `Compiled by the rule-based compiler → verified intermediate representation → deterministic equations. `
+            + `${engineDisplayName(state.llm)} on this deployment needs the deployment access token (🧠 AI engine settings).`;
     } else {
-        let text = `Compiled by ${engineDisplayName(state.llm)} → verified intermediate representation → deterministic equations.`;
-        if (aiNeedsToken() && !paidAccessToken())
-            text += " This deployment needs an access token for AI compilation; without one the rule-based compiler is used.";
-        hint.textContent = text;
+        hint.textContent = `Compiled by ${engineDisplayName(state.llm)} → verified intermediate representation → deterministic equations.`;
     }
 }
 
