@@ -523,9 +523,20 @@ def _validated_ode_model(blueprint: Dict[str, Any], where: str = "blueprint"):
     if odes and not isinstance(odes, dict):
         _reject(f"{where}.odes must be an object mapping a species id to its rate "
                 f"expression; got {type(odes).__name__}.")
+    # Resolve names exactly as ODEModel does: species, declared parameters and named
+    # fluxes are plain symbols. Without this, a parameter called e.g. `beta`, `gamma`
+    # or `zeta` parses as the SymPy special function of that name and a valid model
+    # (the Goldbeter 1990 Ca2+ oscillator uses `beta`) was rejected with a 422.
+    declared = {str(node.get("id")) for node in nodes if isinstance(node, dict)}
+    params = blueprint.get("parameters") or {}
+    fluxes = blueprint.get("fluxes") or {}
+    declared |= {str(name) for name in (params if isinstance(params, dict) else {})}
+    declared |= {str(name) for name in (fluxes if isinstance(fluxes, dict) else {})}
+    declared.add("t")
+    symbol_table = {name: sympy.Symbol(name) for name in declared if name.isidentifier()}
     for species, expression in (odes.items() if isinstance(odes, dict) else ()):
         try:
-            parsed = sympy.sympify(str(expression))
+            parsed = sympy.sympify(str(expression), locals=symbol_table)
         except (sympy.SympifyError, SyntaxError, TypeError, AttributeError) as exc:
             _reject(f"{where}.odes[{species!r}] is not a readable expression "
                     f"({type(exc).__name__}): {expression!r}.")

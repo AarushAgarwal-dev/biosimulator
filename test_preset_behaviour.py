@@ -19,7 +19,7 @@ This module asks exactly that, for all eight shipped presets, numerically:
     Fold-change ....... the peak response to a fixed ~3x input step must agree
                         within 15% across a 100x span of absolute input levels,
                         sampled at 5 levels
-    Berridge & Goldbeter 1990 ... sustained cytosolic Ca2+ oscillations
+    Goldbeter, Dupont & Berridge 1990 ... sustained cytosolic Ca2+ oscillations
     Zhabotinsky 2000 ............ a transient Ca2+ pulse latches CaMKII ON and it
                                   stays ON; the OFF state is stable without a pulse
     Lyashenko 2020 .............. fold-change detection: equal fold steps give
@@ -187,7 +187,7 @@ FOLDCHANGE_TEXT = PRESETS["foldchange"]["text"]
 FOLDCHANGE_INPUT = _target_species("foldchange", "fold_change", field="input")
 FOLDCHANGE_OUTPUT = _target_species("foldchange", "fold_change", field="output")
 
-# --- Berridge & Goldbeter (1990) ---------------------------------------------
+# --- Goldbeter, Dupont & Berridge (1990) -------------------------------------
 
 BERRIDGE_BLUEPRINT = BLUEPRINTS["berridge"]
 BERRIDGE_READOUT = _target_species("berridge", "oscillation")        # cytosolic Ca2+
@@ -755,11 +755,11 @@ class FoldChangePresetBehaviourTest(unittest.TestCase):
 
 
 # ==========================================================================
-# BERRIDGE & GOLDBETER 1990
+# GOLDBETER, DUPONT & BERRIDGE 1990
 # ==========================================================================
 
 class BerridgePresetBehaviourTest(unittest.TestCase):
-    """Berridge & Goldbeter (1990): sustained cytosolic Ca2+ oscillations (CICR).
+    """Goldbeter, Dupont & Berridge (1990): sustained cytosolic Ca2+ oscillations (CICR).
     Published hallmark: self-sustained spikes with a regular period."""
 
     @classmethod
@@ -824,8 +824,8 @@ class ZhabotinskyPresetBehaviourTest(unittest.TestCase):
     not bistable.
     """
 
-    ON_LEVEL = 10.0          # active CaMKII considered "ON" (paper/preset value ~15)
-    OFF_LEVEL = 1.0          # active CaMKII considered "OFF"
+    ON_LEVEL = 10.0          # phosphorylated subunits considered "ON" (preset: ~161 uM of 200)
+    OFF_LEVEL = 1.0          # phosphorylated subunits considered "OFF" (preset: ~0.14 uM)
 
     @classmethod
     def setUpClass(cls):
@@ -842,8 +842,8 @@ class ZhabotinskyPresetBehaviourTest(unittest.TestCase):
 
     def test_transient_pulse_latches_the_switch_on(self):
         """Required: active CaMKII is OFF (< 1.0) before the pulse at t = 20 and ON
-        (>= 10.0) well after the pulse ends at t = 60. Measured: 0.193 at t = 15,
-        14.15 at t = 70, 15.42 at t = 350 (passes)."""
+        (>= 10.0) well after the pulse ends at t = 220. Measured: 0.142 at t = 15,
+        171.1 at t = 230, 161.0 at t = 1200 (passes)."""
         before = value_at(self.t, self.y, ZHAB_PULSE_ON - 5.0)
         after = value_at(self.t, self.y, ZHAB_PULSE_OFF + 10.0)
         final = float(self.y[-1])
@@ -866,7 +866,7 @@ class ZhabotinskyPresetBehaviourTest(unittest.TestCase):
     def test_latched_state_persists_at_three_times_the_horizon(self):
         """'Permanently ON' means the latch outlives the plotted window. Required: at
         3*t_max the level is still >= 10.0 and >= 80% of its value at t_max. Measured:
-        15.42 at t = 350 and 15.57 at t = 1050 (passes)."""
+        161.0 at t = 1200 and 161.0 at t = 3600 (passes)."""
         at_tmax = float(self.y[-1])
         at_long = float(self.long_y[-1])
         self.assertGreaterEqual(
@@ -885,7 +885,7 @@ class ZhabotinskyPresetBehaviourTest(unittest.TestCase):
     def test_off_state_is_stable_without_a_pulse(self):
         """Without the pulse (amp = 0) the same baseline Ca2+ must leave CaMKII OFF --
         that is what makes the switch bistable rather than Ca2+-driven. Required:
-        max < 1.0 over the whole run. Measured: 0.243 (passes)."""
+        max < 1.0 over the whole run. Measured: 0.142 (passes)."""
         peak = float(self.ctrl_y.max())
         self.assertLess(
             peak, self.OFF_LEVEL,

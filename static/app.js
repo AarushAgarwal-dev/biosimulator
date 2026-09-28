@@ -326,24 +326,27 @@ AKT starts at 1.0.`,
 //
 // WITH ONE EXCEPTION, stated because misattributing a model is a citation error, not
 // a cosmetic one: `berridge` and `zhabotinsky` are faithful transcriptions -- the
-// published parameter sets, the published rate laws, and in Zhabotinsky's case total
-// CaMKII conserved to 2.000000 over 350 time units. `lyashenko` is NOT: it is a
+// published rate laws with the published parameter sets (Goldbeter, Dupont & Berridge
+// 1990 Fig. 2; Zhabotinsky 2000 Fig. 9), checked quantitatively against those papers
+// in test_paper_models.py; Zhabotinsky's 20 uM of CaMKII holoenzyme is conserved to
+// 20.000000 over the 1200 s run. `lyashenko` is NOT: it is a
 // three-equation reduced model that reproduces the hallmark (fold-change detection)
 // without the paper's receptor-trafficking kinetics. Its own description says so.
 // ==========================================================================
 const PaperModels = {
     berridge: {
-        title: "Ca²⁺ oscillations (Berridge & Goldbeter, 1990)",
+        title: "Ca²⁺ oscillations (Goldbeter, Dupont & Berridge, 1990)",
         hallmark: "sustained cytosolic Ca²⁺ oscillations",
         description:
-`Published model: Berridge–Goldbeter (1990) two-pool Ca²⁺ oscillator.
-Cytosolic Ca²⁺ (Z) and internal-store Ca²⁺ (Y) exchange via CICR.
-This loads the exact rate laws (v2 pump, v3 store release) as a
-mass-conserving ODE system. Click "Run Simulation" to see the
-self-sustained calcium spikes.`,
+`Published model: Goldbeter, Dupont & Berridge (1990) PNAS 87:1461 minimal
+two-pool Ca²⁺ oscillator. Cytosolic Ca²⁺ (Z) and InsP3-insensitive store Ca²⁺ (Y)
+exchange via Ca²⁺-induced Ca²⁺ release. This loads the paper's rate laws (v2 pump,
+v3 store release, Eqs. 1-2) and the Fig. 2 parameter values. Checked against the
+paper: oscillations for β = 28.9–77.4% (paper: 29.1–77.5%), and period and
+amplitude within 3% of Fig. 3. Click "Run Simulation" to see the calcium spikes.`,
         blueprint: {
             type: "ODE",
-            name: "Berridge–Goldbeter Ca2+ oscillator",
+            name: "Goldbeter-Dupont-Berridge Ca2+ oscillator",
             nodes: [
                 { id: "Z", name: "Cytosolic Ca2+", initial_value: 0.1 },
                 { id: "Y", name: "Internal-store Ca2+", initial_value: 0.1 }
@@ -376,18 +379,21 @@ self-sustained calcium spikes.`,
         title: "CaMKII bistable memory (Zhabotinsky, 2000)",
         hallmark: "a transient Ca²⁺ pulse that latches CaMKII permanently ON",
         description:
-`Published model: Zhabotinsky (2000) CaMKII autophosphorylation switch.
+`Published model: Zhabotinsky (2000) CaMKII autophosphorylation switch, Biophys J 79:2211.
 An 11-state holoenzyme (P0..P10) with Ca²⁺/CaM-driven phosphorylation and
-saturable PP1 dephosphorylation — the exact mechanism that makes the kinase
-bistable. Baseline Ca²⁺ is held at 2.0, inside the bistable window (~1.8-2.15),
-so both OFF and ON states are stable. A brief Ca²⁺ pulse (t=20-60) to 3.0 flips
-the switch; active CaMKII (A) then stays ON permanently = molecular memory.`,
+saturable phosphatase dephosphorylation (Eqs. 6, 12, 15, 17), with the paper's own
+parameters for a Ca²⁺-independent phosphatase (Fig. 9: KM = 0.4 µM, 20 µM CaMKII
+holoenzymes, 0.3 µM phosphatase; k1 = 0.5 s⁻¹, k2 = 2 s⁻¹, KH1 = 4 µM).
+Baseline Ca²⁺ is 1.8 µM, inside the bistable window (~1.65–2.05 µM), so both OFF
+and ON states are stable. As in Fig. 9B, Ca²⁺ steps to 2.3 µM (t = 20–220 s) and
+back to 1.8 µM: the kinase stays on the top branch (A ≈ 161 µM phosphorylated
+subunits) = molecular memory. Without the step it stays OFF (A ≈ 0.14 µM).`,
         blueprint: {
             type: "ODE",
             name: "Zhabotinsky CaMKII bistable switch",
             nodes: [
-                { id: "Ca", name: "Calcium stimulus", initial_value: 2.0 },
-                { id: "P0", name: "Unphosphorylated CaMKII", initial_value: 2.0 },
+                { id: "Ca", name: "Calcium stimulus", initial_value: 1.8 },
+                { id: "P0", name: "Unphosphorylated CaMKII", initial_value: 20.0 },
                 { id: "P1", initial_value: 0.0 }, { id: "P2", initial_value: 0.0 },
                 { id: "P3", initial_value: 0.0 }, { id: "P4", initial_value: 0.0 },
                 { id: "P5", initial_value: 0.0 }, { id: "P6", initial_value: 0.0 },
@@ -400,8 +406,8 @@ the switch; active CaMKII (A) then stays ON permanently = molecular memory.`,
                 { id: "e2", source: "A", target: "A", type: "activation" }
             ],
             parameters: {
-                k1: 0.5, k2: 2.0, KH1: 4.0, KM: 0.4, ep: 0.05,
-                kca: 5.0, Cabase: 2.0, amp: 1.0, sr: 2.0, t_on: 20.0, t_off: 60.0, kobs: 50.0
+                k1: 0.5, k2: 2.0, KH1: 4.0, KM: 0.4, ep: 0.3,
+                kca: 5.0, Cabase: 1.8, amp: 0.5, sr: 2.0, t_on: 20.0, t_off: 220.0, kobs: 50.0
             },
             fluxes: {
                 v1: "10*k1*(Ca/KH1)**8*P0/(1 + (Ca/KH1)**4)**2",
@@ -425,10 +431,10 @@ the switch; active CaMKII (A) then stays ON permanently = molecular memory.`,
                 A: "kobs*(Ssum - A)"
             },
             plot_species: ["Ca", "A"],
-            simulation_config: { t_max: 350.0 }
+            simulation_config: { t_max: 1200.0 }
         },
         targets: [
-            { species: "A", type: "steady_state", value: 15.0, tolerance: 4.0 }
+            { species: "A", type: "steady_state", value: 160.0, tolerance: 20.0 }
         ]
     },
 

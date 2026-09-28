@@ -71,6 +71,18 @@ stoichiometry, compartments, local parameters, function definitions, assignment 
 `python tools/verify_sbml_import.py` compares 8 curated BioModels entries against libroadrunner;
 all agree to better than 10⁻⁴. Events and delays are reported as not imported.
 
+### Published-model presets
+Two presets are the papers' own equations and parameter sets, checked against the numbers in
+those papers (`test_paper_models.py`):
+- **Goldbeter, Dupont & Berridge (1990)** PNAS 87:1461 - Ca²⁺ oscillations. Oscillations occur
+  for β = 28.9-77.4 % (paper: 29.1-77.5 %), the steady state above that range is 0.67 µM
+  (paper: "close to 0.7 µM"), and the period and amplitude are within 3 % of the digitised Fig. 3.
+- **Zhabotinsky (2000)** Biophys J 79:2211 - CaMKII bistability, with the Fig. 9 parameters
+  (Ca²⁺-independent phosphatase). The four step experiments of Fig. 9B come out as published,
+  and the cytosolic set of Fig. 10A is single-valued.
+
+The fold-change preset (after Lyashenko et al. 2020) is a reduced model and says so.
+
 ### Multi-Scale Simulation Engine
 | Scale | Method | Implementation |
 |-------|--------|----------------|
