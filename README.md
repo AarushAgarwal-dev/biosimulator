@@ -27,8 +27,8 @@ BioSimulateAI is a web-based platform that translates natural-language descripti
   numbers came from your text and which are defaults, and every assumption the compiler made.
 - **Offline rule-based compiler** for common phrasings, and **exact equations** (`dX/dt = …`,
   typed or read from a photo by a vision model) compiled with no reinterpretation.
-- Benchmark: `python verify_nl_compiler.py` (21 descriptions with numeric behavioural checks,
-  rules and live AI).
+- Benchmark: `python verify_nl_compiler.py [--engine purdue|bedrock] [--rules-only]` (21 descriptions
+  with numeric behavioural checks, run on the rules path and on the live AI engine).
 
 ### Organism-scale BMP patterning (Umulis et al. 2010)
 The **Embryo BMP** tab implements Umulis, Shimmi, O'Connor & Othmer (2010), *Developmental Cell*
