@@ -1154,10 +1154,65 @@ def _auto_repair_ir(ir: Dict[str, Any], text: str) -> Dict[str, Any]:
                 notes.append(f"Parameter '{name}' was referenced but not declared; default {default:g} used.")
     if notes:
         ir.setdefault("assumptions", []).extend(notes)
+    _drop_duplicate_processes(ir)
     _prune_unevidenced_species(ir)
     _protect_catalysts(ir)
     _ensure_regulator_sources(ir)
     return ir
+
+
+def _drop_duplicate_processes(ir: Dict[str, Any]) -> None:
+    """Do not count one described rate twice.
+
+    Measured on gpt-oss:120b for "p53 activates Mdm2 transcription. Mdm2 promotes p53 degradation.
+    DNA damage stabilizes p53.": the sentence "Mdm2 promotes p53 degradation" became BOTH a
+    process "degradation of p53 activated by Mdm2" and a merged "degradation of p53 activated by
+    Mdm2 and repressed by DNA damage", which doubles the Mdm2-driven loss. A production/degradation
+    process is removed when another process of the same kind on the same species quotes the same
+    sentence and already contains all of its regulators. A process carrying a number from the text
+    that the other does not use is kept, so no stated value is lost.
+    """
+    processes = ir.get("processes", []) or []
+    text_params = {p.get("name") for p in ir.get("parameters", []) if p.get("source") == "text"}
+
+    def subject(p):
+        return p.get("target") if p.get("kind") == "production" else p.get("species")
+
+    def regs(p):
+        return {(r.get("species") or r.get("stimulus"), r.get("effect"))
+                for r in (p.get("regulators") or []) if isinstance(r, dict)}
+
+    def refs(p):
+        out = {p.get(f) for f in ("k", "Km", "kon", "koff") if isinstance(p.get(f), str)}
+        out |= {r.get(f) for r in (p.get("regulators") or []) if isinstance(r, dict)
+                for f in ("K", "n") if isinstance(r.get(f), str)}
+        return out
+
+    def norm(e):
+        return re.sub(r"[^a-z0-9]+", " ", str(e or "").lower()).strip()
+
+    removed: List[Dict[str, Any]] = []
+    for i, p in enumerate(processes):
+        rp = regs(p)
+        if p.get("assumed") or p.get("kind") not in ("production", "degradation") or not rp:
+            continue
+        for j, q in enumerate(processes):
+            if j == i or q in removed or q.get("kind") != p.get("kind") or subject(q) != subject(p):
+                continue
+            rq = regs(q)
+            if not rp <= rq or (rp == rq and j > i):          # exact duplicates: keep the first
+                continue
+            if not norm(p.get("evidence")) or norm(p.get("evidence")) != norm(q.get("evidence")):
+                continue
+            if p.get("half_life") not in (None, "") or (refs(p) & text_params) - refs(q):
+                continue
+            removed.append(p)
+            ir.setdefault("assumptions", []).append(
+                f"Process '{p.get('id')}' repeated what '{q.get('id')}' already encodes from the same sentence "
+                f"(\"{str(p.get('evidence'))[:80]}\"); the duplicate was removed so the rate is not counted twice.")
+            break
+    if removed:
+        ir["processes"] = [p for p in processes if p not in removed]
 
 
 def _prune_unevidenced_species(ir: Dict[str, Any]) -> None:

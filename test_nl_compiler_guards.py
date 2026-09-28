@@ -159,6 +159,57 @@ class CoverageWordsTests(unittest.TestCase):
         self.assertIn("Glucokinase", report["coverage"]["missing"])
 
 
+class DuplicateProcessTests(unittest.TestCase):
+    TEXT = ("p53 activates Mdm2 transcription. Mdm2 promotes p53 degradation. DNA damage stabilizes p53. "
+            "p53 is produced at rate 1.")
+
+    @staticmethod
+    def _ir(extra):
+        params = ["k_prod_p53", "k_prod_Mdm2", "k_deg_Mdm2", "k_deg_p53", "k_deg_p53_2", "k_deg_p53_3",
+                  "K1", "n1", "K2", "n2", "K3", "n3", "K4", "n4"]
+        base = [
+            {"id": "p1", "kind": "production", "target": "p53", "k": "k_prod_p53", "evidence": "p53 is produced at rate 1", "assumed": False},
+            {"id": "p2", "kind": "production", "target": "Mdm2", "k": "k_prod_Mdm2", "evidence": "p53 activates Mdm2 transcription",
+             "assumed": False, "regulators": [{"species": "p53", "effect": "activate", "K": "K1", "n": "n1"}]},
+            {"id": "p3", "kind": "degradation", "species": "Mdm2", "k": "k_deg_Mdm2", "evidence": "", "assumed": True, "reason": "turnover"},
+            {"id": "q", "kind": "degradation", "species": "p53", "k": "k_deg_p53", "evidence": "Mdm2 promotes p53 degradation",
+             "assumed": False, "regulators": [{"species": "Mdm2", "effect": "activate", "K": "K2", "n": "n2"},
+                                              {"stimulus": "DNA_damage", "effect": "repress", "K": "K3", "n": "n3"}]},
+        ]
+        return {"model_type": "ode", "time_unit": "min", "t_end": 100.0,
+                "species": [{"id": s, "name": s, "initial": 0.0, "initial_source": "default", "diffusion": None, "role": "state"}
+                            for s in ("p53", "Mdm2")],
+                "parameters": [{"name": n, "value": 1.0, "source": "text" if n == "k_prod_p53" else "default",
+                                "unit": "a", "meaning": n} for n in params],
+                "stimuli": [{"name": "DNA_damage", "profile": "constant", "level": 1.0, "t_on": None, "t_off": None,
+                             "evidence": "DNA damage stabilizes p53"}],
+                "processes": base + extra, "assumptions": [], "unmodeled": []}
+
+    def test_a_process_repeated_inside_a_merged_one_is_removed(self):
+        dup = {"id": "dup", "kind": "degradation", "species": "p53", "k": "k_deg_p53_2", "evidence": "Mdm2 promotes p53 degradation",
+               "assumed": False, "regulators": [{"species": "Mdm2", "effect": "activate", "K": "K4", "n": "n4"}]}
+        separate = {"id": "sep", "kind": "degradation", "species": "p53", "k": "k_deg_p53_3", "evidence": "DNA damage stabilizes p53",
+                    "assumed": False, "regulators": [{"stimulus": "DNA_damage", "effect": "repress", "K": "K3", "n": "n3"}]}
+        repaired = nc._auto_repair_ir(self._ir([dup, separate]), self.TEXT)
+        ids = [p["id"] for p in repaired["processes"]]
+        self.assertNotIn("dup", ids)
+        self.assertIn("q", ids)
+        self.assertIn("sep", ids)            # a different sentence is a separately described channel
+        self.assertTrue(any("'dup'" in a and "counted twice" in a for a in repaired["assumptions"]))
+        self.assertEqual(nc.validate_ir(repaired, self.TEXT), [])
+
+    def test_exact_duplicates_keep_one_copy(self):
+        twin = dict(self._ir([])["processes"][3], id="twin", k="k_deg_p53_2")
+        repaired = nc._auto_repair_ir(self._ir([twin]), self.TEXT)
+        ids = [p["id"] for p in repaired["processes"]]
+        self.assertEqual(ids.count("q") + ids.count("twin"), 1)
+        self.assertIn("q", ids)
+
+    def test_a_basal_process_is_never_removed(self):
+        repaired = nc._auto_repair_ir(self._ir([]), self.TEXT)
+        self.assertIn("p1", [p["id"] for p in repaired["processes"]])
+
+
 class UnevidencedSpeciesTests(unittest.TestCase):
     TEXT = "A does not activate B. A is degraded at rate 0.1."
 
