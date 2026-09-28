@@ -1,0 +1,29 @@
+WEBVTT
+
+1
+00:00:00.000 --> 00:00:05.000
+From plain language to a runnable model.
+
+2
+00:00:05.000 --> 00:00:11.000
+The deterministic compiler identifies p53 and Mdm2 as species.
+
+3
+00:00:11.000 --> 00:00:18.000
+Each supported statement becomes a process card with its evidence quote.
+
+4
+00:00:18.000 --> 00:00:26.000
+The process fluxes assemble into explicit ordinary differential equations.
+
+5
+00:00:26.000 --> 00:00:32.000
+The interaction graph is derived from those equations, not drawn independently.
+
+6
+00:00:32.000 --> 00:00:38.000
+The app integrates the equations to obtain p53 and Mdm2 trajectories.
+
+7
+00:00:38.000 --> 00:00:42.000
+Coverage, Jacobian signs, and numerical simulation all pass verification.

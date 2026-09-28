@@ -92,14 +92,14 @@
                 </div>
             </div>
             <div class="header-actions">
-                <a href="workflow.html" class="btn btn-primary btn-sm"
-                    style="margin-right: 15px; text-decoration: none;"
-                    title="CAD domain, mesh, boundary conditions, and a choice of ABM, CompuCell3D or MPC">⚙️ Simulation Workflow</a>
-                <a href="paper.html" target="_blank" class="btn btn-secondary btn-sm"
-                    style="margin-right: 15px; text-decoration: none;">📄 Read Paper</a>
-                <button class="btn btn-secondary btn-sm" id="btn-ai-settings" style="margin-right: 15px;"
-                    title="Configure the open-source AI language model">
-                    🧠 <span id="ai-engine-label">Rule-based</span>
+                <button type="button" class="header-link" id="btn-open-guides"
+                    title="Short videos: the language-to-model pipeline, the embryo BMP model, reading the graph">🎬 Guides</button>
+                <a href="paper.html" target="_blank" class="header-link"
+                    title="The BioSimulateAI paper">📄 Paper</a>
+                <button class="engine-pill" id="btn-ai-settings"
+                    title="Choose the AI engine that turns descriptions into models">
+                    <span class="engine-pill__icon" aria-hidden="true">🧠</span>
+                    <span id="ai-engine-label">Rule-based</span>
                 </button>
                 <div class="status-badge" id="system-status">
                     <span class="status-dot green"></span>
@@ -130,6 +130,8 @@
                             title="Zhabotinsky 2000 — CaMKII bistable memory switch">CaMKII Memory (Zhabotinsky)</button>
                         <button class="btn btn-secondary btn-sm" id="load-lyashenko-btn"
                             title="Lyashenko et al. 2020 — receptor fold-change detection">Fold-change (Lyashenko)</button>
+                        <button class="btn btn-secondary btn-sm btn-embryo" id="open-embryo-btn"
+                            title="Umulis et al. 2010 — organism-scale BMP patterning of the Drosophila embryo (PDE on the embryo surface)">🪰 Embryo BMP (Umulis 2010)</button>
                     </div>
                     <!-- Input mode selector -->
                     <div class="input-mode-tabs" id="input-mode-tabs">
@@ -141,7 +143,8 @@
                     <!-- MODE: describe -->
                     <div class="imode-panel active" data-imode-panel="describe">
                         <textarea id="bio-input"
-                            placeholder="Type a biological description here... e.g. EGF binds and activates EGFR. EGFR activates RAS. RAS activates RAF. RAF activates MEK. MEK activates ERK. ERK inhibits EGFR."></textarea>
+                            placeholder="Describe the biology in plain sentences, e.g.&#10;p53 activates Mdm2 transcription. Mdm2 promotes p53 degradation. DNA damage stabilizes p53.&#10;Numbers you give (rates, half-lives, starting amounts) are used exactly."></textarea>
+                        <p class="compile-engine-hint" id="compile-engine-hint">Compiled by the rule-based compiler.</p>
                         <button class="btn btn-primary btn-block" id="btn-parse-text">Compile Blueprint</button>
                     </div>
 
@@ -166,7 +169,7 @@
                             title="Click to choose a photo, or drag one here">
                             <div class="eq-dropzone-icon">📷</div>
                             <div class="eq-dropzone-main">Click to upload a photo of your equations</div>
-                            <div class="eq-dropzone-sub">or drag &amp; drop an image here — the AI reads the equations</div>
+                            <div class="eq-dropzone-sub">or drag &amp; drop an image here — a vision model (Purdue GenAI or AWS Bedrock) reads it; written equations are then compiled exactly as read</div>
                         </div>
                         <div id="eq-image-status" class="eq-image-status"></div>
                     </div>
@@ -210,9 +213,11 @@
                     <button class="tab-btn active" data-tab="blueprint">Blueprint</button>
                     <button class="tab-btn" data-tab="equations">Equations</button>
                     <button class="tab-btn" data-tab="simulator">Simulator</button>
+                    <button class="tab-btn" data-tab="embryo">Embryo BMP <span class="tab-badge">2010</span></button>
                     <button class="tab-btn" data-tab="feedback">Feedback</button>
                     <button class="tab-btn" data-tab="abm">Agent-Based</button>
                     <button class="tab-btn" data-tab="maple">MAPLE</button>
+                    <button class="tab-btn" data-tab="guides">Guides</button>
                     <!--
                         Entry point to the PDE simulation workflow (workflow.html).
                         It sits in the tab row because that is where a user looks for
@@ -238,18 +243,56 @@
                     <div class="tab-content active" id="tab-blueprint">
                         <div class="blueprint-grid">
                             <div class="network-card card">
-                                <h3 class="card-title">Interaction Graph</h3>
+                                <div class="graph-toolbar">
+                                    <h3 class="card-title">Interaction Graph</h3>
+                                    <div class="graph-toolbar__controls">
+                                        <label class="toggle" title="Also draw the weak influences that the readable view folds away">
+                                            <input type="checkbox" id="graph-show-all">
+                                            <span class="toggle__track" aria-hidden="true"></span>
+                                            <span class="toggle__label">Show every connection</span>
+                                        </label>
+                                        <button type="button" class="btn-tiny" id="graph-fit-btn" title="Re-center and fit the graph">Fit</button>
+                                    </div>
+                                </div>
                                 <!-- Shown only when the blueprint carries explicit
                                      `odes`, in which case the compiler solves those rate
                                      laws and never reads the edges below, so the arrows
                                      can disagree with the mathematics. -->
                                 <p id="graph-schematic-badge" class="graph-schematic-badge" hidden></p>
                                 <div id="cy-container"></div>
+                                <div class="graph-legend" aria-label="Graph legend">
+                                    <span><i class="lg lg-act"></i>activation (∂ &gt; 0)</span>
+                                    <span><i class="lg lg-inh"></i>inhibition (∂ &lt; 0)</span>
+                                    <span><i class="lg lg-assoc"></i>association / sign varies</span>
+                                    <span><i class="lg lg-minor"></i>weak (&lt; 5% of strongest)</span>
+                                </div>
                             </div>
                             <div class="json-card card">
                                 <h3 class="card-title">Blueprint JSON</h3>
                                 <pre
                                     id="blueprint-json-viewer">Compile a biological description to view the blueprint.</pre>
+                            </div>
+                        </div>
+                        <!-- How the model was built: which engine, what each process rests on,
+                             which numbers came from the text, and what was verified. -->
+                        <div class="card provenance-card" id="provenance-card" hidden>
+                            <div class="equation-head">
+                                <h3 class="card-title">How this model was built</h3>
+                                <span class="provenance-engine" id="provenance-engine"></span>
+                            </div>
+                            <div class="provenance-grid">
+                                <section>
+                                    <h4 class="subsection-title">Processes and the words they rest on</h4>
+                                    <ol id="provenance-processes" class="provenance-list"></ol>
+                                </section>
+                                <section>
+                                    <h4 class="subsection-title">Checks run before the model was accepted</h4>
+                                    <ul id="provenance-checks" class="check-list"></ul>
+                                    <h4 class="subsection-title">Parameters</h4>
+                                    <div id="provenance-params" class="provenance-params"></div>
+                                    <h4 class="subsection-title">Assumptions the compiler made</h4>
+                                    <ul id="provenance-assumptions" class="provenance-assumptions"></ul>
+                                </section>
                             </div>
                         </div>
                     </div>
@@ -503,6 +546,122 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- TAB: EMBRYO BMP (Umulis et al. 2010) -->
+                    <div class="tab-content" id="tab-embryo">
+                        <div class="card embryo-hero">
+                            <div class="embryo-hero__text">
+                                <p class="kicker">Published model · reaction–diffusion on the embryo surface</p>
+                                <h3 class="embryo-title">Organism-scale BMP patterning of the <em>Drosophila</em> embryo</h3>
+                                <p class="embryo-cite">Umulis, Shimmi, O'Connor &amp; Othmer (2010) <em>Developmental Cell</em> 18:260–274 ·
+                                    <a href="https://doi.org/10.1016/j.devcel.2010.01.006" target="_blank" rel="noopener">doi:10.1016/j.devcel.2010.01.006</a></p>
+                                <p class="embryo-lede">Dpp/Scw (BMP) is secreted dorsally; Sog/Tsg binds it and carries it toward the
+                                    dorsal midline, where Tolloid cleaves Sog and releases it. A surface BMP-binding protein induced by
+                                    signalling (the paper's winning mechanism) sharpens the stripe. The equations and every rate constant
+                                    are the paper's (Tables S1 and S8); what the paper did not publish is listed under Assumptions.</p>
+                            </div>
+                            <div class="embryo-hero__stats" id="embryo-summary">
+                                <p class="placeholder-text">Loading the model…</p>
+                            </div>
+                        </div>
+
+                        <div class="embryo-grid">
+                            <div class="card embryo-surface-card">
+                                <div class="graph-header">
+                                    <h3 class="card-title">Receptor-bound BMP on the embryo surface</h3>
+                                    <div class="vis-controls">
+                                        <select id="embryo-surface-pert" aria-label="Genotype"></select>
+                                        <div class="seg-control" id="embryo-view-toggle">
+                                            <button class="seg-btn active" data-view="both" type="button">Both</button>
+                                            <button class="seg-btn" data-view="dorsal" type="button">Dorsal</button>
+                                            <button class="seg-btn" data-view="lateral" type="button">Lateral</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="embryo-canvas-wrap">
+                                    <canvas id="embryo-surface-canvas" width="900" height="420"
+                                        aria-label="Embryo surface coloured by receptor-bound BMP"></canvas>
+                                </div>
+                                <div class="embryo-time">
+                                    <button class="btn btn-secondary btn-sm" id="embryo-play" type="button">▶ Play</button>
+                                    <input type="range" id="embryo-time" min="0" max="60" step="0.5" value="60" aria-label="Time (minutes)">
+                                    <span class="embryo-time__label" id="embryo-time-label">60 min</span>
+                                </div>
+                                <p class="hint-text" id="embryo-surface-note"></p>
+                            </div>
+
+                            <div class="card embryo-cs-card">
+                                <div class="graph-header">
+                                    <h3 class="card-title">Dorsal–ventral cross-section (x/L = 0.5)</h3>
+                                </div>
+                                <div class="embryo-chart-wrap"><canvas id="embryo-cs-chart"></canvas></div>
+                                <p class="hint-text" id="embryo-cs-note">Coloured lines: solver output. Amber dots: the dorsal-midline
+                                    values of the paper's Fig. 4F.</p>
+                            </div>
+
+                            <div class="card embryo-controls-card">
+                                <h3 class="card-title">Run it yourself</h3>
+                                <p class="hint-text">Every run below is solved live on the server (about a second).</p>
+                                <div class="embryo-form">
+                                    <div class="field"><label for="embryo-mech">Feedback mechanism</label>
+                                        <select id="embryo-mech">
+                                            <option value="sbp">Surface BMP-binding protein (Table S8, winner)</option>
+                                            <option value="none">No feedback (Table S2)</option>
+                                            <option value="receptor">Receptor feedback (Table S3)</option>
+                                        </select></div>
+                                    <div class="field"><label for="embryo-pert">Genotype</label><select id="embryo-pert"></select></div>
+                                    <div class="field"><label for="embryo-pset">Parameter set</label>
+                                        <select id="embryo-pset">
+                                            <option value="umulis2010">Umulis 2010 (default; Sog rate from 2006)</option>
+                                            <option value="umulis2010_as_printed">Umulis 2010 exactly as printed (Sog 1.36 µM/min)</option>
+                                            <option value="umulis2006">Umulis 2006 predecessor (solver check)</option>
+                                        </select></div>
+                                    <div class="embryo-sliders" id="embryo-sliders"></div>
+                                </div>
+                                <div class="embryo-actions">
+                                    <button class="btn btn-primary" id="embryo-run" type="button">Solve cross-section</button>
+                                    <button class="btn btn-secondary" id="embryo-reset" type="button">Reset</button>
+                                </div>
+                                <div id="embryo-run-readout" class="embryo-readout"></div>
+                            </div>
+
+                            <div class="card embryo-mutant-card">
+                                <h3 class="card-title">Genotypes at 60 min</h3>
+                                <div class="embryo-chart-wrap"><canvas id="embryo-mutant-chart"></canvas></div>
+                            </div>
+                        </div>
+
+                        <div class="card embryo-validation-card">
+                            <div class="equation-head">
+                                <h3 class="card-title">Does it match the papers?</h3>
+                                <button class="btn-tiny" id="embryo-revalidate" type="button"
+                                    title="Recompute the 1D checks live on the server (~10 s)">Re-run checks live</button>
+                            </div>
+                            <p class="hint-text" id="embryo-validation-source"></p>
+                            <div class="table-wrap"><table class="validation-table" id="embryo-validation-table"></table></div>
+                        </div>
+
+                        <div class="embryo-grid embryo-grid--docs">
+                            <div class="card"><h3 class="card-title">Equations (Supplement Eqs 52–61)</h3>
+                                <div id="embryo-equations" class="math-display"></div></div>
+                            <div class="card"><h3 class="card-title">Parameters and where each comes from</h3>
+                                <div class="table-wrap"><table class="param-source-table" id="embryo-params"></table></div></div>
+                            <div class="card"><h3 class="card-title">Assumptions (what the paper did not publish)</h3>
+                                <ul id="embryo-assumptions" class="provenance-assumptions"></ul></div>
+                        </div>
+                    </div>
+
+                    <!-- TAB: GUIDES (motion-graphic explainers) -->
+                    <div class="tab-content" id="tab-guides">
+                        <div class="card guides-intro">
+                            <h3 class="card-title">Guides</h3>
+                            <p class="hint-text">Short explainers rendered from the app's own outputs — nothing in them is a mock-up.
+                                Captions are available on every video.</p>
+                        </div>
+                        <div class="guides-grid" id="guides-grid">
+                            <p class="placeholder-text">Loading guides…</p>
+                        </div>
+                    </div>
                 </div>
             </main>
         </div>
@@ -562,37 +721,52 @@
                 <div class="book-title">
                     <span class="logo-icon">🧠</span>
                     <div>
-                        <h3 id="llm-modal-title">AI Language Model</h3>
-                        <p>Powers natural-language compilation, closed-loop refinement, and MAPLE extraction.
-                            Run an open-source model fully offline on your machine, or link a hosted endpoint.</p>
+                        <h3 id="llm-modal-title">AI engine</h3>
+                        <p>Turns plain-language descriptions (and photos of equations) into models. Whatever the engine,
+                            the AI only names species and processes with quotes from your text; the equations are then
+                            assembled and checked deterministically.</p>
                     </div>
                 </div>
                 <button class="modal-close" id="llm-modal-close" aria-label="Close">&times;</button>
             </div>
 
             <div class="modal-body llm-body">
-                <div class="field">
-                    <label for="paid-access-token">Deployment access token
-                        <span class="muted">(required for AWS Batch and server-funded Bedrock)</span></label>
-                    <input type="password" id="paid-access-token"
-                        placeholder="Enter the token supplied by the deployment operator"
-                        autocomplete="off" spellcheck="false">
-                    <p class="hint-text">This is an app-level spending guard, not an AWS key. It is kept
-                        only for this browser tab and sent as a Bearer header to this BioSimulateAI
-                        server. Closing the tab clears it. Never paste an AWS secret here.</p>
-                </div>
-
                 <div class="seg-control llm-engine-tabs" id="llm-engine-tabs">
+                    <button class="seg-btn" data-engine="purdue" type="button">Purdue GenAI <span class="tag tag-accent">recommended</span></button>
                     <button class="seg-btn active" data-engine="off" type="button">Rule-based (offline)</button>
                     <button class="seg-btn" data-engine="local" type="button">Local model</button>
                     <button class="seg-btn" data-engine="remote" type="button">Remote endpoint</button>
                     <button class="seg-btn" data-engine="bedrock" type="button">AWS Bedrock</button>
                 </div>
 
+                <!-- PURDUE GENAI STUDIO -->
+                <div class="llm-panel" id="llm-panel-purdue" hidden>
+                    <p class="hint-text">Purdue RCAC <strong>GenAI Studio</strong> (OpenAI-compatible). The API key lives only on
+                        the server (<code>PURDUE_GENAI_API_KEY</code>); it is never sent to or stored in the browser.</p>
+                    <p class="llm-status" id="llm-purdue-status">Checking the server…</p>
+                    <div class="field">
+                        <label for="llm-purdue-model">Model</label>
+                        <select id="llm-purdue-model"></select>
+                        <p class="hint-text">gpt-oss:120b is the fastest reliable choice (typically 10–30 s per model).
+                            Larger Ollama-hosted models can take a minute when cold.</p>
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label for="paid-access-token">Deployment access token
+                        <span class="muted">(only if this deployment requires one for AI, Bedrock or AWS Batch)</span></label>
+                    <input type="password" id="paid-access-token"
+                        placeholder="Enter the token supplied by the deployment operator"
+                        autocomplete="off" spellcheck="false">
+                    <p class="hint-text">An app-level guard on server-held credentials, not a Purdue or AWS key. It is kept
+                        only for this browser tab and sent as a Bearer header to this BioSimulateAI server.</p>
+                </div>
+
                 <!-- OFF -->
                 <div class="llm-panel" id="llm-panel-off">
-                    <p class="hint-text">No language model. Uses the built-in deterministic regex parser and
-                        rule-based refinement. Fast, fully offline, nothing to download.</p>
+                    <p class="hint-text">No language model. A deterministic sentence compiler recognises common phrasings
+                        (activates / represses / binds to form / is converted to / is degraded with a half-life of /
+                        diffuses / dX/dt = …). Instant and offline; less forgiving of unusual wording than an AI engine.</p>
                 </div>
 
                 <!-- LOCAL -->
@@ -702,7 +876,9 @@
         if you like; just do not spend debugging time on it, and do not trust a snapshot
         that shows less of the page than the page has.
     -->
-    <script src="app.js?v=5"></script>
+    <script src="app.js?v=6"></script>
+    <script src="bmp.js?v=1"></script>
+    <script src="guides.js?v=1"></script>
 </body>
 
 </html>

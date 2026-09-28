@@ -1,0 +1,25 @@
+WEBVTT
+
+1
+00:00:00.000 --> 00:00:05.000
+BMP shuttling patterns the Drosophila embryo, following Umulis and colleagues, 2010.
+
+2
+00:00:05.000 --> 00:00:13.000
+Dorsal Dpp and Tsg oppose lateral Sog. Sog-Tsg carries BMP toward the dorsal midline, where Tld cleavage releases it.
+
+3
+00:00:13.000 --> 00:00:25.000
+The surface solution: receptor-bound BMP rises from zero and concentrates on the dorsal side over sixty minutes.
+
+4
+00:00:25.000 --> 00:00:34.000
+The cross-section contracts: the midline rises while the flanks lose signal. Dots mark the published Figure 4F midline values.
+
+5
+00:00:34.000 --> 00:00:42.000
+At sixty minutes: sog heterozygotes are wider, sog nulls broad and weak, tld nulls have essentially no signal.
+
+6
+00:00:42.000 --> 00:00:48.000
+The solver reproduces the fully specified 2006 model; the checks that pass and those that do not are both reported.

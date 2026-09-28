@@ -1,0 +1,29 @@
+WEBVTT
+
+1
+00:00:00.000 --> 00:00:05.000
+Reading the interaction graph.
+
+2
+00:00:05.000 --> 00:00:12.000
+An arrow means the source species appears in the target species rate of change.
+
+3
+00:00:12.000 --> 00:00:18.000
+A positive partial derivative is green activation; a negative partial derivative is pink inhibition.
+
+4
+00:00:18.000 --> 00:00:25.000
+A self-arrow means autoregulation. Pure first-order turnover, minus k times X, is not drawn as a self-edge.
+
+5
+00:00:25.000 --> 00:00:33.000
+Influences below five percent of the strongest influence on a target are folded from the readable view.
+
+6
+00:00:33.000 --> 00:00:37.000
+Show all connections reveals folded influences as thin dashed edges.
+
+7
+00:00:37.000 --> 00:00:40.000
+The graph is a readable view. The Equations tab is always complete.
