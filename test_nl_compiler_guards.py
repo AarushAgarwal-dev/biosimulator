@@ -209,6 +209,22 @@ class DuplicateProcessTests(unittest.TestCase):
         repaired = nc._auto_repair_ir(self._ir([]), self.TEXT)
         self.assertIn("p1", [p["id"] for p in repaired["processes"]])
 
+    def test_rule_cross_check_does_not_re_add_an_interaction_the_ai_merged(self):
+        ir = nc._auto_repair_ir(self._ir([]), self.TEXT)
+        merged, added = nc._merge_rule_crosscheck(ir, nc.extract_ir_rules(self.TEXT))
+        p53_losses = [p["id"] for p in merged["processes"] if p.get("kind") == "degradation" and p.get("species") == "p53"]
+        self.assertEqual(p53_losses, ["q"], merged["processes"])
+
+    def test_rule_cross_check_still_restores_a_missing_interaction(self):
+        ir = self._ir([])
+        ir["processes"][3]["regulators"] = [{"species": "Mdm2", "effect": "activate", "K": "K2", "n": "n2"}]
+        ir["stimuli"] = []                                     # the AI missed DNA damage entirely
+        merged, added = nc._merge_rule_crosscheck(ir, nc.extract_ir_rules(self.TEXT))
+        self.assertGreaterEqual(added, 1)
+        self.assertTrue(any(p.get("kind") == "degradation" and p.get("species") == "p53" and
+                            any((r.get("stimulus") or r.get("species")) == "DNA_damage" for r in p.get("regulators", []))
+                            for p in merged["processes"]))
+
 
 class UnevidencedSpeciesTests(unittest.TestCase):
     TEXT = "A does not activate B. A is degraded at rate 0.1."

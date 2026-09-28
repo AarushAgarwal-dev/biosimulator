@@ -1876,8 +1876,32 @@ def _merge_rule_crosscheck(ir: Dict[str, Any], rules: Dict[str, Any]) -> Tuple[D
                 for old, new in rename.items(): proc["rate"] = re.sub(r"\b" + re.escape(old) + r"\b", new, proc["rate"])
         existing = {_process_signature(p) for p in merged.get("processes", [])}
     current_species = {s["id"] for s in merged.get("species", [])}; current_params = {p["name"] for p in merged.get("parameters", [])}
+
+    def _reg_keys(p: Dict[str, Any]) -> set:
+        return {(str(r.get("species") or r.get("stimulus") or "").lower(), r.get("effect"))
+                for r in (p.get("regulators") or []) if isinstance(r, dict)}
+
+    def _already_encoded(rule_proc: Dict[str, Any]) -> bool:
+        # The LLM may encode "Mdm2 promotes p53 degradation" and "DNA damage stabilizes p53" as ONE
+        # degradation process with both regulators, where the rules make two. Re-adding the rules'
+        # pair would count the loss two or three times, so a regulated rule process is skipped when
+        # every one of its regulators already acts on the same kind of process for the same species.
+        kind = rule_proc.get("kind")
+        if kind not in ("production", "degradation"):
+            return False
+        wanted = _reg_keys(rule_proc)
+        if not wanted:
+            return False                   # a basal process is distinct from any regulated one
+        field = "target" if kind == "production" else "species"
+        subject = str(rule_proc.get(field) or "").lower()
+        covered = set()
+        for q in merged.get("processes", []):
+            if q.get("kind") == kind and str(q.get(field) or "").lower() == subject and not q.get("assumed"):
+                covered |= _reg_keys(q)
+        return wanted <= covered
+
     for proc in rules.get("processes", []):
-        if proc.get("assumed") or _process_signature(proc) in existing: continue
+        if proc.get("assumed") or _process_signature(proc) in existing or _already_encoded(proc): continue
         refs = set()
         refs |= {x for x in (proc.get("target"), proc.get("species"), proc.get("enzyme"), proc.get("complex")) if x}
         refs |= {sid for field in ("reactants", "products") for sid, _ in _stoich(proc.get(field))}
