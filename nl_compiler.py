@@ -257,7 +257,8 @@ _NOT_ENTITIES = {"simulate", "simulation", "run", "model", "assume", "assuming",
                  "under", "for", "without", "upon", "because", "since", "also", "finally", "here", "note",
                  "given", "suppose", "let", "set", "treat", "include", "ignore", "keep", "make", "time",
                  "rates", "production", "its", "however", "meanwhile", "together", "otherwise", "if",
-                 "not", "only", "every", "some", "no", "total", "starting", "begin", "begins", "end"}
+                 "not", "only", "every", "some", "no", "total", "starting", "begin", "begins", "end",
+                 "hill", "coefficient", "maximum", "maximal", "saturation", "constant"}
 
 
 def _empty_ir(model_type: str = "ode", time_unit: str = "arbitrary") -> Dict[str, Any]:
@@ -861,6 +862,19 @@ def verify(bp: Dict[str, Any], ir: Dict[str, Any], text: str) -> Dict[str, Any]:
     else:
         try:
             model = ODEModel(bp); probe = _probe_subs(model)
+            # A stated regulation is checked on the rate law of the process that states it. The
+            # whole equation's derivative mixes in other true processes: in Umulis 2010 BMP/Tkv
+            # both switches on SBP production and binds SBP, so d(dSBP/dt)/dBMPTkv is negative
+            # although the production term has exactly the stated positive dependence.
+            flux_table = bp.get("fluxes") or {}
+            flux_locals = {**{sid: model.vars[sid] for sid in model.node_ids}, **model.param_symbols}
+
+            def process_rate(proc):
+                base = _flux_name(proc)
+                name = base if base in flux_table else next(
+                    (f for f in flux_table if f.startswith(base + "_") and f[len(base) + 1:].isdigit()), None)
+                return sp.sympify(str(flux_table[name]), locals=flux_locals) if name else None
+
             for proc in ir.get("processes", []):
                 kind = proc["kind"]
                 targets = []
@@ -869,9 +883,20 @@ def verify(bp: Dict[str, Any], ir: Dict[str, Any], text: str) -> Dict[str, Any]:
                 elif kind in ("conversion", "custom"):
                     targets = [(sid, 1) for sid, _ in _stoich(proc.get("products"))]
                 elif kind == "binding": targets = [(proc["complex"], 1)]
+                rate = process_rate(proc) if proc.get("regulators") else None
                 for reg in proc.get("regulators") or []:
                     source = reg.get("species")
                     if not source: continue
+                    if rate is not None:
+                        expected = 1 if reg["effect"] == "activate" else -1
+                        value = float(sp.diff(rate, model.vars[source]).subs(probe).evalf())
+                        actual = 1 if value > 1e-10 else -1 if value < -1e-10 else 0
+                        check = {"process": proc["id"], "source": source, "target": targets[0][0] if targets else None,
+                                 "expected": expected, "actual": actual, "derivative": value, "ok": actual == expected,
+                                 "scope": "process rate law"}
+                        report["sign_checks"].append(check)
+                        if not check["ok"]: report["errors"].append(f"Sign mismatch for {source} -> {check['target']} in {proc['id']}.")
+                        continue
                     for target, orientation in targets:
                         expected = (1 if reg["effect"] == "activate" else -1) * orientation
                         deriv = sp.diff(model.deriv_exprs[target], model.vars[source])
@@ -1344,6 +1369,19 @@ LLM_TIME_BUDGET_S = 150.0
 # output limit (measured: 8192 tokens, 50 s, 56% whitespace, then truncated). A tighter cap bounds
 # that failure's cost, and the retry below switches to plain JSON mode, which did not degenerate.
 IR_MAX_TOKENS = 4500
+IR_MAX_TOKENS_CEILING = 12000
+
+
+def _ir_token_budget(text: str) -> int:
+    """Output-token cap for one IR request, scaled to the description.
+
+    4500 covers a 6-10 species description, but gpt-oss spends part of the budget on
+    reasoning, and the 16-process Umulis 2010 BMP description was truncated at 4500 on every
+    attempt; with 10000 it validated on the first. Short descriptions keep the tight cap
+    that bounds the degenerate-whitespace failure described above.
+    """
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+|\n+", (text or "").strip()) if s.strip()]
+    return int(min(IR_MAX_TOKENS_CEILING, max(IR_MAX_TOKENS, 2500 + 450 * len(sentences))))
 
 
 def extract_ir_llm(text: str, client: Any, time_budget_s: float = LLM_TIME_BUDGET_S) -> Dict[str, Any]:
@@ -1361,6 +1399,7 @@ def extract_ir_llm(text: str, client: Any, time_budget_s: float = LLM_TIME_BUDGE
     started = time.monotonic()
     attempts_made = 0
     strict = generate_structured is not None
+    token_budget = _ir_token_budget(text)
     for attempt in range(3):
         if attempt and time.monotonic() - started > time_budget_s:
             last_error += f" (repair stopped: {time_budget_s:.0f} s budget used)"
@@ -1369,10 +1408,10 @@ def extract_ir_llm(text: str, client: Any, time_budget_s: float = LLM_TIME_BUDGE
         try:
             if strict:
                 raw = generate_structured(client, prompt, IR_SCHEMA, system=_SYSTEM, temperature=0.0,
-                                          max_tokens=IR_MAX_TOKENS, name="biological_model_ir")
+                                          max_tokens=token_budget, name="biological_model_ir")
             else:
                 raw = llm_provider.generate_json(client, prompt + _schema_text(), system=_SYSTEM,
-                                                 temperature=0.0, max_tokens=IR_MAX_TOKENS)
+                                                 temperature=0.0, max_tokens=token_budget)
             ir = _auto_repair_ir(_normalise_ir(raw), text)
             errors = validate_ir(ir, text)
             if not errors:
@@ -1611,11 +1650,20 @@ def extract_ir_rules(text: str) -> Dict[str, Any]:
         k = add_param(f"kcat_{enz}_{source}", 1.0, "default", "catalytic rate")
         km = add_param(f"Km_{source}", 1.0, "default", "Michaelis constant")
         add_process("conversion", evidence_for(m), reactants=[{"species": source, "stoich": 1}], products=[{"species": target, "stoich": 1}], enzyme=enz, Km=km, k=k)
-    conv_pat = r"\b([A-Za-z][A-Za-z0-9_-]*)\s+(?:is\s+)?(?:converted|phosphorylated|transported|pumped|exported|released)\s+(?:in)?to\s+([A-Za-z][A-Za-z0-9_-]*)(?:[^.]*?\bat\s+(?:a\s+)?rate\s+(?:of\s+)?([-+]?\d*\.?\d+))?"
+    # "IB is converted to B and T at rate k": a second product is kept only when what follows it
+    # ends the clause (rate, punctuation, 'with'), so "X is converted to Y and Z is degraded" still
+    # reads Z as the subject of a new clause, not as a product.
+    conv_pat = (r"\b([A-Za-z][A-Za-z0-9_-]*)\s+(?:is\s+)?(?:converted|phosphorylated|transported|pumped|exported|released)\s+"
+                r"(?:in)?to\s+([A-Za-z][A-Za-z0-9_-]*)"
+                r"(?:\s+and\s+([A-Za-z][A-Za-z0-9_-]*)(?=\s+at\b|\s+with\b|\s*[.;,]|\s*$))?"
+                r"(?:[^.]*?\bat\s+(?:a\s+)?rate\s+(?:of\s+)?([-+]?\d*\.?\d+))?")
     for m in re.finditer(conv_pat, original, re.I):
         source, target = add_species(m.group(1)), add_species(m.group(2))
-        k = add_param(f"k_{source}_to_{target}", float(m.group(3)) if m.group(3) else 1.0, "text" if m.group(3) else "default", "conversion rate")
-        add_process("conversion", evidence_for(m), reactants=[{"species": source, "stoich": 1}], products=[{"species": target, "stoich": 1}], k=k)
+        products = [{"species": target, "stoich": 1}]
+        if m.group(3) and _is_species_word(m.group(3)):
+            products.append({"species": add_species(m.group(3)), "stoich": 1})
+        k = add_param(f"k_{source}_to_{target}", float(m.group(4)) if m.group(4) else 1.0, "text" if m.group(4) else "default", "conversion rate")
+        add_process("conversion", evidence_for(m), reactants=[{"species": source, "stoich": 1}], products=products, k=k)
     for m in re.finditer(r"\b([A-Za-z][A-Za-z0-9_-]*)\s*(?:->|→)\s*([A-Za-z][A-Za-z0-9_-]*)", original):
         source, target = add_species(m.group(1)), add_species(m.group(2))
         k = add_param(f"k_{source}_to_{target}", 1.0, "default", "conversion rate")
@@ -1764,9 +1812,20 @@ def extract_ir_rules(text: str) -> Dict[str, Any]:
         source, target = add_species(raw_source), add_species(raw_target)
         if not source or not target: continue
         effect = "repress" if re.search(r"inhibit|repress|block|suppress|downregulat", m.group(2), re.I) else "activate"
-        k = add_param(f"k_prod_{target}", 1.0, "default", f"regulated production of {target}")
-        K = add_param(f"K_{source}_to_{target}", 1.0, "default", "regulatory half-saturation")
-        hill_m = re.search(r"Hill coefficient(?:\s+of)?\s*([-+]?\d*\.?\d+)", original[m.end():m.end()+80], re.I)
+        # Constants stated in the same sentence ("... with maximum rate 24.45, half-saturation
+        # constant 61.83 and Hill coefficient 2") are used exactly; otherwise disclosed defaults.
+        end = re.search(r"\.(?=\s|$)", original[m.end():])
+        tail = original[m.end(): m.end() + end.start()] if end else original[m.end():]
+        vmax_m = re.search(r"\b(?:maxim(?:um|al)\s+(?:production\s+|synthesis\s+)?rate|max\s+rate|Vmax)"
+                           r"\s*(?:of|=|is)?\s*(" + _num + r")", tail, re.I)
+        half_m = re.search(r"\b(?:half[- ](?:saturation|maximal|max)(?:\s+(?:constant|concentration|level|at))?"
+                           r"|EC50|threshold|activation\s+constant|dissociation\s+constant|K_?d)"
+                           r"\s*(?:of|=|is|at)?\s*(" + _num + r")", tail, re.I)
+        k = add_param(f"k_prod_{target}", float(vmax_m.group(1)) if vmax_m else 1.0,
+                      "text" if vmax_m else "default", f"regulated production of {target}")
+        K = add_param(f"K_{source}_to_{target}", float(half_m.group(1)) if half_m else 1.0,
+                      "text" if half_m else "default", "regulatory half-saturation")
+        hill_m = re.search(r"Hill coefficient(?:\s+of)?\s*([-+]?\d*\.?\d+)", tail or original[m.end():m.end()+80], re.I)
         n = add_param(f"n_{source}_to_{target}", float(hill_m.group(1)) if hill_m else 2.0,
                       "text" if hill_m else "default", "regulatory Hill coefficient")
         add_process("production", evidence_for(m), target=target, k=k,
@@ -1797,8 +1856,34 @@ def extract_ir_rules(text: str) -> Dict[str, Any]:
     # Boundedness: genuinely produced states receive disclosed assumed turnover.
     # Conversion products are bounded by their finite source pool and must NOT get
     # an invented loss, which would break the mass conservation guaranteed above.
+    # Nor does a species whose mass the text already routes to a described loss: in
+    # "BMP binds SBP ... SBPBMP is degraded" BMP leaves through the complex, and an extra
+    # invented decay of BMP changes the stated model (Umulis 2010 has no free-BMP or Sog decay).
+    flows: Dict[str, set] = {}
+    for p in processes:
+        if p["kind"] == "binding":
+            for sid, _ in _stoich(p.get("reactants")):
+                flows.setdefault(sid, set()).add(p.get("complex"))
+        elif p["kind"] in ("conversion", "custom"):
+            for sid, _ in _stoich(p.get("reactants")):
+                flows.setdefault(sid, set()).update(t for t, _ in _stoich(p.get("products")))
+
+    def reaches_described_loss(sid: str) -> bool:
+        seen, stack = set(), list(flows.get(sid, ()))
+        while stack:
+            nxt = stack.pop()
+            if not nxt or nxt in seen:
+                continue
+            seen.add(nxt)
+            if nxt in degradation_targets:
+                return True
+            stack.extend(flows.get(nxt, ()))
+        return False
+
     produced = {p.get("target") for p in processes if p["kind"] == "production"}
     for sid in sorted(produced - degradation_targets):
+        if reaches_described_loss(sid):
+            continue
         k = add_param(f"k_deg_{sid}", 0.1, "default", f"assumed turnover of {sid}")
         add_process("degradation", "", True, "first-order turnover added for boundedness", species=sid, k=k)
         degradation_targets.add(sid); ir["assumptions"].append(f"{sid} has first-order turnover for boundedness.")

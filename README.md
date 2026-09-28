@@ -54,6 +54,34 @@ as a second parameter set.
 - **What had to be interpreted** is listed in the app: Table S1's printed Sog secretion
   (1.36 µM/min) abolishes the stripe when used literally, so the 2006 value (400 nM/min) is the
   default and the printed value is selectable.
+- **The same reaction network from plain language.** Pasting the description below into the
+  Describe box builds the paper's reaction kinetics (SBP mechanism, Tables S1/S8), identical to
+  the embryo module's own equations. This holds for the rule-based compiler and for Purdue GenAI.
+  `test_umulis_from_text.py` checks it to 10⁻⁹. The receptor is a species whose total stays at
+  R<sub>tot</sub>, because internalisation returns it. This is the well-mixed network. Diffusion
+  and the spatial source domains (BMP dorsal 40 %, Sog lateral, Tsg everywhere) are what the
+  Embryo tab adds.
+
+  ```
+  BMP is produced at rate 1.
+  Sog is produced at rate 400.
+  Tsg is produced at rate 48.
+  Sog binds Tsg reversibly to form SogTsg with kon 0.6 and koff 3.6.
+  SogTsg binds BMP reversibly to form SogTsgBMP with kon 11.4 and koff 0.36.
+  SogTsgBMP is converted to BMP and Tsg at rate 31.35.
+  Tsg is degraded at rate 0.05.
+  BMP binds SBP reversibly to form SBPBMP with kon 2 and koff 4.
+  BMP binds Tkv reversibly to form BMPTkv with kon 0.048 and koff 8.
+  SBPBMP binds Tkv reversibly to form SBPBMPTkv with kon 1 and koff 20.
+  BMPTkv binds SBP reversibly to form SBPBMPTkv with kon 0.25 and koff 20.
+  BMPTkv activates the production of SBP with maximum rate 24.45, half-saturation constant 61.83 and Hill coefficient 2.
+  SBP is degraded at rate 0.03.
+  SBPBMP is degraded at rate 0.03.
+  BMPTkv is converted to Tkv at rate 0.03.
+  SBPBMPTkv is converted to Tkv at rate 0.03.
+  Tkv starts at 394.3.
+  Simulate for 60 minutes.
+  ```
 
 ### Interaction graph
 Arrows are derived from the equations (sign of the partial derivative of each species' production
