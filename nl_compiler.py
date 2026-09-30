@@ -1532,6 +1532,8 @@ def extract_ir_rules(text: str) -> Dict[str, Any]:
                      r"\b([A-Z][A-Za-z0-9_-]*)\s*=\s*([-+]?\d*\.?\d+(?:e[-+]?\d+)?)\s*(?:nM|uM|mM|units?)?"]
     for pattern in init_patterns:
         for m in re.finditer(pattern, original, re.I if "initial" in pattern or "starts" in pattern else 0):
+            if m.group(1).lower() in _INIT_NOT_SPECIES:
+                continue                      # "All other species start at 0" is a catch-all, not a species
             add_species(m.group(1), float(m.group(2)), "text")
     # Elliptical continuations: "S starts at 999, I at 1, R at 0" / "... and R at 0".
     _num = r"[-+]?\d*\.?\d+(?:e[-+]?\d+)?"
@@ -2045,6 +2047,71 @@ def _merge_rule_crosscheck(ir: Dict[str, Any], rules: Dict[str, Any]) -> Tuple[D
     return merged, added
 
 
+#: Words that open an initial-value sentence without naming a species ("All other species start at 0").
+_INIT_NOT_SPECIES = {"species", "other", "others", "rest", "remaining", "everything", "else", "all", "each",
+                     "every", "they", "these", "those", "them", "it", "which", "that", "both"}
+_INIT_NUM = r"[-+]?\d*\.?\d+(?:e[-+]?\d+)?"
+
+
+def _stated_initials(text: str) -> Tuple[Dict[str, float], Optional[float]]:
+    """Initial values the description states unambiguously: ({name: value}, catch-all value).
+
+    Explicit values need a single subject at the start of a clause ("Tkv starts at 394.3",
+    "initial X = 2"), so "A and B start at 1 and 0.5" is left to the extractor. The catch-all
+    covers "All other species start at 0", "Every other species starts at 0", "The rest start at 0"
+    and "All species start at 0", and applies to every species not given a value explicitly.
+    """
+    text = text or ""
+    explicit: Dict[str, float] = {}
+    for m in re.finditer(r"(?:^|[.;:!?]\s+|\n\s*)([A-Za-z][A-Za-z0-9_-]*)\s+starts?\s+at\s+(" + _INIT_NUM + r")\b", text, re.I):
+        if m.group(1).lower() not in _INIT_NOT_SPECIES and m.group(1).lower() not in _STOP:
+            explicit[m.group(1)] = float(m.group(2))
+    for m in re.finditer(r"\binitial(?:\s+value\s+of)?\s+([A-Za-z][A-Za-z0-9_-]*)\s*(?:=|is)\s*(" + _INIT_NUM + r")\b", text, re.I):
+        if m.group(1).lower() not in _INIT_NOT_SPECIES:
+            explicit[m.group(1)] = float(m.group(2))
+    catch = re.search(r"\b(?:all|every|each)\s+(?:the\s+)?(?:other\s+|remaining\s+)?(?:species|variables|states|molecules)\s+"
+                      r"(?:start|starts|begin|begins)\s+at\s+(" + _INIT_NUM + r")\b"
+                      r"|\b(?:the\s+rest|everything\s+else|all\s+others)\s+(?:start|starts|begin|begins)\s+at\s+(" + _INIT_NUM + r")\b",
+                      text, re.I)
+    value = None if not catch else float(catch.group(1) if catch.group(1) is not None else catch.group(2))
+    return explicit, value
+
+
+def _apply_stated_initials(ir: Dict[str, Any], text: str) -> Dict[str, Any]:
+    """Use every initial value the text states, whichever engine built the IR.
+
+    Measured on the Umulis 2010 description: the language model kept "Tkv starts at 394.3" as an
+    unused parameter (Tkv_initial) and left Tkv at a default of 1, so the equations were exact but
+    the starting state was not. Stated values are therefore applied deterministically, and an
+    unused parameter that only restated a species' initial value is dropped.
+    """
+    if not isinstance(ir, dict):
+        return ir
+    explicit, catch_all = _stated_initials(text)
+    if not explicit and catch_all is None:
+        return ir
+    by_lower = {k.lower(): v for k, v in explicit.items()}
+    applied = set()
+    for s in ir.get("species", []) or []:
+        sid, name = str(s.get("id", "")), str(s.get("name", s.get("id", "")))
+        value = by_lower.get(sid.lower(), by_lower.get(name.lower()))
+        if value is None and catch_all is not None and s.get("initial_source") != "text":
+            value = catch_all
+        if value is not None:
+            s["initial"] = float(value); s["initial_source"] = "text"; applied.add(sid)
+    if applied:
+        body = json.dumps(ir.get("processes", []), default=str)
+        keep = []
+        for p in ir.get("parameters", []) or []:
+            pname = str(p.get("name", ""))
+            restates = any(re.fullmatch(re.escape(sid) + r"_?(?:initial|init|0|ic|start)", pname, re.I) for sid in applied)
+            if restates and not re.search(r"\b" + re.escape(pname) + r"\b", body):
+                continue
+            keep.append(p)
+        ir["parameters"] = keep
+    return ir
+
+
 def compile_text(text: str, llm_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Compile text without raising on bad input; errors are returned in the result."""
     try:
@@ -2075,6 +2142,9 @@ def compile_text(text: str, llm_config: Optional[Dict[str, Any]] = None) -> Dict
                 if added: notice += f" Rule cross-check restored {added} unambiguous interaction(s) omitted by the LLM."
         else:
             ir = extract_ir_rules(text)
+        ir = _apply_stated_initials(ir, text)
+        if rules is not None:
+            rules = _apply_stated_initials(rules, text)
         errors = validate_ir(ir, text)
         if errors and rules is not None:
             rule_errors = validate_ir(rules, text)

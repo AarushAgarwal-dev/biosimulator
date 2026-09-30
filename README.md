@@ -80,6 +80,7 @@ as a second parameter set.
   BMPTkv is converted to Tkv at rate 0.03.
   SBPBMPTkv is converted to Tkv at rate 0.03.
   Tkv starts at 394.3.
+  All other species start at 0.
   Simulate for 60 minutes.
   ```
 

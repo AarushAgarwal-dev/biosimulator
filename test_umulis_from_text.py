@@ -31,6 +31,7 @@ SBPBMP is degraded at rate 0.03.
 BMPTkv is converted to Tkv at rate 0.03.
 SBPBMPTkv is converted to Tkv at rate 0.03.
 Tkv starts at 394.3.
+All other species start at 0.
 Simulate for 60 minutes."""
 
 # bmp_embryo species -> the names used in the description
@@ -121,6 +122,35 @@ class CompilerFixTests(unittest.TestCase):
         self.assertEqual(nc._ir_token_budget("A activates B. B is degraded at rate 1."), nc.IR_MAX_TOKENS)
         self.assertGreater(nc._ir_token_budget(UMULIS_2010_TEXT), 10000)
         self.assertLessEqual(nc._ir_token_budget(UMULIS_2010_TEXT * 5), nc.IR_MAX_TOKENS_CEILING)
+
+
+class StatedInitialValueTests(unittest.TestCase):
+    """The starting state is part of the model: stated values must be used on every path."""
+
+    def test_the_umulis_description_starts_from_the_papers_state(self):
+        bp = nc.compile_text(UMULIS_2010_TEXT, None)
+        initial = {n["id"]: n["initial_value"] for n in bp["nodes"]}
+        self.assertEqual(initial.pop("Tkv"), 394.3)           # free receptor = R_tot
+        self.assertEqual(set(initial.values()), {0.0})         # every other species starts empty
+
+    def test_a_language_model_ir_is_corrected_to_the_stated_values(self):
+        # What gpt-oss returned: the stated value kept as an unused parameter, Tkv left at 1.
+        ir = {"species": [{"id": "Tkv", "name": "Tkv", "initial": 1.0, "initial_source": "default"},
+                          {"id": "BMP", "name": "BMP", "initial": 1.0, "initial_source": "default"}],
+              "parameters": [{"name": "Tkv_initial", "value": 394.3}, {"name": "k", "value": 1.0}],
+              "processes": [{"id": "p1", "kind": "production", "target": "BMP", "k": "k"}]}
+        out = nc._apply_stated_initials(ir, "BMP is produced at rate 1. Tkv starts at 394.3. "
+                                            "All other species start at 0.")
+        values = {s["id"]: (s["initial"], s["initial_source"]) for s in out["species"]}
+        self.assertEqual(values, {"Tkv": (394.3, "text"), "BMP": (0.0, "text")})
+        self.assertEqual([p["name"] for p in out["parameters"]], ["k"])
+
+    def test_an_ambiguous_list_is_left_to_the_extractor(self):
+        explicit, catch_all = nc._stated_initials("A and B start at 1 and 0.5.")
+        self.assertEqual(explicit, {})
+        self.assertIsNone(catch_all)
+        explicit, catch_all = nc._stated_initials("X starts at 2. The rest start at 0.1.")
+        self.assertEqual((explicit, catch_all), ({"X": 2.0}, 0.1))
 
 
 if __name__ == "__main__":
