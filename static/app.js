@@ -943,6 +943,9 @@ function resetModelViews() {
     if (score) score.textContent = "0%";
     const ring = document.getElementById("target-progress-bar");
     if (ring) ring.style.strokeDashoffset = "";
+    // Parameter-exploration samples belong to the previous model's parameters too.
+    const explore = document.getElementById("explore-results");
+    if (explore) explore.hidden = true;
 }
 
 function el(tag, className, text) {

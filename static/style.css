@@ -495,7 +495,9 @@ textarea:focus {
    ========================================================================== */
 .simulator-grid {
     display: grid;
-    grid-template-columns: 320px 1fr;
+    /* minmax(0, 1fr): a plain 1fr column cannot shrink below its content, so a wide
+       exploration table pushed the whole tab past the right edge of the window. */
+    grid-template-columns: 320px minmax(0, 1fr);
     gap: 20px;
     height: 100%;
 }
@@ -971,6 +973,10 @@ textarea:focus {
 
 #abm-canvas {
     image-rendering: pixelated;
+    /* The canvas holds one pixel per lattice site (e.g. 100 x 100); without a display size it
+       rendered as a 100-px square in the middle of a large panel. */
+    width: min(100%, 640px);
+    height: auto;
     max-width: 100%;
     max-height: 100%;
     border-radius: 4px;
@@ -1475,7 +1481,13 @@ textarea:focus {
     border-top: 1px solid var(--border-color);
     padding-top: 12px;
     max-height: 240px;
+    /* A wide sample table (one column per parameter) must scroll inside the card; it was
+       widening the whole Simulator grid and pushing the page off-screen. */
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
 }
+.explore-results .explore-table-wrap { max-width: 100%; }
 .explore-summary { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
     font-size: 11px;

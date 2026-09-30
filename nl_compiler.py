@@ -1780,17 +1780,28 @@ def extract_ir_rules(text: str) -> Dict[str, Any]:
         n = add_param(f"n_{target}_self", float(hm.group(1)) if hm else 2.0, "text" if hm else "default", "self-regulation Hill coefficient")
         other = m.group(3)
         accepted_other = bool(other and other.lower() not in _STOP and not _verbish.match(other))
+        second, second_effect, second_evidence = (other if accepted_other else None), effect, evidence_for(m)
+        # "U activates itself and activates V": the word after "and" is a second verb, and its own
+        # object is the second target (the Turing preset's U -> V activation was being dropped).
+        if other and not accepted_other and re.fullmatch(
+                r"(?:activates?|stimulates?|induces?|promotes?|represses?|inhibits?)", other, re.I):
+            tm = re.match(r"\s+(?:the\s+)?(?:inhibitor\s+|activator\s+)?([A-Za-z][A-Za-z0-9_-]*)", original[m.end(3):])
+            if tm and _is_species_word(tm.group(1)) and not _verbish.match(tm.group(1)):
+                second = tm.group(1)
+                second_effect = "repress" if re.search(r"repress|inhibit", other, re.I) else "activate"
+                second_evidence = original[m.start():m.end(3) + tm.end()].strip(" .;,:")
+                self_spans[-1] = (m.start(), m.end(3) + tm.end())
         evidence = evidence_for(m) if (accepted_other or not other) else \
             re.sub(r"\s+and\s*$", "", original[m.start():m.start(3)], flags=re.I).strip(" .;,:")
         add_process("production", evidence, target=target, k=k, basal=0.05,
                     regulators=[{"species": target, "effect": effect, "K": K, "n": n}])
-        if accepted_other:
-            second = add_species(other)
+        if second:
+            second = add_species(second)
             k2 = add_param(f"k_prod_{second}", 1.0, "default", f"regulated production of {second}")
             K2 = add_param(f"K_{target}_to_{second}", 1.0, "default", "regulatory half-saturation")
             n2 = add_param(f"n_{target}_to_{second}", 2.0, "default", "regulatory Hill coefficient")
-            add_process("production", evidence_for(m), target=second, k=k2,
-                        regulators=[{"species": target, "effect": effect, "K": K2, "n": n2}])
+            add_process("production", second_evidence, target=second, k=k2,
+                        regulators=[{"species": target, "effect": second_effect, "K": K2, "n": n2}])
 
     interaction_pat = r"\b([A-Za-z][A-Za-z0-9_-]*)\s+(activates?|induces?|stimulates?|phosphorylates?|upregulates?|promotes?|inhibits?|represses?|blocks?|suppresses?|downregulates?)\s+(?:the\s+)?(?:transcription|expression|production|activation)?\s*(?:of\s+)?([A-Za-z][A-Za-z0-9_-]*)"
     subject_pat = re.compile(r"\b([A-Za-z][A-Za-z0-9_-]*)\s+(?:activates?|induces?|stimulates?|phosphorylates?|"
