@@ -44,6 +44,18 @@ class TuringPresetPatternTests(unittest.TestCase):
         # Measured: std 0.92 around a mean of 0.59 (before the fix: 2e-10, i.e. uniform).
         self.assertGreater(float(final_u.std()), 0.1 * float(final_u.mean()))
 
+    def test_the_pattern_is_resolved_by_the_grid(self):
+        # With D_U = 0.05 the spots were single grid cells (mean wavelength 2.3 cells: a lattice
+        # artefact, not a resolved pattern). Measured with D_U = 0.5, D_V = 10: 6.2 cells.
+        text = preset_loader.load_presets()["turing"]["text"]
+        bp = nc.compile_text(text, None)
+        u = np.asarray(agent.simulate_pde_blueprint(bp, seed=0)["species"]["U"][-1])
+        power = np.abs(np.fft.fft2(u - u.mean())) ** 2
+        kx = np.fft.fftfreq(u.shape[0])[:, None]
+        ky = np.fft.fftfreq(u.shape[1])[None, :]
+        mean_wavelength = 1.0 / float(np.sum(np.sqrt(kx ** 2 + ky ** 2) * power) / np.sum(power))
+        self.assertGreaterEqual(mean_wavelength, 4.0)
+
 
 if __name__ == "__main__":
     unittest.main()

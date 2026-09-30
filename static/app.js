@@ -126,12 +126,16 @@ RAF starts at 1.0.`,
         }
     },
     turing: {
+        // Diffusion is stated numerically. "U diffuses slowly, V diffuses quickly" maps to
+        // D_U = 0.05 and D_V = 1, whose Turing wavelength (~1 grid cell) is below the 50 x 50
+        // grid's resolution: the field broke into single-pixel spikes. D_U = 0.5, D_V = 10
+        // keep the same 20:1 ratio and resolve round spots several cells across.
         text: `A reaction-diffusion system containing Activator U and Inhibitor V.
 U activates itself and activates V.
 V inhibits U.
 U starts at 1.0.
 V starts at 1.0.
-U diffuses slowly, V diffuses quickly.`,
+U diffuses at 0.5. V diffuses at 10.`,
         targets: [
             // Target checks for spatial heterogeneity (variance of pattern)
             { species: "U", type: "steady_state", value: 1.0, tolerance: 10.0 }
